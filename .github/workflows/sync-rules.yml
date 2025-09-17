@@ -1,4 +1,4 @@
-name: 1. Daily Sync and Sanitize Rules (mihomo-core, robust)
+name: 1. Daily Sync and Sanitize Rules (mihomo-core, enhanced)
 
 on:
   workflow_dispatch:
@@ -19,6 +19,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 预清洗 sources.urls，去 BOM/CR/尾注释/空行
       - name: Build sanitized URL list
         id: build_urls
         run: |
@@ -32,12 +33,6 @@ jobs:
           URLS="${TMP_DIR}/urls.cleaned"
           : > "$URLS"
 
-          # 逐行净化 sources.urls：
-          # - 去 BOM（首行）
-          # - 去 CR（Windows 行尾）
-          # - 去首尾空格
-          # - 去行尾注释：空格后跟 # 及其后续内容
-          # - 过滤空行和以 # 开头的纯注释行
           awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
           | sed 's/\r$//' \
           | sed -E 's/[[:space:]]+#.*$//' \
@@ -55,6 +50,10 @@ jobs:
           URLS_FILE="${{ steps.build_urls.outputs.sanitized_urls_file }}"
           TMP_DIR="${RUNNER_TEMP}/sync-tmp"
           mkdir -p "$TMP_DIR"
+
+          # 可选严格模式（有失败则 fail）
+          STRICT="${STRICT:-false}"
+          fail_count=0
 
           get_owner_dir() {
             local url="$1"
@@ -74,19 +73,47 @@ jobs:
             fi
           }
 
+          try_download() {
+            local url="$1"; local out="$2"
+            local code
+            # 第一次下载
+            code=$(curl -sL --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              echo "OK  ($code): $url"
+              echo "$url" > "${out}.source"
+              return 0
+            fi
+            echo "Warn ($code): $url"
+
+            # 已知纠错：Loyalsoldier/clash-rules 的 /release/ruleset/ -> /release/
+            if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
+              local alt="${url/\/release\/ruleset\//\/release\/}"
+              echo "Retry with corrected URL: $alt"
+              code=$(curl -sL -o "${out}.download" -w "%{http_code}" "$alt" || true)
+              if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+                echo "OK  ($code): $alt"
+                echo "$alt" > "${out}.source"
+                return 0
+              else
+                echo "Fail($code): $alt"
+              fi
+            fi
+
+            rm -f "${out}.download"
+            return 1
+          }
+
+          # 构建期望文件列表（基于净化后的 URL）
           EXP="${TMP_DIR}/expected_files.list"
           ACT="${TMP_DIR}/actual_files.list"
-          : > "$EXP"
-          : > "$ACT"
+          : > "$EXP"; : > "$ACT"
 
-          # 构建期望文件列表（基于“已净化”的 URL 列表）
           while IFS= read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
             echo "${SOURCE_DIR}/${owner}/${fn}" >> "$EXP"
           done < "$URLS_FILE"
 
-          # 实际文件
           if [ -d "$SOURCE_DIR" ]; then
             find "$SOURCE_DIR" -type f > "$ACT"
           fi
@@ -94,55 +121,36 @@ jobs:
           sort -u "$ACT" -o "$ACT" || true
           sort -u "$EXP" -o "$EXP"
 
-          # 删除不再需要的文件
+          # 删除“孤儿”文件
           comm -23 "$ACT" "$EXP" | while read -r f; do
             [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
           done
 
-          # 拉取并净化规则内容
+          # 拉取并净化
           while IFS= read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
             out="${SOURCE_DIR}/${owner}/${fn}"
 
             echo "Fetch -> ${url}"
-            # 记录 HTTP 状态码，失败则跳过
-            code=$(curl -sL --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
-            if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
-              echo "Warn: HTTP $code for $url. Skip."
-              rm -f "${out}.download"
+            if ! try_download "$url" "$out"; then
+              echo "::warning::Download failed for $url"
+              fail_count=$((fail_count+1))
               continue
             fi
 
-            # 内容净化（适配 mihomo-core）：
-            # - 去 BOM, 去 CRLF
-            # - 若首行是 payload: 则删除
-            # - 去注释行(#/! 开头)与空行
-            # - trim 首尾空白、规范逗号两侧空格
-            # - 保留原格式（裸域名或已带类型行）
+            # 增强版净化器（适配 mihomo-core 的纯文本规则）
+            # - 去 BOM、去 CRLF
+            # - 若首行是 payload: 删除
+            # - 去整行注释与行尾内联注释
+            # - YAML 列表项转纯文本（去掉 "- " 前缀与包裹引号）
+            # - 去中文逗号后的说明
+            # - Trim 与规范逗号空格
+            # - 保留裸域名/原规则行
             awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' "${out}.download" \
             | sed 's/\r$//' \
             | sed '1{/^[[:space:]]*payload:[[:space:]]*$/d;}' \
             | grep -v -E '^[[:space:]]*#|^[[:space:]]*!' \
-            | sed '/^[[:space:]]*$/d' \
-            | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]*,[[:space:]]*/,/g' \
-            > "$out"
-
-            rm -f "${out}.download"
-            echo "Saved: $out"
-          done < "$URLS_FILE"
-
-          # 清空空目录
-          [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type d -empty -delete || true
-
-      - name: Commit Changes (only if any)
-        run: |
-          if [[ -z $(git status -s) ]]; then
-            echo "No changes."
-            exit 0
-          fi
-          git config user.name 'GitHub Actions Bot'
-          git config user.email 'actions@github.com'
-          git add -A
-          git commit -m "chore(daily-sync): Update rule sets for $(date +'%Y-%m-%d')"
-          git push
+            | sed -E 's/[[:space:]]+#.*$//' \
+            | sed '/
+            
