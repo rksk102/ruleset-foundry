@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Sync, Sanitize, and Compile to MRS (Final Stable Binary)
+name: Sync and Sanitize Rule Sets (Stable TXT Version)
 
 on:
   workflow_dispatch:
@@ -11,88 +11,86 @@ jobs:
   sync-job:
     runs-on: ubuntu-latest
     steps:
+      # 步骤一：签出仓库代码
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       # =================================================================
-      # 核心修正：使用一个当前确认有效的预编译二进制文件下载链接
+      # 核心流程：同步并清洗源文件，生成标准化的 TXT 规则集
       # =================================================================
-      - name: Download and Install mrs-generator
+      - name: Sync, Prune, and Sanitize Source Files
         run: |
-          echo "Downloading pre-compiled mrs-generator binary from a new stable source..."
-          # 这个链接指向一个当前可用的、由社区维护的二进制文件
-          curl -sSL https://github.com/xchacha20-poly1305/mrs-generator/releases/download/v0.0.4/mrs-generator-linux-amd64 -o mrs-generator
-          
-          echo "Installing binary..."
-          # 确认下载下来的不是 "Not Found" 文本
-          if grep -q "Not Found" ./mrs-generator; then
-            echo "Error: Download failed, received 'Not Found' page."
-            exit 1
-          fi
-
-          # 赋予执行权限并移动
-          chmod +x ./mrs-generator
-          sudo mv ./mrs-generator /usr/local/bin/mrs-generator
-          
-          echo "Verifying installation..."
-          # 验证工具
-          mrs-generator -h
-
-      # =================================================================
-      # 后续阶段完全不变
-      # =================================================================
-
-      # 阶段一：同步原始规则文件
-      - name: Sync & Prune Source Files
-        run: |
-          echo "### Phase 1: Syncing source files ###"
-          if [ ! -f sources.urls ]; then echo "sources.urls not found, skipping."; exit 0; fi
-          touch expected_files.list && grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); echo "rulesets/${project_name}/${original_filename}" >> expected_files.list; done
-          touch actual_files.list && { [ -d "rulesets" ] && find rulesets -type f > actual_files.list || true; }
-          sort actual_files.list -o actual_files.list && sort expected_files.list -o expected_files.list
-          comm -23 actual_files.list expected_files.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning source: ${file}"; rm "$file"; fi; done
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); target_path="rulesets/${project_name}/${original_filename}"; echo "Syncing source: ${target_path}"; curl -sS -L --create-dirs -o "${target_path}" "${url}"; done
-          [ -d "rulesets" ] && find rulesets -type d -empty -delete || true
-          echo "### Source sync complete. ###"
-
-      # 阶段二：清洗、编译和清理 MRS 文件
-      - name: Sanitize, Compile to MRS & Prune
-        run: |
-          echo "### Phase 2: Sanitizing and Compiling to .mrs ###"
-          MRS_DIR="mrs-rules"
+          echo "### Starting: Sync, Prune, and Sanitize ###"
           SOURCE_DIR="rulesets"
-          touch expected_mrs.list
-          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type f | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|" >> expected_mrs.list; fi
-          touch actual_mrs.list && { [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type f -name "*.mrs" > actual_mrs.list || true; }
-          sort actual_mrs.list -o actual_mrs.list && sort expected_mrs.list -o expected_mrs.list
-          comm -23 actual_mrs.list expected_mrs.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning .mrs: ${file}"; rm "$file"; fi; done
-          if [ -d "$SOURCE_DIR" ]; then
-            find "$SOURCE_DIR" -type f | while read -r source_file_path; do
-              echo "Sanitizing: ${source_file_path}"
-              SANITIZED_TMP_FILE="${source_file_path}.tmp"
-              grep -v -E '^#|^!' "${source_file_path}" | grep -v -E '^\s*$' | while read -r line; do
-                  line=$(echo "$line" | xargs)
-                  if [ -z "$line" ]; then continue; fi
-                  if [[ "$line" == *,* ]]; then
-                      echo "$line" >> "${SANITIZED_TMP_FILE}"
-                  else
-                      echo "DOMAIN-SUFFIX,${line}" >> "${SANITIZED_TMP_FILE}"
-                  fi
-              done
-              mv "${SANITIZED_TMP_FILE}" "${source_file_path}"
-              mrs_file_path=$(echo "$source_file_path" | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|")
-              echo "Compiling: ${source_file_path} -> ${mrs_file_path}"
-              mkdir -p "$(dirname "${mrs_file_path}")"
-              mrs-generator -i "${source_file_path}" -o "${mrs_file_path}"
-            done
-          fi
-          [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type d -empty -delete || true
-          echo "### .mrs compilation complete. ###"
 
-      # 阶段三：提交所有变更
+          # 1. 如果源列表不存在，则直接跳过
+          if [ ! -f sources.urls ]; then
+            echo "sources.urls not found, skipping process."
+            exit 0
+          fi
+
+          # 2. 清理过时的规则文件
+          touch expected_files.list
+          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
+            project_name=$(echo "${url}" | awk -F/ '{print $4}')
+            original_filename=$(basename "${url}")
+            echo "${SOURCE_DIR}/${project_name}/${original_filename}" >> expected_files.list
+          done
+          
+          touch actual_files.list
+          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type f > actual_files.list; fi
+          
+          sort actual_files.list -o actual_files.list
+          sort expected_files.list -o expected_files.list
+          
+          comm -23 actual_files.list expected_files.list | while read -r file; do
+            if [ -n "$file" ]; then echo "Pruning obsolete file: ${file}"; rm "$file"; fi
+          done
+
+          # 3. 拉取、清洗并保存所有规则文件
+          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
+            project_name=$(echo "${url}" | awk -F/ '{print $4}')
+            original_filename=$(basename "${url}")
+            target_path="${SOURCE_DIR}/${project_name}/${original_filename}"
+            
+            echo "Syncing: ${url} -> ${target_path}"
+            # 先下载到一个临时文件
+            curl -sS -L --create-dirs -o "${target_path}.tmp_download" "${url}"
+
+            # 检查下载是否成功
+            if [ ! -s "${target_path}.tmp_download" ]; then
+              echo "Warning: Download failed or file is empty for ${url}. Skipping."
+              rm -f "${target_path}.tmp_download"
+              continue
+            fi
+
+            # 清洗下载的文件，并输出到最终目标路径
+            echo "Sanitizing: ${target_path}"
+            grep -v -E '^#|^!' "${target_path}.tmp_download" | grep -v -E '^\s*$' | while read -r line; do
+                line=$(echo "$line" | xargs)
+                if [ -z "$line" ]; then continue; fi
+                if [[ "$line" == *,* ]]; then
+                    echo "$line"
+                else
+                    echo "DOMAIN-SUFFIX,${line}"
+                fi
+            done > "${target_path}"
+
+            # 删除临时文件
+            rm -f "${target_path}.tmp_download"
+          done
+
+          # 4. 清理空目录
+          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type d -empty -delete; fi
+          echo "### Process complete. ###"
+
+      # =================================================================
+      # 步骤二：提交所有变更
+      # =================================================================
       - name: Commit All Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(auto-sync): Sync, sanitize, and compile"
+          commit_message: "chore(auto-sync): Sync and sanitize rule sets"
           branch: main
-       
+          commit_user_name: "GitHub Actions Bot"
+          commit_user_email: "actions@github.com"
