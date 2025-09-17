@@ -1,4 +1,4 @@
-name: 1. Daily Sync and Sanitize Rules
+name: 1. Daily Sync and Sanitize Rules (mihomo-core)
 
 on:
   workflow_dispatch:
@@ -31,14 +31,13 @@ jobs:
             exit 0
           fi
 
-          # helper: extract owner dir robustly
           get_owner_dir() {
             local url="$1"
             local host=$(echo "$url" | awk -F/ '{print $3}')
             if [ "$host" = "raw.githubusercontent.com" ]; then
               echo "$url" | awk -F/ '{print $4}'
             elif [ "$host" = "cdn.jsdelivr.net" ]; then
-              # pattern: https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
+              # https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
               local p4=$(echo "$url" | awk -F/ '{print $4}')
               if [ "$p4" = "gh" ]; then
                 echo "$url" | awk -F/ '{print $5}'
@@ -50,18 +49,19 @@ jobs:
             fi
           }
 
-          # Build expected file list in tmp (not repo)
           EXP="${TMP_DIR}/expected_files.list"
           ACT="${TMP_DIR}/actual_files.list"
           : > "$EXP"
           : > "$ACT"
 
+          # 生成期望文件列表
           grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
             echo "${SOURCE_DIR}/${owner}/${fn}" >> "$EXP"
           done
 
+          # 实际文件列表
           if [ -d "$SOURCE_DIR" ]; then
             find "$SOURCE_DIR" -type f > "$ACT"
           fi
@@ -69,12 +69,12 @@ jobs:
           sort -u "$ACT" -o "$ACT" || true
           sort -u "$EXP" -o "$EXP"
 
-          # prune obsolete files
+          # 删除已不在 sources.urls 中的“孤儿”文件
           comm -23 "$ACT" "$EXP" | while read -r f; do
             [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
           done
 
-          # fetch and sanitize
+          # 拉取并净化
           grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
@@ -83,7 +83,7 @@ jobs:
             echo "Fetch -> ${out}"
             curl -fSL --create-dirs -o "${out}.download" "$url" || { echo "Warn: download fail $url"; rm -f "${out}.download"; continue; }
 
-            # sanitize: remove BOM, CRLF, drop first payload: if present, drop comments/blank, trim edges, normalize comma spaces, keep original domain lines
+            # 净化：去 BOM、去 CRLF、去首行 payload:、去注释/空行、trim、规范逗号空格；保留裸域名和原规则行
             awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' "${out}.download" \
             | sed 's/\r$//' \
             | sed '1{/^[[:space:]]*payload:[[:space:]]*$/d;}' \
@@ -95,7 +95,7 @@ jobs:
             rm -f "${out}.download"
           done
 
-          # cleanup empty dirs
+          # 清理空目录
           [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type d -empty -delete || true
 
       - name: Commit Changes (only if any)
