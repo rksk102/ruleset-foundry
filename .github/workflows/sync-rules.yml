@@ -1,91 +1,44 @@
-# .github/workflows/sync-rules.yml
-
-name: Sync and Sanitize Rule Sets (Final Perfect Version)
+name: 1. Daily Sync and Sanitize Rules
 
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 21 * * *' # 北京时间每日早晨 5 点
 
+permissions:
+  contents: write
+
 jobs:
   sync-job:
     runs-on: ubuntu-latest
     steps:
-      # 步骤一：签出仓库代码
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # =================================================================
-      # 核心流程：同步并清洗源文件，生成纯净的规则集
-      # =================================================================
       - name: Sync, Prune, and Sanitize Source Files
+        id: sync_and_sanitize
         run: |
           echo "### Starting: Sync, Prune, and Sanitize ###"
           SOURCE_DIR="rulesets"
-
-          if [ ! -f sources.urls ]; then
-            echo "sources.urls not found, skipping process."
-            exit 0
-          fi
-
-          # 1. 清理过时的规则文件 (逻辑不变)
-          touch expected_files.list
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
-            project_name=$(echo "${url}" | awk -F/ '{print $4}')
-            original_filename=$(basename "${url}")
-            echo "${SOURCE_DIR}/${project_name}/${original_filename}" >> expected_files.list
-          done
-          touch actual_files.list
-          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type f > actual_files.list; fi
-          sort actual_files.list -o actual_files.list
-          sort expected_files.list -o expected_files.list
-          comm -23 actual_files.list expected_files.list | while read -r file; do
-            if [ -n "$file" ]; then echo "Pruning obsolete file: ${file}"; rm "$file"; fi
-          done
-
-          # 2. 拉取、清洗并保存所有规则文件
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
-            project_name=$(echo "${url}" | awk -F/ '{print $4}')
-            original_filename=$(basename "${url}")
-            target_path="${SOURCE_DIR}/${project_name}/${original_filename}"
-            
-            echo "Syncing: ${url} -> ${target_path}"
-            curl -sS -L --create-dirs -o "${target_path}.tmp_download" "${url}"
-            if [ ! -s "${target_path}.tmp_download" ]; then
-              echo "Warning: Download failed or file is empty for ${url}. Skipping."
-              rm -f "${target_path}.tmp_download"
-              continue
-            fi
-
-            # --- 核心修改点：增加 payload: 清理 ---
-            echo "Sanitizing (Bare Domain Mode with Payload Pruning): ${target_path}"
-            # 1. 使用 sed 命令，仅当第一行是 'payload:' 时才删除该行
-            # 2. 然后再移除注释和空行
-            # 3. 最后再逐行处理，保留原始格式
-            sed '1{/^payload: *$/d;}' "${target_path}.tmp_download" | \
-            grep -v -E '^#|^!' | \
-            grep -v -E '^\s*$' | \
-            while read -r line; do
-                line=$(echo "$line" | xargs) # 去除行首尾的空格
-                if [ -z "$line" ]; then continue; fi
-                echo "$line"
-            done > "${target_path}"
-            # --- 修改结束 ---
-
-            rm -f "${target_path}.tmp_download"
-          done
-
-          # 3. 清理空目录 (逻辑不变)
+          if [ ! -f sources.urls ]; then echo "sources.urls not found, skipping."; exit 0; fi
+          touch expected_files.list && grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); echo "${SOURCE_DIR}/${project_name}/${original_filename}" >> expected_files.list; done
+          touch actual_files.list && { [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type f > actual_files.list || true; }
+          sort actual_files.list -o actual_files.list && sort expected_files.list -o expected_files.list
+          comm -23 actual_files.list expected_files.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning obsolete file: ${file}"; rm "$file"; fi; done
+          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); target_path="${SOURCE_DIR}/${project_name}/${original_filename}"; curl -sS -L --create-dirs -o "${target_path}.tmp_download" "${url}"; if [ ! -s "${target_path}.tmp_download" ]; then echo "Warning: Download failed for ${url}."; rm -f "${target_path}.tmp_download"; continue; fi; sed '1{/^payload: *$/d;}' "${target_path}.tmp_download" | grep -v -E '^#|^!' | grep -v -E '^\s*$' | while read -r line; do line=$(echo "$line" | xargs); if [ -z "$line" ]; then continue; fi; echo "$line"; done > "${target_path}"; rm -f "${target_path}.tmp_download"; done
           if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type d -empty -delete; fi
           echo "### Process complete. ###"
 
-      # =================================================================
-      # 步骤二：提交所有变更
-      # =================================================================
-      - name: Commit All Changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(auto-sync): Sync and sanitize rule sets (payload pruned)"
-          branch: main
-          commit_user_name: "GitHub Actions Bot"
-          commit_user_email: "actions@github.com"
+      - name: Commit Changes
+        run: |
+          # 检查是否有文件变动
+          if [[ -z $(git status -s) ]]; then
+            echo "No changes to commit."
+          else
+            echo "Changes detected, committing to main branch..."
+            git config --global user.name 'GitHub Actions Bot'
+            git config --global user.email 'actions@github.com'
+            git add .
+            git commit -m "chore(daily-sync): Update rule sets for $(date +'%Y-%m-%d')"
+            git push
+          fi
