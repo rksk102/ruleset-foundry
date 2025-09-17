@@ -8,6 +8,15 @@ SOURCE_DIR="rulesets"
 TMP_DIR="${RUNNER_TEMP:-/tmp}/sync-tmp"
 mkdir -p "$TMP_DIR"
 
+# 退出/中断时清理所有下载残留与空目录（更彻底）
+cleanup() {
+  if [ -d "$SOURCE_DIR" ]; then
+    find "$SOURCE_DIR" -type f \( -name "*.download" -o -name "*.source" \) -delete 2>/dev/null || true
+    find "$SOURCE_DIR" -type d -empty -delete 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 # 1) 预清洗 sources.urls：去 BOM/CR、去行尾内联注释、去首尾空白、过滤空行与整行注释
 if [ ! -f sources.urls ]; then
   echo "sources.urls not found, skip."
@@ -27,7 +36,7 @@ if [ ! -s "$URLS" ]; then
   exit 0
 fi
 
-# 2) 生成净化器（awk），避免 YAML 引号问题
+# 2) 生成净化器（awk）
 SAN_AWK="${TMP_DIR}/sanitize.awk"
 cat > "$SAN_AWK" <<'AWK'
 BEGIN { first=1 }
@@ -102,21 +111,19 @@ try_download() {
   local code
   # 第一次下载
   code=$(curl -sL --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
-  if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+  if [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && [ -s "${out}.download" ]; then
     echo "OK  ($code): $url"
-    echo "$url" > "${out}.source"
     return 0
   fi
   echo "Warn ($code): $url"
 
-  # 已知纠错：Loyalsoldier/clash-rules 的 /release/ruleset/ -> /release/
+  # 已知纠错：/release/ruleset/ -> /release/
   if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
     local alt="${url/\/release\/ruleset\//\/release\/}"
     echo "Retry with corrected URL: $alt"
     code=$(curl -sL -o "${out}.download" -w "%{http_code}" "$alt" || true)
-    if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+    if [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && [ -s "${out}.download" ]; then
       echo "OK  ($code): $alt"
-      echo "$alt" > "${out}.source"
       return 0
     else
       echo "Fail($code): $alt"
@@ -127,7 +134,7 @@ try_download() {
   return 1
 }
 
-# 4) 构建期望文件列表并清理“孤儿”文件
+# 4) 构建期望文件列表并清理“孤儿”文件（全部在临时区处理列表）
 EXP="${TMP_DIR}/expected_files.list"
 ACT="${TMP_DIR}/actual_files.list"
 : > "$EXP"; : > "$ACT"
@@ -172,8 +179,8 @@ while IFS= read -r url; do
   echo "Saved: $out"
 done < "$URLS"
 
-# 6) 清空空目录
-[ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type d -empty -delete || true
+# 6) 清空空目录 + 兜底清理一切残留
+cleanup
 
 # 7) 失败汇总 + 严格模式
 if [ "$fail_count" -gt 0 ]; then
