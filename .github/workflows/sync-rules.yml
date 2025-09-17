@@ -3,10 +3,14 @@ name: 1. Daily Sync and Sanitize Rules
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 21 * * *' # 北京时间每日早晨 5 点
+    - cron: '0 21 * * *'  # 北京时间 05:00
 
 permissions:
   contents: write
+
+concurrency:
+  group: sync-rules
+  cancel-in-progress: true
 
 jobs:
   sync-job:
@@ -16,29 +20,92 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Sync, Prune, and Sanitize Source Files
-        id: sync_and_sanitize
         run: |
-          echo "### Starting: Sync, Prune, and Sanitize ###"
+          set -euo pipefail
           SOURCE_DIR="rulesets"
-          if [ ! -f sources.urls ]; then echo "sources.urls not found, skipping."; exit 0; fi
-          touch expected_files.list && grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); echo "${SOURCE_DIR}/${project_name}/${original_filename}" >> expected_files.list; done
-          touch actual_files.list && { [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type f > actual_files.list || true; }
-          sort actual_files.list -o actual_files.list && sort expected_files.list -o expected_files.list
-          comm -23 actual_files.list expected_files.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning obsolete file: ${file}"; rm "$file"; fi; done
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); target_path="${SOURCE_DIR}/${project_name}/${original_filename}"; curl -sS -L --create-dirs -o "${target_path}.tmp_download" "${url}"; if [ ! -s "${target_path}.tmp_download" ]; then echo "Warning: Download failed for ${url}."; rm -f "${target_path}.tmp_download"; continue; fi; sed '1{/^payload: *$/d;}' "${target_path}.tmp_download" | grep -v -E '^#|^!' | grep -v -E '^\s*$' | while read -r line; do line=$(echo "$line" | xargs); if [ -z "$line" ]; then continue; fi; echo "$line"; done > "${target_path}"; rm -f "${target_path}.tmp_download"; done
-          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type d -empty -delete; fi
-          echo "### Process complete. ###"
+          TMP_DIR="${RUNNER_TEMP}/sync-tmp"
+          mkdir -p "$TMP_DIR"
 
-      - name: Commit Changes
-        run: |
-          # 检查是否有文件变动
-          if [[ -z $(git status -s) ]]; then
-            echo "No changes to commit."
-          else
-            echo "Changes detected, committing to main branch..."
-            git config --global user.name 'GitHub Actions Bot'
-            git config --global user.email 'actions@github.com'
-            git add .
-            git commit -m "chore(daily-sync): Update rule sets for $(date +'%Y-%m-%d')"
-            git push
+          if [ ! -f sources.urls ]; then
+            echo "sources.urls not found, skip."
+            exit 0
           fi
+
+          # helper: extract owner dir robustly
+          get_owner_dir() {
+            local url="$1"
+            local host=$(echo "$url" | awk -F/ '{print $3}')
+            if [ "$host" = "raw.githubusercontent.com" ]; then
+              echo "$url" | awk -F/ '{print $4}'
+            elif [ "$host" = "cdn.jsdelivr.net" ]; then
+              # pattern: https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
+              local p4=$(echo "$url" | awk -F/ '{print $4}')
+              if [ "$p4" = "gh" ]; then
+                echo "$url" | awk -F/ '{print $5}'
+              else
+                echo "$host"
+              fi
+            else
+              echo "$host"
+            fi
+          }
+
+          # Build expected file list in tmp (not repo)
+          EXP="${TMP_DIR}/expected_files.list"
+          ACT="${TMP_DIR}/actual_files.list"
+          : > "$EXP"
+          : > "$ACT"
+
+          grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
+            owner="$(get_owner_dir "$url")"
+            fn="$(basename "$url")"
+            echo "${SOURCE_DIR}/${owner}/${fn}" >> "$EXP"
+          done
+
+          if [ -d "$SOURCE_DIR" ]; then
+            find "$SOURCE_DIR" -type f > "$ACT"
+          fi
+
+          sort -u "$ACT" -o "$ACT" || true
+          sort -u "$EXP" -o "$EXP"
+
+          # prune obsolete files
+          comm -23 "$ACT" "$EXP" | while read -r f; do
+            [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
+          done
+
+          # fetch and sanitize
+          grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
+            owner="$(get_owner_dir "$url")"
+            fn="$(basename "$url")"
+            out="${SOURCE_DIR}/${owner}/${fn}"
+
+            echo "Fetch -> ${out}"
+            curl -fSL --create-dirs -o "${out}.download" "$url" || { echo "Warn: download fail $url"; rm -f "${out}.download"; continue; }
+
+            # sanitize: remove BOM, CRLF, drop first payload: if present, drop comments/blank, trim edges, normalize comma spaces, keep original domain lines
+            awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' "${out}.download" \
+            | sed 's/\r$//' \
+            | sed '1{/^[[:space:]]*payload:[[:space:]]*$/d;}' \
+            | grep -v -E '^[[:space:]]*#|^[[:space:]]*!' \
+            | sed '/^[[:space:]]*$/d' \
+            | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]*,[[:space:]]*/,/g' \
+            > "$out"
+
+            rm -f "${out}.download"
+          done
+
+          # cleanup empty dirs
+          [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type d -empty -delete || true
+
+      - name: Commit Changes (only if any)
+        run: |
+          if [[ -z $(git status -s) ]]; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
+          git add -A
+          git commit -m "chore(daily-sync): Update rule sets for $(date +'%Y-%m-%d')"
+          git push
