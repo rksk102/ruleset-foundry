@@ -39,7 +39,7 @@ jobs:
         with:
           tag_name: rules-${{ steps.date.outputs.today }}
           name: Daily Rules Update - ${{ steps.date.outputs.today }}
-          body: Automated daily release of processed rule sets.
+          body: Automated daily release of processed rule sets for mihomo-core.
           files: rulesets-${{ steps.date.outputs.today }}.zip
 
       - name: Prune Releases Older Than 3 Days (by createdAt)
@@ -49,16 +49,14 @@ jobs:
           set -euo pipefail
           cutoff_ts=$(date -d '3 days ago' +%s)
 
-          # List releases with tag and createdAt; iterate and delete old ones
           gh release list --limit 100 --json tagName,createdAt | \
           jq -r '.[] | [.tagName, .createdAt] | @tsv' | \
           while IFS=$'\t' read -r tag created; do
-            # convert ISO time to epoch
             rel_ts=$(date -d "$created" +%s)
             if [ "$rel_ts" -lt "$cutoff_ts" ]; then
               echo "Deleting old release: $tag ($created)"
               gh release delete "$tag" --yes
-              # delete git tag via API
+              # 删除 Git Tag
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
             fi
           done
