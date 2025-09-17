@@ -26,5 +26,5 @@ jobs:
       - name: Run sync script
         shell: bash
         env:
-          STRICT: "false"   # 需任一源失败即终止可改为 "true"
+          STRICT: "false"   # 任一源失败就终止可改 "true"
         run: scripts/sync.sh
