@@ -1,0 +1,53 @@
+name: 2. Create Daily Release and Prune Old Ones
+
+on:
+  # 当有推送到主分支，并且 rulesets 目录有变化时，自动触发
+  push:
+    branches:
+      - main
+    paths:
+      - 'rulesets/**'
+  # 允许手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Package and Create Daily Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rules-${{ env.TODAY }}
+          name: Daily Rules Update - ${{ env.TODAY }}
+          body: Automated daily release of processed rule sets.
+          files: rulesets.zip
+        env:
+          TODAY: $(date +'%Y-%m-%d')
+          PRE_RELEASE_COMMAND: |
+            echo "Packaging rule sets..."
+            cd rulesets && zip -r ../rulesets.zip .
+
+      - name: Prune Releases Older Than 3 Days
+        if: always()
+        run: |
+          echo "Pruning old releases..."
+          cutoff_ts=$(date -d '3 days ago' +%s)
+          gh release list --limit 100 --json tagName,createdAt -q '.[].tagName' | while read tag; do
+            if [[ $tag == rules-* ]]; then
+              release_date=$(echo $tag | sed 's/rules-//')
+              release_ts=$(date -d "$release_date" +%s)
+              if [[ $release_ts -lt $cutoff_ts ]]; then
+                echo "Deleting old release with tag: $tag"
+                gh release delete "$tag" --yes
+                gh repo delete-tag "$tag"
+              fi
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
