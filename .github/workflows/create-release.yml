@@ -49,25 +49,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 确保 jq 可用（一般 ubuntu-latest 自带，如果没有则安装）
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y
             sudo apt-get install -y jq
           fi
-
           cutoff_ts=$(date -d '3 days ago' +%s)
-
-          # 列出 releases 的 tagName 和 createdAt，删除 3 天前的
           gh release list --limit 100 --json tagName,createdAt \
           | jq -r '.[] | [.tagName, .createdAt] | @tsv' \
           | while IFS=$'\t' read -r tag created; do
-              # 跳过空 tag
               [ -z "$tag" ] && continue
               rel_ts=$(date -d "$created" +%s || echo 0)
               if [ "$rel_ts" -lt "$cutoff_ts" ]; then
                 echo "Deleting old release: $tag ($created)"
                 gh release delete "$tag" --yes || true
-                # 删除 git tag
                 gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
               fi
             done
