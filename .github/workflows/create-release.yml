@@ -1,17 +1,18 @@
 name: 2. Create Daily Release and Prune Old Ones
 
 on:
-  # 当有推送到主分支，并且 rulesets 目录有变化时，自动触发
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
       - 'rulesets/**'
-  # 允许手动触发
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: create-release
+  cancel-in-progress: true
 
 jobs:
   release-job:
@@ -20,34 +21,44 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Package and Create Daily Release
+      - name: Compute Date
+        id: date
+        run: echo "today=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Package rule sets
+        run: |
+          set -e
+          if [ ! -d rulesets ]; then
+            echo "No rulesets dir, abort release."
+            exit 1
+          fi
+          zip -r "rulesets-${{ steps.date.outputs.today }}.zip" rulesets
+
+      - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rules-${{ env.TODAY }}
-          name: Daily Rules Update - ${{ env.TODAY }}
+          tag_name: rules-${{ steps.date.outputs.today }}
+          name: Daily Rules Update - ${{ steps.date.outputs.today }}
           body: Automated daily release of processed rule sets.
-          files: rulesets.zip
-        env:
-          TODAY: $(date +'%Y-%m-%d')
-          PRE_RELEASE_COMMAND: |
-            echo "Packaging rule sets..."
-            cd rulesets && zip -r ../rulesets.zip .
+          files: rulesets-${{ steps.date.outputs.today }}.zip
 
-      - name: Prune Releases Older Than 3 Days
-        if: always()
-        run: |
-          echo "Pruning old releases..."
-          cutoff_ts=$(date -d '3 days ago' +%s)
-          gh release list --limit 100 --json tagName,createdAt -q '.[].tagName' | while read tag; do
-            if [[ $tag == rules-* ]]; then
-              release_date=$(echo $tag | sed 's/rules-//')
-              release_ts=$(date -d "$release_date" +%s)
-              if [[ $release_ts -lt $cutoff_ts ]]; then
-                echo "Deleting old release with tag: $tag"
-                gh release delete "$tag" --yes
-                gh repo delete-tag "$tag"
-              fi
-            fi
-          done
+      - name: Prune Releases Older Than 3 Days (by createdAt)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cutoff_ts=$(date -d '3 days ago' +%s)
+
+          # List releases with tag and createdAt; iterate and delete old ones
+          gh release list --limit 100 --json tagName,createdAt | \
+          jq -r '.[] | [.tagName, .createdAt] | @tsv' | \
+          while IFS=$'\t' read -r tag created; do
+            # convert ISO time to epoch
+            rel_ts=$(date -d "$created" +%s)
+            if [ "$rel_ts" -lt "$cutoff_ts" ]; then
+              echo "Deleting old release: $tag ($created)"
+              gh release delete "$tag" --yes
+              # delete git tag via API
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
+            fi
+          done
