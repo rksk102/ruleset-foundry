@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Sync Sources and Compile to MRS
+name: Sync, Sanitize, and Compile to MRS
 
 on:
   workflow_dispatch:
@@ -8,31 +8,27 @@ on:
     - cron: '0 21 * * *' # 北京时间每日早晨 5 点
 
 jobs:
-  sync-and-compile-job:
+  sync-job:
     runs-on: ubuntu-latest
     steps:
-      # 步骤一：签出仓库代码
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 步骤二：安装 Go 和 mrs-generator 工具
       - name: Setup Go Environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21' # 指定一个 Go 版本
+          go-version: '1.21'
       - name: Install mrs-generator
         run: |
           go install github.com/MihomoDev/mrs-generator@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # =================================================================
-      # 阶段一：同步和清理原始规则文件 (.txt, .list, etc.)
-      # =================================================================
+      # 阶段一：同步原始规则文件
       - name: Sync & Prune Source Files
         run: |
+          # 这部分逻辑与之前完全相同，仅负责下载和初步清理
           echo "### Phase 1: Syncing source files ###"
           if [ ! -f sources.urls ]; then echo "sources.urls not found, skipping."; exit 0; fi
-          # 这部分逻辑与之前完全相同，负责维护 rulesets/ 目录
           touch expected_files.list && grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); echo "rulesets/${project_name}/${original_filename}" >> expected_files.list; done
           touch actual_files.list && { [ -d "rulesets" ] && find rulesets -type f > actual_files.list || true; }
           sort actual_files.list -o actual_files.list && sort expected_files.list -o expected_files.list
@@ -41,46 +37,61 @@ jobs:
           [ -d "rulesets" ] && find rulesets -type d -empty -delete || true
           echo "### Source sync complete. ###"
 
-      # =================================================================
-      # 阶段二：编译生成和清理 MRS 文件 (.mrs)
-      # =================================================================
-      - name: Compile to MRS & Prune
+      # 阶段二：清洗、编译和清理 MRS 文件
+      - name: Sanitize, Compile to MRS & Prune
         run: |
-          echo "### Phase 2: Compiling to .mrs ###"
+          echo "### Phase 2: Sanitizing and Compiling to .mrs ###"
           MRS_DIR="mrs-rules"
           SOURCE_DIR="rulesets"
 
-          # 1. 清理过时的 .mrs 文件
+          # 1. 清理过时的 .mrs 文件 (逻辑不变)
           touch expected_mrs.list
-          if [ -d "$SOURCE_DIR" ]; then
-            find "$SOURCE_DIR" -type f | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|" >> expected_mrs.list
-          fi
+          if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type f | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|" >> expected_mrs.list; fi
           touch actual_mrs.list && { [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type f -name "*.mrs" > actual_mrs.list || true; }
           sort actual_mrs.list -o actual_mrs.list && sort expected_mrs.list -o expected_mrs.list
           comm -23 actual_mrs.list expected_mrs.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning .mrs: ${file}"; rm "$file"; fi; done
 
-          # 2. 遍历所有源文件，并编译成 .mrs 格式
+          # 2. 遍历所有源文件，进行清洗，然后编译
           if [ -d "$SOURCE_DIR" ]; then
             find "$SOURCE_DIR" -type f | while read -r source_file_path; do
+              
+              # --- 核心：清洗和标准化 ---
+              echo "Sanitizing: ${source_file_path}"
+              SANITIZED_TMP_FILE="${source_file_path}.tmp"
+              # 1. 移除注释(#, !)和空行/空白行
+              # 2. 逐行处理：没有逗号的行，自动添加 'DOMAIN-SUFFIX,' 前缀
+              grep -v -E '^#|^!' "${source_file_path}" | grep -v -E '^\s*$' | while read -r line; do
+                  line=$(echo "$line" | xargs) # 去除行首尾的空格
+                  if [ -z "$line" ]; then continue; fi
+
+                  if [[ "$line" == *,* ]]; then
+                      echo "$line" >> "${SANITIZED_TMP_FILE}"
+                  else
+                      echo "DOMAIN-SUFFIX,${line}" >> "${SANITIZED_TMP_FILE}"
+                  fi
+              done
+              # 用清洗过的文件替换原文件
+              mv "${SANITIZED_TMP_FILE}" "${source_file_path}"
+              # --- 清洗结束 ---
+
+              # --- 编译 ---
               mrs_file_path=$(echo "$source_file_path" | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|")
               echo "Compiling: ${source_file_path} -> ${mrs_file_path}"
               mkdir -p "$(dirname "${mrs_file_path}")"
-              # 调用编译器
               mrs-generator -i "${source_file_path}" -o "${mrs_file_path}"
+              # --- 编译结束 ---
             done
           fi
 
-          # 3. 清理 .mrs 的空目录
+          # 3. 清理 .mrs 的空目录 (逻辑不变)
           [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type d -empty -delete || true
           echo "### .mrs compilation complete. ###"
 
-      # =================================================================
       # 阶段三：提交所有变更
-      # =================================================================
       - name: Commit All Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(auto-sync): Sync sources and compile to MRS"
+          commit_message: "chore(auto-sync): Sync, sanitize, and compile"
           branch: main
           commit_user_name: "GitHub Actions Bot"
           commit_user_email: "actions@github.com"
