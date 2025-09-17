@@ -1,9 +1,9 @@
-name: 1. Daily Sync and Sanitize Rules (mihomo-core, awk-sanitizer)
+name: "1. Daily Sync and Sanitize Rules (mihomo-core, awk-sanitizer)"
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 21 * * *'  # 北京时间 05:00
+    - cron: "0 21 * * *"  # 北京时间 05:00
 
 permissions:
   contents: write
@@ -19,19 +19,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 预清洗 sources.urls，去 BOM/CR/尾注释/空行
+      # 预清洗 sources.urls，去 BOM/CR/尾注释/空行，并把结果路径放入 GITHUB_ENV 供后续步骤使用
       - name: Build sanitized URL list
-        id: build_urls
+        shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f sources.urls ] ; then
-            echo "sources.urls not found, skip."
+          if [ ! -f sources.urls ]; then
+            echo "NO_URLS=true" >> "$GITHUB_ENV"
             exit 0
           fi
+
           TMP_DIR="${RUNNER_TEMP}/sync-tmp"
           mkdir -p "$TMP_DIR"
           URLS="${TMP_DIR}/urls.cleaned"
-          : > "$URLS"
 
           awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
           | sed 's/\r$//' \
@@ -40,14 +40,23 @@ jobs:
           | grep -v -E '^#|^$' \
           > "$URLS"
 
-          echo "sanitized_urls_file=$URLS" >> "$GITHUB_OUTPUT"
+          if [ ! -s "$URLS" ]; then
+            echo "NO_URLS=true" >> "$GITHUB_ENV"
+          fi
+
+          echo "URLS_FILE=$URLS" >> "$GITHUB_ENV"
 
       - name: Sync, Prune, and Sanitize Rule Files
+        if: env.NO_URLS != 'true'
+        shell: bash
+        env:
+          STRICT: "false"  # 若需任一源失败即终止，可设为 "true"
         run: |
           set -euo pipefail
+
           SOURCE_DIR="rulesets"
-          URLS_FILE="${{ steps.build_urls.outputs.sanitized_urls_file }}"
-          if [ -z "${URLS_FILE:-}" ] || [ ! -s "${URLS_FILE}" ]; then
+          URLS_FILE="${URLS_FILE:-}"
+          if [ -z "$URLS_FILE" ] || [ ! -s "$URLS_FILE" ]; then
             echo "No sanitized URLs. Skip sync."
             exit 0
           fi
@@ -55,15 +64,13 @@ jobs:
           TMP_DIR="${RUNNER_TEMP}/sync-tmp"
           mkdir -p "$TMP_DIR"
 
-          # 可选严格模式（有失败则 fail）
-          STRICT="${STRICT:-false}"
           fail_count=0
 
-          # 生成净化器 awk 脚本，避免引号冲突
+          # 生成净化器 awk 脚本，集中处理所有清洗规则，避免引号冲突
           cat > "${TMP_DIR}/sanitize.awk" <<'AWK'
 BEGIN { first=1 }
 {
-  # 去 BOM、处理首行 payload:
+  # 首行：去 BOM、去 CR、若为 payload: 则删除该行
   if (first) {
     sub(/^\xEF\xBB\xBF/, "")
     sub(/\r$/, "")
@@ -75,15 +82,15 @@ BEGIN { first=1 }
 
   line = $0
 
-  # 整行注释检测（去首空格后以 # 或 ! 开头）
+  # 整行注释（去首空格后以 # 或 ! 开头）
   tmp = line
   sub(/^[[:space:]]+/, "", tmp)
   if (tmp ~ /^#/ || tmp ~ /^!/) next
 
-  # 去行尾内联注释（空白 + # 之后）
+  # 行尾内联注释（空白 + # 之后）
   sub(/[[:space:]]+#.*$/, "", line)
 
-  # YAML 列表项前缀 -
+  # YAML 列表项前缀 "- "
   sub(/^[[:space:]]*-[[:space:]]*/, "", line)
 
   # 去包裹引号
@@ -139,7 +146,7 @@ AWK
             fi
             echo "Warn ($code): $url"
 
-            # 已知纠错：/release/ruleset/ -> /release/
+            # 已知纠错：Loyalsoldier/clash-rules 的 /release/ruleset/ -> /release/
             if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
               local alt="${url/\/release\/ruleset\//\/release\/}"
               echo "Retry with corrected URL: $alt"
@@ -193,7 +200,7 @@ AWK
               continue
             fi
 
-            # 使用 awk 净化器
+            # 使用 awk 净化器（适配 mihomo-core）
             awk -f "${TMP_DIR}/sanitize.awk" "${out}.download" > "$out"
             rm -f "${out}.download"
             echo "Saved: $out"
@@ -212,6 +219,7 @@ AWK
           fi
 
       - name: Commit Changes (only if any)
+        shell: bash
         run: |
           if [[ -z $(git status -s) ]]; then
             echo "No changes."
