@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Ultimate Auto-Sync Rules (with Pruning)
+name: Sync Sources and Compile to MRS
 
 on:
   workflow_dispatch:
@@ -8,85 +8,79 @@ on:
     - cron: '0 21 * * *' # 北京时间每日早晨 5 点
 
 jobs:
-  sync-rules-job:
+  sync-and-compile-job:
     runs-on: ubuntu-latest
     steps:
       # 步骤一：签出仓库代码
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 步骤二：清理过时的规则文件
-      - name: Prune Obsolete Rules
+      # 步骤二：安装 Go 和 mrs-generator 工具
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # 指定一个 Go 版本
+      - name: Install mrs-generator
         run: |
-          echo "Starting pruning process..."
-          # 检查配置文件是否存在，如果不存在则跳过
-          if [ ! -f sources.urls ]; then
-            echo "sources.urls not found, skipping prune."
-            exit 0
-          fi
+          go install github.com/MihomoDev/mrs-generator@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-          # 1. 生成一份期望存在的文件列表
-          touch expected_files.list
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
-            project_name=$(echo "${url}" | awk -F/ '{print $4}')
-            original_filename=$(basename "${url}")
-            new_filename="${original_filename%.*}.list"
-            target_path="rulesets/${project_name}/${new_filename}"
-            echo "${target_path}" >> expected_files.list
-          done
-          
-          # 2. 生成一份当前实际存在的文件列表
-          #    -type f 表示只查找文件
-          #    -name "*.list" 确保我们只处理规则文件
-          touch actual_files.list
-          if [ -d "rulesets" ]; then
-            find rulesets -type f -name "*.list" > actual_files.list
-          fi
-
-          # 3. 对比两个列表，找出需要删除的文件
-          #    comm -23 会找出只存在于第一个文件（actual）而不存在于第二个文件（expected）的行
-          sort actual_files.list -o actual_files.list
-          sort expected_files.list -o expected_files.list
-          
-          comm -23 actual_files.list expected_files.list | while read -r file_to_delete; do
-            if [ -n "$file_to_delete" ]; then
-              echo "Pruning obsolete file: ${file_to_delete}"
-              rm "$file_to_delete"
-            fi
-          done
-
-          # 4. 如果有空目录，也可以顺便清理（可选，但推荐）
-          if [ -d "rulesets" ]; then
-            find rulesets -type d -empty -delete
-          fi
-
-          echo "Pruning process finished."
-
-      # 步骤三：拉取并更新规则文件
-      - name: Fetch and Update Rules from URL List
+      # =================================================================
+      # 阶段一：同步和清理原始规则文件 (.txt, .list, etc.)
+      # =================================================================
+      - name: Sync & Prune Source Files
         run: |
-          echo "Starting fetch/update process..."
-          if [ ! -f sources.urls ]; then
-            echo "sources.urls not found, skipping fetch."
-            exit 0
+          echo "### Phase 1: Syncing source files ###"
+          if [ ! -f sources.urls ]; then echo "sources.urls not found, skipping."; exit 0; fi
+          # 这部分逻辑与之前完全相同，负责维护 rulesets/ 目录
+          touch expected_files.list && grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); echo "rulesets/${project_name}/${original_filename}" >> expected_files.list; done
+          touch actual_files.list && { [ -d "rulesets" ] && find rulesets -type f > actual_files.list || true; }
+          sort actual_files.list -o actual_files.list && sort expected_files.list -o expected_files.list
+          comm -23 actual_files.list expected_files.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning source: ${file}"; rm "$file"; fi; done
+          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do project_name=$(echo "${url}" | awk -F/ '{print $4}'); original_filename=$(basename "${url}"); target_path="rulesets/${project_name}/${original_filename}"; echo "Syncing source: ${target_path}"; curl -sS -L --create-dirs -o "${target_path}" "${url}"; done
+          [ -d "rulesets" ] && find rulesets -type d -empty -delete || true
+          echo "### Source sync complete. ###"
+
+      # =================================================================
+      # 阶段二：编译生成和清理 MRS 文件 (.mrs)
+      # =================================================================
+      - name: Compile to MRS & Prune
+        run: |
+          echo "### Phase 2: Compiling to .mrs ###"
+          MRS_DIR="mrs-rules"
+          SOURCE_DIR="rulesets"
+
+          # 1. 清理过时的 .mrs 文件
+          touch expected_mrs.list
+          if [ -d "$SOURCE_DIR" ]; then
+            find "$SOURCE_DIR" -type f | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|" >> expected_mrs.list
+          fi
+          touch actual_mrs.list && { [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type f -name "*.mrs" > actual_mrs.list || true; }
+          sort actual_mrs.list -o actual_mrs.list && sort expected_mrs.list -o expected_mrs.list
+          comm -23 actual_mrs.list expected_mrs.list | while read -r file; do if [ -n "$file" ]; then echo "Pruning .mrs: ${file}"; rm "$file"; fi; done
+
+          # 2. 遍历所有源文件，并编译成 .mrs 格式
+          if [ -d "$SOURCE_DIR" ]; then
+            find "$SOURCE_DIR" -type f | while read -r source_file_path; do
+              mrs_file_path=$(echo "$source_file_path" | sed "s|^$SOURCE_DIR/|$MRS_DIR/|; s|\.[^.]*$|.mrs|")
+              echo "Compiling: ${source_file_path} -> ${mrs_file_path}"
+              mkdir -p "$(dirname "${mrs_file_path}")"
+              # 调用编译器
+              mrs-generator -i "${source_file_path}" -o "${mrs_file_path}"
+            done
           fi
 
-          grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
-            project_name=$(echo "${url}" | awk -F/ '{print $4}')
-            original_filename=$(basename "${url}")
-            new_filename="${original_filename%.*}.list"
-            target_path="rulesets/${project_name}/${new_filename}"
-            
-            echo "Syncing: ${target_path}"
-            curl -sS -L --create-dirs -o "${target_path}" "${url}"
-          done
-          echo "Fetch/update process finished."
+          # 3. 清理 .mrs 的空目录
+          [ -d "$MRS_DIR" ] && find "$MRS_DIR" -type d -empty -delete || true
+          echo "### .mrs compilation complete. ###"
 
-      # 步骤四：自动提交所有变更（包括新增、修改和删除）
-      - name: Commit and Push Changes
+      # =================================================================
+      # 阶段三：提交所有变更
+      # =================================================================
+      - name: Commit All Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(rules): Daily sync from URL list (incl. pruning)"
+          commit_message: "chore(auto-sync): Sync sources and compile to MRS"
           branch: main
           commit_user_name: "GitHub Actions Bot"
           commit_user_email: "actions@github.com"
