@@ -1,0 +1,55 @@
+# .github/workflows/sync-rules.yml
+
+name: Sync Upstream Rulesets
+
+on:
+  # 1. 允许手动触发
+  workflow_dispatch:
+  # 2. 每天北京时间早上 5 点自动执行一次 (UTC 时间是前一天的 21:00)
+  schedule:
+    - cron: '0 21 * * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤一：签出你的仓库代码
+      # 这样 workflow 才能访问你的仓库文件
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 步骤二：创建存放规则的目录
+      # -p 参数确保如果目录已存在，也不会报错
+      - name: Create directories for rules
+        run: |
+          mkdir -p rulesets/Loyalsoldier
+          mkdir -p rulesets/blackmatrix7
+
+      # 步骤三：拉取上游规则文件
+      # 使用 curl 命令下载文件，-o 参数指定输出路径和文件名
+      - name: Fetch rules from Loyalsoldier
+        run: |
+          curl -o rulesets/Loyalsoldier/reject.list https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/reject.txt
+          curl -o rulesets/Loyalsoldier/streaming.list https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/streaming.txt
+          # 你可以根据需要添加更多...
+          # curl -o rulesets/Loyalsoldier/social.list https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/social.txt
+
+      - name: Fetch rules from blackmatrix7
+        run: |
+          curl -o rulesets/blackmatrix7/tiktok.list https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.list
+          curl -o rulesets/blackmatrix7/bilibili.list https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Bilibili/Bilibili.list
+          # 你可以根据需要添加更多...
+
+      # 步骤四：提交变更
+      # 使用一个现成的 action 来自动提交所有变动，非常方便
+      - name: Commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(rules): Auto-sync upstream rulesets"
+          # 可选：如果你想提交到一个特定的分支
+          # branch: main
+          # 可选：添加所有文件，包括未跟踪的文件
+          file_pattern: 'rulesets/**/*.list'
+          commit_user_name: "GitHub Actions"
+          commit_user_email: "actions@github.com"
+          commit_author: "GitHub Actions <actions@github.com>"
