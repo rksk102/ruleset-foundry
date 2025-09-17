@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Sync, Sanitize, and Compile to MRS (Stable Binary)
+name: Sync, Sanitize, and Compile to MRS (Stable Binary v2)
 
 on:
   workflow_dispatch:
@@ -15,29 +15,25 @@ jobs:
         uses: actions/checkout@v4
 
       # =================================================================
-      # 核心修正：直接下载并安装预编译的 mrs-generator 二进制文件
+      # 核心修正：不再解压，直接处理二进制文件
       # =================================================================
       - name: Download and Install mrs-generator
         run: |
-          echo "Downloading pre-compiled mrs-generator..."
-          # 从一个可靠的社区fork的Release页面下载二进制文件
-          # 我们选择适用于 Actions 环境 (linux-amd64) 的版本
-          curl -sSL https://github.com/leaper-one/mrs-generator/releases/download/v0.0.3/mrs-generator-linux-amd64.tar.gz -o mrs-generator.tar.gz
+          echo "Downloading pre-compiled mrs-generator binary..."
+          # 下载文件，并直接将其命名为 mrs-generator
+          curl -sSL https://github.com/leaper-one/mrs-generator/releases/download/v0.0.3/mrs-generator-linux-amd64 -o mrs-generator
           
-          echo "Extracting and installing..."
-          # 解压
-          tar -xzf mrs-generator.tar.gz
-          
-          # 赋予执行权限并移动到系统路径下，使其全局可用
+          echo "Installing binary..."
+          # 不再需要解压！直接赋予执行权限并移动
           chmod +x ./mrs-generator
           sudo mv ./mrs-generator /usr/local/bin/mrs-generator
           
           echo "Verifying installation..."
-          # 验证一下工具是否能正常工作
+          # 验证工具是否能正常工作
           mrs-generator -h
 
       # =================================================================
-      # 后续阶段完全不变，因为 mrs-generator 命令现在已经可用
+      # 后续阶段完全不变
       # =================================================================
 
       # 阶段一：同步原始规则文件
@@ -94,4 +90,4 @@ jobs:
           commit_message: "chore(auto-sync): Sync, sanitize, and compile"
           branch: main
           commit_user_name: "GitHub Actions Bot"
-  
+          commit_user_email: "actions@github.com"
