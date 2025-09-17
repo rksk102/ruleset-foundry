@@ -1,4 +1,4 @@
-name: 1. Daily Sync and Sanitize Rules (mihomo-core)
+name: 1. Daily Sync and Sanitize Rules (mihomo-core, robust)
 
 on:
   workflow_dispatch:
@@ -19,17 +19,42 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Sync, Prune, and Sanitize Source Files
+      - name: Build sanitized URL list
+        id: build_urls
         run: |
           set -euo pipefail
-          SOURCE_DIR="rulesets"
-          TMP_DIR="${RUNNER_TEMP}/sync-tmp"
-          mkdir -p "$TMP_DIR"
-
           if [ ! -f sources.urls ]; then
             echo "sources.urls not found, skip."
             exit 0
           fi
+          TMP_DIR="${RUNNER_TEMP}/sync-tmp"
+          mkdir -p "$TMP_DIR"
+          URLS="${TMP_DIR}/urls.cleaned"
+          : > "$URLS"
+
+          # 逐行净化 sources.urls：
+          # - 去 BOM（首行）
+          # - 去 CR（Windows 行尾）
+          # - 去首尾空格
+          # - 去行尾注释：空格后跟 # 及其后续内容
+          # - 过滤空行和以 # 开头的纯注释行
+          awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
+          | sed 's/\r$//' \
+          | sed -E 's/[[:space:]]+#.*$//' \
+          | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+          | grep -v -E '^#|^$' \
+          > "$URLS"
+
+          echo "sanitized_urls_file=$URLS" >> $GITHUB_OUTPUT
+
+      - name: Sync, Prune, and Sanitize Rule Files
+        if: steps.build_urls.outputs.sanitized_urls_file != ''
+        run: |
+          set -euo pipefail
+          SOURCE_DIR="rulesets"
+          URLS_FILE="${{ steps.build_urls.outputs.sanitized_urls_file }}"
+          TMP_DIR="${RUNNER_TEMP}/sync-tmp"
+          mkdir -p "$TMP_DIR"
 
           get_owner_dir() {
             local url="$1"
@@ -54,14 +79,14 @@ jobs:
           : > "$EXP"
           : > "$ACT"
 
-          # 生成期望文件列表
-          grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
+          # 构建期望文件列表（基于“已净化”的 URL 列表）
+          while IFS= read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
             echo "${SOURCE_DIR}/${owner}/${fn}" >> "$EXP"
-          done
+          done < "$URLS_FILE"
 
-          # 实际文件列表
+          # 实际文件
           if [ -d "$SOURCE_DIR" ]; then
             find "$SOURCE_DIR" -type f > "$ACT"
           fi
@@ -69,21 +94,32 @@ jobs:
           sort -u "$ACT" -o "$ACT" || true
           sort -u "$EXP" -o "$EXP"
 
-          # 删除已不在 sources.urls 中的“孤儿”文件
+          # 删除不再需要的文件
           comm -23 "$ACT" "$EXP" | while read -r f; do
             [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
           done
 
-          # 拉取并净化
-          grep -v '^#' sources.urls | grep -v '^[[:space:]]*$' | while read -r url; do
+          # 拉取并净化规则内容
+          while IFS= read -r url; do
             owner="$(get_owner_dir "$url")"
             fn="$(basename "$url")"
             out="${SOURCE_DIR}/${owner}/${fn}"
 
-            echo "Fetch -> ${out}"
-            curl -fSL --create-dirs -o "${out}.download" "$url" || { echo "Warn: download fail $url"; rm -f "${out}.download"; continue; }
+            echo "Fetch -> ${url}"
+            # 记录 HTTP 状态码，失败则跳过
+            code=$(curl -sL --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
+            if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+              echo "Warn: HTTP $code for $url. Skip."
+              rm -f "${out}.download"
+              continue
+            fi
 
-            # 净化：去 BOM、去 CRLF、去首行 payload:、去注释/空行、trim、规范逗号空格；保留裸域名和原规则行
+            # 内容净化（适配 mihomo-core）：
+            # - 去 BOM, 去 CRLF
+            # - 若首行是 payload: 则删除
+            # - 去注释行(#/! 开头)与空行
+            # - trim 首尾空白、规范逗号两侧空格
+            # - 保留原格式（裸域名或已带类型行）
             awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' "${out}.download" \
             | sed 's/\r$//' \
             | sed '1{/^[[:space:]]*payload:[[:space:]]*$/d;}' \
@@ -93,9 +129,10 @@ jobs:
             > "$out"
 
             rm -f "${out}.download"
-          done
+            echo "Saved: $out"
+          done < "$URLS_FILE"
 
-          # 清理空目录
+          # 清空空目录
           [ -d "$SOURCE_DIR" ] && find "$SOURCE_DIR" -type d -empty -delete || true
 
       - name: Commit Changes (only if any)
