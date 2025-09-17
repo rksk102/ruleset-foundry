@@ -47,17 +47,22 @@ jobs:
           echo "URLS_FILE=$URLS" >> "$GITHUB_ENV"
 
       - name: Sync, Prune, and Sanitize Rule Files
-        if: env.NO_URLS != 'true'
         shell: bash
         env:
           STRICT: "false"  # 若需任一源失败即终止，可设为 "true"
         run: |
           set -euo pipefail
 
+          # 若无可用 URL，优雅跳过
+          if [ "${NO_URLS:-}" = "true" ]; then
+            echo "No sanitized URLs. Skip sync."
+            exit 0
+          fi
+
           SOURCE_DIR="rulesets"
           URLS_FILE="${URLS_FILE:-}"
           if [ -z "$URLS_FILE" ] || [ ! -s "$URLS_FILE" ]; then
-            echo "No sanitized URLs. Skip sync."
+            echo "No sanitized URLs file path present. Skip."
             exit 0
           fi
 
