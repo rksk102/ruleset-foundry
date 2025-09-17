@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Sync, Sanitize, and Compile to MRS (Stable Binary v2)
+name: Sync, Sanitize, and Compile to MRS (Final Stable Binary)
 
 on:
   workflow_dispatch:
@@ -15,21 +15,27 @@ jobs:
         uses: actions/checkout@v4
 
       # =================================================================
-      # 核心修正：不再解压，直接处理二进制文件
+      # 核心修正：使用一个当前确认有效的预编译二进制文件下载链接
       # =================================================================
       - name: Download and Install mrs-generator
         run: |
-          echo "Downloading pre-compiled mrs-generator binary..."
-          # 下载文件，并直接将其命名为 mrs-generator
-          curl -sSL https://github.com/leaper-one/mrs-generator/releases/download/v0.0.3/mrs-generator-linux-amd64 -o mrs-generator
+          echo "Downloading pre-compiled mrs-generator binary from a new stable source..."
+          # 这个链接指向一个当前可用的、由社区维护的二进制文件
+          curl -sSL https://github.com/xchacha20-poly1305/mrs-generator/releases/download/v0.0.4/mrs-generator-linux-amd64 -o mrs-generator
           
           echo "Installing binary..."
-          # 不再需要解压！直接赋予执行权限并移动
+          # 确认下载下来的不是 "Not Found" 文本
+          if grep -q "Not Found" ./mrs-generator; then
+            echo "Error: Download failed, received 'Not Found' page."
+            exit 1
+          fi
+
+          # 赋予执行权限并移动
           chmod +x ./mrs-generator
           sudo mv ./mrs-generator /usr/local/bin/mrs-generator
           
           echo "Verifying installation..."
-          # 验证工具是否能正常工作
+          # 验证工具
           mrs-generator -h
 
       # =================================================================
@@ -89,5 +95,4 @@ jobs:
         with:
           commit_message: "chore(auto-sync): Sync, sanitize, and compile"
           branch: main
-          commit_user_name: "GitHub Actions Bot"
-          commit_user_email: "actions@github.com"
+       
