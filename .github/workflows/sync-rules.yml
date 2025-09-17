@@ -24,7 +24,7 @@ jobs:
         id: build_urls
         run: |
           set -euo pipefail
-          if [ ! -f sources.urls ]; then
+          if [ ! -f sources.urls ] ; then
             echo "sources.urls not found, skip."
             exit 0
           fi
@@ -40,14 +40,18 @@ jobs:
           | grep -v -E '^#|^$' \
           > "$URLS"
 
-          echo "sanitized_urls_file=$URLS" >> $GITHUB_OUTPUT
+          echo "sanitized_urls_file=$URLS" >> "$GITHUB_OUTPUT"
 
       - name: Sync, Prune, and Sanitize Rule Files
-        if: steps.build_urls.outputs.sanitized_urls_file != ''
         run: |
           set -euo pipefail
           SOURCE_DIR="rulesets"
           URLS_FILE="${{ steps.build_urls.outputs.sanitized_urls_file }}"
+          if [ -z "${URLS_FILE:-}" ] || [ ! -s "${URLS_FILE}" ]; then
+            echo "No sanitized URLs. Skip sync."
+            exit 0
+          fi
+
           TMP_DIR="${RUNNER_TEMP}/sync-tmp"
           mkdir -p "$TMP_DIR"
 
@@ -79,7 +83,7 @@ BEGIN { first=1 }
   # 去行尾内联注释（空白 + # 之后）
   sub(/[[:space:]]+#.*$/, "", line)
 
-  # YAML 列表项前缀 - 
+  # YAML 列表项前缀 -
   sub(/^[[:space:]]*-[[:space:]]*/, "", line)
 
   # 去包裹引号
@@ -105,12 +109,14 @@ AWK
 
           get_owner_dir() {
             local url="$1"
-            local host=$(echo "$url" | awk -F/ '{print $3}')
+            local host
+            host=$(echo "$url" | awk -F/ '{print $3}')
             if [ "$host" = "raw.githubusercontent.com" ]; then
               echo "$url" | awk -F/ '{print $4}'
             elif [ "$host" = "cdn.jsdelivr.net" ]; then
               # https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
-              local p4=$(echo "$url" | awk -F/ '{print $4}')
+              local p4
+              p4=$(echo "$url" | awk -F/ '{print $4}')
               if [ "$p4" = "gh" ]; then
                 echo "$url" | awk -F/ '{print $5}'
               else
