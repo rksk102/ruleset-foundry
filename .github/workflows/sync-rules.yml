@@ -1,6 +1,6 @@
 # .github/workflows/sync-rules.yml
 
-name: Sync and Sanitize Rule Sets (Stable TXT Version)
+name: Sync and Sanitize Rule Sets (Final Perfect Version)
 
 on:
   workflow_dispatch:
@@ -16,71 +16,66 @@ jobs:
         uses: actions/checkout@v4
 
       # =================================================================
-      # 核心流程：同步并清洗源文件，生成标准化的 TXT 规则集
+      # 核心流程：同步并清洗源文件，生成纯净的规则集
       # =================================================================
       - name: Sync, Prune, and Sanitize Source Files
         run: |
           echo "### Starting: Sync, Prune, and Sanitize ###"
           SOURCE_DIR="rulesets"
 
-          # 1. 如果源列表不存在，则直接跳过
           if [ ! -f sources.urls ]; then
             echo "sources.urls not found, skipping process."
             exit 0
           fi
 
-          # 2. 清理过时的规则文件
+          # 1. 清理过时的规则文件 (逻辑不变)
           touch expected_files.list
           grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
             project_name=$(echo "${url}" | awk -F/ '{print $4}')
             original_filename=$(basename "${url}")
             echo "${SOURCE_DIR}/${project_name}/${original_filename}" >> expected_files.list
           done
-          
           touch actual_files.list
           if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type f > actual_files.list; fi
-          
           sort actual_files.list -o actual_files.list
           sort expected_files.list -o expected_files.list
-          
           comm -23 actual_files.list expected_files.list | while read -r file; do
             if [ -n "$file" ]; then echo "Pruning obsolete file: ${file}"; rm "$file"; fi
           done
 
-          # 3. 拉取、清洗并保存所有规则文件
+          # 2. 拉取、清洗并保存所有规则文件
           grep -v '^#' sources.urls | grep -v '^$' | while read -r url; do
             project_name=$(echo "${url}" | awk -F/ '{print $4}')
             original_filename=$(basename "${url}")
             target_path="${SOURCE_DIR}/${project_name}/${original_filename}"
             
             echo "Syncing: ${url} -> ${target_path}"
-            # 先下载到一个临时文件
             curl -sS -L --create-dirs -o "${target_path}.tmp_download" "${url}"
-
-            # 检查下载是否成功
             if [ ! -s "${target_path}.tmp_download" ]; then
               echo "Warning: Download failed or file is empty for ${url}. Skipping."
               rm -f "${target_path}.tmp_download"
               continue
             fi
 
-            # 清洗下载的文件，并输出到最终目标路径
-            echo "Sanitizing: ${target_path}"
-            grep -v -E '^#|^!' "${target_path}.tmp_download" | grep -v -E '^\s*$' | while read -r line; do
-                line=$(echo "$line" | xargs)
+            # --- 核心修改点：增加 payload: 清理 ---
+            echo "Sanitizing (Bare Domain Mode with Payload Pruning): ${target_path}"
+            # 1. 使用 sed 命令，仅当第一行是 'payload:' 时才删除该行
+            # 2. 然后再移除注释和空行
+            # 3. 最后再逐行处理，保留原始格式
+            sed '1{/^payload: *$/d;}' "${target_path}.tmp_download" | \
+            grep -v -E '^#|^!' | \
+            grep -v -E '^\s*$' | \
+            while read -r line; do
+                line=$(echo "$line" | xargs) # 去除行首尾的空格
                 if [ -z "$line" ]; then continue; fi
-                if [[ "$line" == *,* ]]; then
-                    echo "$line"
-                else
-                    echo "DOMAIN-SUFFIX,${line}"
-                fi
+                echo "$line"
             done > "${target_path}"
+            # --- 修改结束 ---
 
-            # 删除临时文件
             rm -f "${target_path}.tmp_download"
           done
 
-          # 4. 清理空目录
+          # 3. 清理空目录 (逻辑不变)
           if [ -d "$SOURCE_DIR" ]; then find "$SOURCE_DIR" -type d -empty -delete; fi
           echo "### Process complete. ###"
 
@@ -90,7 +85,7 @@ jobs:
       - name: Commit All Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(auto-sync): Sync and sanitize rule sets"
+          commit_message: "chore(auto-sync): Sync and sanitize rule sets (payload pruned)"
           branch: main
           commit_user_name: "GitHub Actions Bot"
           commit_user_email: "actions@github.com"
