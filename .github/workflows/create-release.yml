@@ -1,10 +1,10 @@
-name: 2. Create Daily Release and Prune Old Ones
+name: "2. Create Daily Release and Prune Old Ones"
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'rulesets/**'
+      - "rulesets/**"
   workflow_dispatch:
 
 permissions:
@@ -21,42 +21,53 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Compute Date
-        id: date
-        run: echo "today=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Set TODAY env
+        shell: bash
+        run: echo "TODAY=$(date +'%Y-%m-%d')" >> "$GITHUB_ENV"
 
       - name: Package rule sets
+        shell: bash
         run: |
           set -e
           if [ ! -d rulesets ]; then
             echo "No rulesets dir, abort release."
             exit 1
           fi
-          zip -r "rulesets-${{ steps.date.outputs.today }}.zip" rulesets
+          zip -r "rulesets-${TODAY}.zip" rulesets
 
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rules-${{ steps.date.outputs.today }}
-          name: Daily Rules Update - ${{ steps.date.outputs.today }}
+          tag_name: rules-${{ env.TODAY }}
+          name: Daily Rules Update - ${{ env.TODAY }}
           body: Automated daily release of processed rule sets for mihomo-core.
-          files: rulesets-${{ steps.date.outputs.today }}.zip
+          files: rulesets-${{ env.TODAY }}.zip
 
       - name: Prune Releases Older Than 3 Days (by createdAt)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
+          # 确保 jq 可用（一般 ubuntu-latest 自带，如果没有则安装）
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
           cutoff_ts=$(date -d '3 days ago' +%s)
 
-          gh release list --limit 100 --json tagName,createdAt | \
-          jq -r '.[] | [.tagName, .createdAt] | @tsv' | \
-          while IFS=$'\t' read -r tag created; do
-            rel_ts=$(date -d "$created" +%s)
-            if [ "$rel_ts" -lt "$cutoff_ts" ]; then
-              echo "Deleting old release: $tag ($created)"
-              gh release delete "$tag" --yes
-              # 删除 Git Tag
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
-            fi
-          done
+          # 列出 releases 的 tagName 和 createdAt，删除 3 天前的
+          gh release list --limit 100 --json tagName,createdAt \
+          | jq -r '.[] | [.tagName, .createdAt] | @tsv' \
+          | while IFS=$'\t' read -r tag created; do
+              # 跳过空 tag
+              [ -z "$tag" ] && continue
+              rel_ts=$(date -d "$created" +%s || echo 0)
+              if [ "$rel_ts" -lt "$cutoff_ts" ]; then
+                echo "Deleting old release: $tag ($created)"
+                gh release delete "$tag" --yes || true
+                # 删除 git tag
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
+              fi
+            done
