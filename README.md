@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-18
-- Build time: 2025-09-18 18:21:10 CST
+- Build time: 2025-09-18 18:26:33 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -55,7 +55,6 @@ rule-providers:
 | direct | domain | Loyalsoldier | private.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/private.txt |
 | direct | domain | MetaCubeX | geolocation-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/MetaCubeX/geolocation-cn.txt |
 | direct | ipcidr | Loyalsoldier | lancidr.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/Loyalsoldier/lancidr.txt |
-| direct | ipcidr | MetaCubeX | cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/MetaCubeX/cn.txt |
 | proxy | domain | Loyalsoldier | gfw.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/gfw.txt |
 | proxy | domain | Loyalsoldier | proxy-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/proxy-list.txt |
 | proxy | domain | Loyalsoldier | proxy.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/proxy.txt |
