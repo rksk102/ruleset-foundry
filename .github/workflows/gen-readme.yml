@@ -1,0 +1,52 @@
+name: "4. Generate README (Rules Index)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Links base ref (e.g. main or rules-YYYY-MM-DD). Default: main"
+        required: false
+        type: string
+      cdn:
+        description: "CDN for links: jsdelivr or raw"
+        required: false
+        default: "jsdelivr"
+        type: choice
+        options: ["jsdelivr", "raw"]
+  schedule:
+    - cron: "20 21 * * *"   # 每天北京时区 05:20（UTC 21:20）
+  push:
+    branches: [ main ]
+    paths:
+      - "rulesets/**"
+      - "mrs-rules/**"
+      - "sources.urls"
+      - "scripts/gen-readme.sh"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gen-readme
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  gen-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Make generator executable
+        shell: bash
+        run: chmod +x scripts/gen-readme.sh
+
+      - name: Generate README
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref || 'main' }}
+          INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
+        run: scripts/gen-readme.sh
