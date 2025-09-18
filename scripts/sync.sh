@@ -17,6 +17,32 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# 扩展名映射：哪些输入扩展需要强制保存为 .txt
+# 现在只启用 list → txt，如需扩展可把 rule rules 添加进来（空格分隔）
+FORCE_TXT_EXTS="list"
+
+force_txt_ext() {
+  local ext="${1,,}"              # 小写
+  for t in $FORCE_TXT_EXTS; do
+    if [[ "$ext" == "$t" ]]; then return 0; fi
+  done
+  return 1
+}
+
+# 计算输出的相对路径（带可能的扩展名映射）
+# 输入：owner, filename（原始文件名，如 reject.list）
+# 输出：owner/<name>.txt 或 owner/<filename>
+map_out_relpath() {
+  local owner="$1"; local fn="$2"
+  local ext="${fn##*.}"
+  local base="${fn%.*}"
+  if force_txt_ext "$ext"; then
+    echo "${owner}/${base}.txt"
+  else
+    echo "${owner}/${fn}"
+  fi
+}
+
 # 1) 预清洗 sources.urls：去 BOM/CR、去行尾内联注释、去首尾空白、过滤空行与整行注释
 if [ ! -f sources.urls ]; then
   echo "sources.urls not found, skip."
@@ -130,11 +156,11 @@ try_download() {
     fi
   fi
 
-  rm -f "${out}.download"
+  rm -f "${out}.download}"
   return 1
 }
 
-# 4) 构建期望文件列表并清理“孤儿”文件（全部在临时区处理列表）
+# 4) 构建期望文件列表并清理“孤儿”文件（使用映射后的目标路径）
 EXP="${TMP_DIR}/expected_files.list"
 ACT="${TMP_DIR}/actual_files.list"
 : > "$EXP"; : > "$ACT"
@@ -142,7 +168,8 @@ ACT="${TMP_DIR}/actual_files.list"
 while IFS= read -r url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  echo "${SOURCE_DIR}/${owner}/${fn}" >> "$EXP"
+  rel_out="$(map_out_relpath "$owner" "$fn")"
+  echo "${SOURCE_DIR}/${rel_out}" >> "$EXP"
 done < "$URLS"
 
 if [ -d "$SOURCE_DIR" ]; then
@@ -152,21 +179,23 @@ fi
 sort -u "$ACT" -o "$ACT" || true
 sort -u "$EXP" -o "$EXP"
 
-# 删除“孤儿”文件
+# 删除“孤儿”文件（历史的 .list 会被识别为孤儿并删除）
 comm -23 "$ACT" "$EXP" | while read -r f; do
   [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
 done
 
-# 5) 拉取并净化每个规则文件
+# 5) 拉取并净化每个规则文件（保存为映射后的 .txt）
 mkdir -p "$SOURCE_DIR"
 fail_count=0
 
 while IFS= read -r url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  out="${SOURCE_DIR}/${owner}/${fn}"
+  rel_out="$(map_out_relpath "$owner" "$fn")"
+  out="${SOURCE_DIR}/${rel_out}"
 
   echo "Fetch -> ${url}"
+  mkdir -p "$(dirname "$out")"
   if ! try_download "$url" "$out"; then
     echo "::warning::Download failed for $url"
     fail_count=$((fail_count+1))
