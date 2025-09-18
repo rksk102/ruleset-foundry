@@ -19,7 +19,7 @@ merges:
     description: "所有直连cnipcidr"
     inputs:
       - direct/ipcidr/Loyalsoldier/cncidr.txt
-      - direct/ipcidr/Loyalsoldier/cncidr.txt
+      - direct/ipcidr/MetaCubeX/cn.txt
 
   - name: direct-all.txt
     description: "直连域名规则"
