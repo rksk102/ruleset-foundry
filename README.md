@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-18
-- Build time: 2025-09-18 18:28:31 CST
+- Build time: 2025-09-18 18:34:17 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -13,8 +13,8 @@
 | File | Behavior | URL |
 |---|---|---|
 | all-adblock.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/all-adblock.txt |
+| cnip.txt | ipcidr | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/cnip.txt |
 | direct-all.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct-all.txt |
-| direct-cnip.txt | ipcidr | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct-cnip.txt |
 
 示例（mihomo rule-providers）：
 ```yaml
