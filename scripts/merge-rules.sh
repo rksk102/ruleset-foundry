@@ -8,31 +8,17 @@ CONFIG_FILE="${CONFIG_FILE:-merge-config.yaml}"
 TMP_DIR="${RUNNER_TEMP:-/tmp}/merge-tmp"
 mkdir -p "$TMP_DIR"
 
-echo "=== Rule Sets Merger & Copier ==="
+# 用于记录所有参与合并的文件
+MERGED_FILES_LIST="${TMP_DIR}/merged_files.list"
+: > "$MERGED_FILES_LIST"
+
+echo "=== Rule Sets Merger ==="
 echo "Source: $SOURCE_DIR"
 echo "Output: $OUTPUT_DIR"
 echo "Config: $CONFIG_FILE"
 echo
 
-# 步骤1：复制所有原始文件到 merged-rules（保持目录结构）
-echo "Step 1: Copying all original files..."
-if [ -d "$SOURCE_DIR" ]; then
-  # 清空目标目录（避免遗留旧文件）
-  rm -rf "$OUTPUT_DIR"
-  mkdir -p "$OUTPUT_DIR"
-  
-  # 复制整个目录结构
-  cp -r "$SOURCE_DIR"/* "$OUTPUT_DIR"/ 2>/dev/null || true
-  
-  file_count=$(find "$OUTPUT_DIR" -type f | wc -l)
-  echo "  Copied $file_count files to $OUTPUT_DIR"
-else
-  echo "  Source directory $SOURCE_DIR not found!"
-  exit 1
-fi
-echo
-
-# 步骤2：如果没有配置文件，创建默认示例
+# 步骤1：如果没有配置文件，创建默认示例
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "Creating default merge config..."
   cat > "$CONFIG_FILE" <<'EOF'
@@ -102,8 +88,12 @@ merges:
 EOF
 fi
 
-# 步骤3：执行合并任务
-echo "Step 2: Processing merge tasks..."
+# 清空输出目录
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+
+# 步骤2：先执行所有合并任务，同时记录参与合并的文件
+echo "Step 1: Processing merge tasks..."
 
 # 解析并执行合并
 process_merges() {
@@ -169,33 +159,32 @@ execute_merge() {
   echo "----------------------------------------"
   echo "Merging: $name"
   [ -n "$desc" ] && echo "Description: $desc"
-  echo "Input patterns: ${#inputs[@]} pattern(s)"
   
   local tmp_all="${TMP_DIR}/merge_$$.txt"
   : > "$tmp_all"
   
   local file_count=0
-  local line_count_before=0
   
   # 收集所有匹配文件的内容
   for pattern in "${inputs[@]}"; do
     # 在 SOURCE_DIR 下查找匹配文件
     while IFS= read -r -d '' file; do
       if [ -f "$file" ]; then
-        rel_path="${file#${SOURCE_DIR}/}"
-        echo "  + $rel_path"
+        echo "  + ${file#${SOURCE_DIR}/}"
         cat "$file" >> "$tmp_all"
+        # 记录参与合并的文件
+        echo "$file" >> "$MERGED_FILES_LIST"
         file_count=$((file_count + 1))
       fi
     done < <(find "$SOURCE_DIR" -path "${SOURCE_DIR}/${pattern}" -type f -print0 2>/dev/null || true)
   done
   
   if [ "$file_count" -eq 0 ]; then
-    echo "  ! No files matched. Skip."
+    echo "  ! No files matched for this task. Skip."
     return
   fi
   
-  line_count_before=$(wc -l < "$tmp_all" 2>/dev/null || echo 0)
+  local line_count_before=$(wc -l < "$tmp_all" 2>/dev/null || echo 0)
   
   # 净化 + 去重 + 排序
   local output="${OUTPUT_DIR}/${name}"
@@ -219,8 +208,44 @@ execute_merge() {
 # 执行合并
 process_merges
 
+# 步骤3：复制未参与合并的原始文件
 echo
-echo "=== All tasks completed ==="
+echo "Step 2: Copying unmerged files..."
+
+# 获取所有源文件列表，并排序
+ALL_FILES_LIST="${TMP_DIR}/all_files.list"
+find "$SOURCE_DIR" -type f | sort > "$ALL_FILES_LIST"
+
+# 去重并排序已合并文件列表
+sort -u "$MERGED_FILES_LIST" -o "$MERGED_FILES_LIST"
+
+# 使用 comm 计算出未合并的文件列表
+UNMERGED_FILES_LIST="${TMP_DIR}/unmerged_files.list"
+comm -23 "$ALL_FILES_LIST" "$MERGED_FILES_LIST" > "$UNMERGED_FILES_LIST"
+
+# 复制未合并的文件
+copied_count=0
+while IFS= read -r file; do
+  # 复制未合并的文件（保持目录结构）
+  rel_path="${file#${SOURCE_DIR}/}"
+  output_file="${OUTPUT_DIR}/${rel_path}"
+  mkdir -p "$(dirname "$output_file")"
+  cp "$file" "$output_file"
+  copied_count=$((copied_count + 1))
+done < "$UNMERGED_FILES_LIST"
+
+echo "  Copied: $copied_count unmerged files"
+echo "  Skipped: $(wc -l < "$MERGED_FILES_LIST") merged source files"
+
+# 清理空目录
+find "$OUTPUT_DIR" -type d -empty -delete 2>/dev/null || true
+
+echo
+echo "=== Summary ==="
+echo "Output directory: $OUTPUT_DIR"
+echo "- Merged files: $(find "$OUTPUT_DIR" -maxdepth 1 -type f -name "*.txt" | wc -l)"
+echo "- Unmerged files: $(find "$OUTPUT_DIR" -mindepth 2 -type f | wc -l)"
+echo "- Total files: $(find "$OUTPUT_DIR" -type f | wc -l)"
 
 # 提交变更
 if [[ -z $(git status -s) ]]; then
