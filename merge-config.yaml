@@ -28,10 +28,11 @@ merges:
       - direct/domain/Loyalsoldier/direct-list.txt
   
   # 所有代理域名
-#  - name: all-proxy.txt
-#    description: "所有代理域名规则"
-#    inputs:
-#      - proxy/domain/**/*.txt
+  - name: all-proxy.txt
+    description: "代理域名规则"
+    inputs:
+      - proxy/domain/Loyalsoldier/proxy.txt
+      - proxy/domain/Loyalsoldier/proxy-list.txt
   
   # === 按 Type 合并 ===
   
