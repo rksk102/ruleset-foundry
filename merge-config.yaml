@@ -15,7 +15,7 @@ merges:
       - block/domain/Loyalsoldier/reject-list.txt
 
 
-  - name: direct-cnip.txt
+  - name: cnip.txt
     description: "所有直连cnipcidr"
     inputs:
       - direct/ipcidr/Loyalsoldier/cncidr.txt
