@@ -1,7 +1,7 @@
 # Merged Rules Index
 
-- Build date: 2025-09-18
-- Build time: 2025-09-18 21:04:54 CST
+- Build date: 2025-09-19
+- Build time: 2025-09-19 00:03:22 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -15,7 +15,6 @@
 | all-adblock.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/all-adblock.txt |
 | all-proxy.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/all-proxy.txt |
 | cnip.txt | ipcidr | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/cnip.txt |
-| direct-all.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct-all.txt |
 
 示例（mihomo rule-providers）：
 ```yaml
@@ -52,6 +51,7 @@ rule-providers:
 | block | domain | Loyalsoldier | win-spy.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/win-spy.txt |
 | direct | domain | Loyalsoldier | apple-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt |
 | direct | domain | Loyalsoldier | china-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/china-list.txt |
+| direct | domain | Loyalsoldier | direct-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/direct-list.txt |
 | direct | domain | Loyalsoldier | private.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/private.txt |
 | direct | domain | MetaCubeX | geolocation-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/MetaCubeX/geolocation-cn.txt |
 | direct | domain | github.com | microsoft-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/github.com/microsoft-cn.txt |
