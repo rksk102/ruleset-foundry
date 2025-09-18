@@ -61,7 +61,7 @@ jobs:
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.REPO_B_TOKEN }}         # 仓库A的Secret：细粒度PAT（Contents: Read and write）
-          repository: ownerB/repoB                   # 替换为 仓库B 的 owner/repo
+          repository: mrsrules/rule                   # 替换为 仓库B 的 owner/repo
           event-type: build-mrs                      # 仓库B需监听 repository_dispatch.types: [build-mrs]
           client-payload: >-
             {
