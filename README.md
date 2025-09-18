@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-18
-- Build time: 2025-09-18 18:26:33 CST
+- Build time: 2025-09-18 18:28:31 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -49,7 +49,6 @@ rule-providers:
 | block | domain | Loyalsoldier | reject.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/reject.txt |
 | block | domain | Loyalsoldier | win-extra.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/win-extra.txt |
 | block | domain | Loyalsoldier | win-spy.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/win-spy.txt |
-| block | domain | github.com | ads.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/github.com/ads.txt |
 | direct | domain | Loyalsoldier | apple-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt |
 | direct | domain | Loyalsoldier | china-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/china-list.txt |
 | direct | domain | Loyalsoldier | private.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/private.txt |
