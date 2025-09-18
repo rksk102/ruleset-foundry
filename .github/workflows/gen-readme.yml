@@ -54,3 +54,20 @@ jobs:
           INPUT_REF: ${{ inputs.ref || 'main' }}
           INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
         run: scripts/gen-readme.sh
+
+      # 在生成完成后，触发“仓库B”的 MRS 构建
+      - name: Trigger Repo B build-mrs
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_B_TOKEN }}         # 仓库A的Secret：细粒度PAT（Contents: Read and write）
+          repository: ownerB/repoB                   # 替换为 仓库B 的 owner/repo
+          event-type: build-mrs                      # 仓库B需监听 repository_dispatch.types: [build-mrs]
+          client-payload: >-
+            {
+              "from_repo": "${{ github.repository }}",
+              "run_id": "${{ github.run_id }}",
+              "ref": "${{ inputs.ref || 'main' }}",
+              "sha": "${{ github.sha }}",
+              "cdn": "${{ inputs.cdn || 'jsdelivr' }}"
+            }
