@@ -34,7 +34,7 @@ normalize_policy() {
     reject|block|deny|ad|ads|adblock|拦截|拒绝|屏蔽|广告) echo "block" ;;
     direct|bypass|no-proxy|直连|直连规则)               echo "direct" ;;
     proxy|proxied|forward|代理|代理规则)               echo "proxy" ;;
-    *) echo "" ;; # 未识别返回空串
+    *) echo "" ;;
   esac
 }
 normalize_type() {
@@ -86,62 +86,65 @@ while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^# ]] && continue
 
-  # 段落头：[policy: xxx]
-  if [[ "$line" =~ ^\[policy:[[:space:]]*([A-Za-z0-9_\-一-龥]+)[[:space:]]*\]$ ]]; then
-    local np
-    np="$(normalize_policy "${BASH_REMATCH[1]}")"
-    current_policy="${np:-proxy}"
+  # 段落头：[policy: 任意字符直到 ] ]
+  if [[ "$line" =~ ^\[policy:[[:space:]]*([^\]]+)[[:space:]]*\]$ ]]; then
+    pol_guess="${BASH_REMATCH[1]}"
+    pol_norm="$(normalize_policy "$pol_guess")"
+    current_policy="${pol_norm:-proxy}"
     continue
   fi
-  # 段落头：[type: yyy]
-  if [[ "$line" =~ ^\[type:[[:space:]]*([A-Za-z0-9_\-一-龥]+)[[:space:]]*\]$ ]]; then
-    local nt
-    nt="$(normalize_type "${BASH_REMATCH[1]}")"
-    current_type="${nt:-domain}"
-    continue
-  fi
-
-  # 前缀：两个 token + URL（顺序可互换）
-  if [[ "$line" =~ ^([A-Za-z0-9_\-一-龥]+)[[:space:]]+([A-Za-z0-9_\-一-龥]+)[[:space:]]+(https?://.+)$ ]]; then
-    t1="${BASH_REMATCH[1]}"; t2="${BASH_REMATCH[2]}"; url="${BASH_REMATCH[3]}"
-    pol=""; typ=""
-    if is_policy_token "$t1"; then pol="$(normalize_policy "$t1")"; fi
-    if is_type_token   "$t1"; then typ="$(normalize_type   "$t1")"; fi
-    if is_policy_token "$t2" && [[ -z "$pol" ]]; then pol="$(normalize_policy "$t2")"; fi
-    if is_type_token   "$t2" && [[ -z "$typ" ]]; then typ="$(normalize_type   "$t2")"; fi
-    [[ -z "$pol" ]] && pol="$current_policy"
-    [[ -z "$typ" ]] && typ="$current_type"
-    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
+  # 段落头：[type: 任意字符直到 ] ]
+  if [[ "$line" =~ ^\[type:[[:space:]]*([^\]]+)[[:space:]]*\]$ ]]; then
+    type_guess="${BASH_REMATCH[1]}"
+    type_norm="$(normalize_type "$type_guess")"
+    current_type="${type_norm:-domain}"
     continue
   fi
 
-  # 前缀：一个 token + URL（另一个维度沿用当前值）
-  if [[ "$line" =~ ^([A-Za-z0-9_\-一-龥]+)[[:space:]]+(https?://.+)$ ]]; then
-    tok="${BASH_REMATCH[1]}"; url="${BASH_REMATCH[2]}"
-    pol="$current_policy"; typ="$current_type"
-    if is_policy_token "$tok"; then pol="$(normalize_policy "$tok")"; fi
-    if is_type_token   "$tok"; then typ="$(normalize_type   "$tok")"; fi
-    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
+  # 如果该行含有 URL，则解析前缀 token（次序任意、可含键值对）
+  if [[ "$line" =~ https?:// ]]; then
+    # 提取第一个 URL 词（假设 URL 中不含空格）
+    url_word="$(awk '{ for (i=1;i<=NF;i++) if ($i ~ /^https?:\/\//) { print $i; exit } }' <<< "$line")"
+    # 取 URL 前缀（token 区域）
+    prefix="${line%%$url_word*}"
+
+    pol="$current_policy"
+    typ="$current_type"
+
+    # 按空格切分前缀，逐一识别 token（policy/type 或键值对）
+    # 使用 read -a 保持对中文 token 的处理
+    IFS=' ' read -r -a toks <<< "$prefix"
+    for tk in "${toks[@]}"; do
+      [[ -z "$tk" ]] && continue
+      # 键值对：policy=xxx 或 policy:xxx
+      if [[ "$tk" =~ ^policy[:=](.+)$ ]]; then
+        v="${BASH_REMATCH[1]}"
+        v_norm="$(normalize_policy "$v")"
+        [[ -n "$v_norm" ]] && pol="$v_norm"
+        continue
+      fi
+      if [[ "$tk" =~ ^type[:=](.+)$ ]]; then
+        v="${BASH_REMATCH[1]}"
+        v_norm="$(normalize_type "$v")"
+        [[ -n "$v_norm" ]] && typ="$v_norm"
+        continue
+      fi
+      # 简写 token：拦截/直连/代理 或 domain/ipcidr/classical
+      v_pol="$(normalize_policy "$tk")"
+      if [[ -n "$v_pol" ]]; then pol="$v_pol"; continue; fi
+      v_typ="$(normalize_type "$tk")"
+      if [[ -n "$v_typ" ]]; then typ="$v_typ"; continue; fi
+    done
+
+    # 回落默认
+    pol="${pol:-$current_policy}"
+    typ="${typ:-$current_type}"
+
+    echo -e "${pol}\t${typ}\t${url_word}" >> "$TRIPLETS"
     continue
   fi
 
-  # 键值：policy=.. type=.. URL（可只写一个，另一个沿用当前段落）
-  if [[ "$line" =~ ^([^ ]+)[[:space:]]+([^ ]+)[[:space:]]+(https?://.+)$ ]]; then
-    kv1="${BASH_REMATCH[1]}"; kv2="${BASH_REMATCH[2]}"; url="${BASH_REMATCH[3]}"
-    pol="$current_policy"; typ="$current_type"
-    if [[ "$kv1" =~ ^policy[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]]; then tmp="$(normalize_policy "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && pol="$tmp"; fi
-    if [[ "$kv1" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]];   then tmp="$(normalize_type   "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && typ="$tmp"; fi
-    if [[ "$kv2" =~ ^policy[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]]; then tmp="$(normalize_policy "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && pol="$tmp"; fi
-    if [[ "$kv2" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]];   then tmp="$(normalize_type   "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && typ="$tmp"; fi
-    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
-    continue
-  fi
-
-  # 仅 URL：使用当前段落默认
-  if [[ "$line" =~ ^https?://.+$ ]]; then
-    echo -e "${current_policy}\t${current_type}\t${line}" >> "$TRIPLETS"
-    continue
-  fi
+  # 其他行忽略
 done < "$CLEAN"
 
 if [ ! -s "$TRIPLETS" ]; then
@@ -241,9 +244,8 @@ ACT="${TMP_DIR}/actual_files.list"
 while IFS=$'\t' read -r policy type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  # 规范化，确保只有合法值进入目录
-  pol="$(normalize_policy "$policy")"; typ="$(normalize_type "$type")"
-  pol="${pol:-proxy}"; typ="${typ:-domain}"
+  pol_norm="$(normalize_policy "$policy")"; typ_norm="$(normalize_type "$type")"
+  pol="${pol_norm:-proxy}"; typ="${typ_norm:-domain}"
   rel_out="$(map_out_relpath "$pol" "$typ" "$owner" "$fn")"
   echo "${SOURCE_DIR}/${rel_out}" >> "$EXP"
 done < "$TRIPLETS"
@@ -266,8 +268,8 @@ fail_count=0
 while IFS=$'\t' read -r policy type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  pol="$(normalize_policy "$policy")"; typ="$(normalize_type "$type")"
-  pol="${pol:-proxy}"; typ="${typ:-domain}"
+  pol_norm="$(normalize_policy "$policy")"; typ_norm="$(normalize_type "$type")"
+  pol="${pol_norm:-proxy}"; typ="${typ_norm:-domain}"
   rel_out="$(map_out_relpath "$pol" "$typ" "$owner" "$fn")"
   out="${SOURCE_DIR}/${rel_out}"
 
