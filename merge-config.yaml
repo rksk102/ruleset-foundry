@@ -8,17 +8,18 @@ merges:
   
   # 所有广告拦截域名
   - name: all-adblock.txt
-    description: "所有广告拦截域名规则"
+    description: "所有广告拦截域名规则(domain)"
     inputs:
       - block/domain/Loyalsoldier/ads.txt
       - block/domain/github.com/category-ads-all.txt
       - block/domain/Loyalsoldier/reject-list.txt
-  
-  # 所有直连域名
-#  - name: all-direct.txt
-#    description: "所有直连域名规则"
-#    inputs:
-#      - direct/domain/**/*.txt
+
+
+  - name: direct-cnip.txt
+    description: "所有直连域名规则(ipcidr)"
+    inputs:
+      - direct/ipcidr/Loyalsoldier/cncidr.txt
+      - direct/ipcidr/Loyalsoldier/cncidr.txt
   
   # 所有代理域名
 #  - name: all-proxy.txt
