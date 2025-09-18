@@ -1,0 +1,45 @@
+name: "5. Merge and Copy Rule Sets"
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: "Merge config file (default: merge-config.yaml)"
+        required: false
+        type: string
+        default: "merge-config.yaml"
+  schedule:
+    - cron: "30 21 * * *"   # 北京时间 05:30
+  push:
+    branches: [ main ]
+    paths:
+      - "rulesets/**"
+      - "merge-config.yaml"
+      - "scripts/merge-rules.sh"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: merge-rules
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  merge-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Make script executable
+        shell: bash
+        run: chmod +x scripts/merge-rules.sh
+
+      - name: Run merge and copy
+        shell: bash
+        env:
+          CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
+        run: scripts/merge-rules.sh
