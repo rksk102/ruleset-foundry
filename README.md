@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-18
-- Build time: 2025-09-18 15:55:01 CST
+- Build time: 2025-09-18 16:23:10 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -45,19 +45,16 @@ rule-providers:
 
 | Policy | Type | Owner | File | URL |
 |---|---|---|---|---|
-| block | domain | Loyalsoldier | reject-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/reject-list.txt |
 | block | domain | Loyalsoldier | reject.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/reject.txt |
 | block | domain | Loyalsoldier | win-extra.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/win-extra.txt |
 | block | domain | Loyalsoldier | win-spy.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/Loyalsoldier/win-spy.txt |
 | block | domain | github.com | ads.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/github.com/ads.txt |
-| block | domain | github.com | category-ads-all.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/block/domain/github.com/category-ads-all.txt |
 | direct | domain | Loyalsoldier | apple-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt |
 | direct | domain | Loyalsoldier | china-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/china-list.txt |
 | direct | domain | Loyalsoldier | direct-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/direct-list.txt |
 | direct | domain | Loyalsoldier | direct.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/direct.txt |
 | direct | domain | Loyalsoldier | private.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/private.txt |
 | direct | domain | MetaCubeX | geolocation-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/MetaCubeX/geolocation-cn.txt |
-| direct | ipcidr | Loyalsoldier | cncidr.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/Loyalsoldier/cncidr.txt |
 | direct | ipcidr | Loyalsoldier | lancidr.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/Loyalsoldier/lancidr.txt |
 | direct | ipcidr | MetaCubeX | cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/MetaCubeX/cn.txt |
 | proxy | domain | Loyalsoldier | gfw.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/gfw.txt |
