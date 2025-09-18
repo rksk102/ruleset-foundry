@@ -8,10 +8,6 @@ on:
         required: false
         type: string
         default: "merge-config.yaml"
-  workflow_run:
-    workflows: ["1. Daily Sync and Sanitize Rules (mihomo-core)"]
-    types: [completed]
-    branches: [main]
   push:
     branches: [ main ]
     paths:
@@ -21,7 +17,6 @@ on:
 
 permissions:
   contents: write
-  actions: write  # 需要触发其他工作流
 
 concurrency:
   group: merge-rules
@@ -33,28 +28,16 @@ env:
 jobs:
   merge-rules:
     runs-on: ubuntu-latest
-    # 只在前置工作流成功时运行（如果是 workflow_run 触发）
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Make script executable
+      - name: Make merge script executable
         shell: bash
         run: chmod +x scripts/merge-rules.sh
 
-      - name: Run smart merge
+      - name: Run merge script
         shell: bash
         env:
           CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
-        run: scripts/merge-rules.sh
-
-      # 触发下一个工作流：gen-readme
-      - name: Trigger gen-readme workflow
-        if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          echo "Triggering gen-readme workflow..."
-          gh workflow run "gen-readme.yml" --ref main
+        run: ./scripts/merge-rules.sh
