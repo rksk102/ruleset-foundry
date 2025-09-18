@@ -10,80 +10,82 @@ merges:
   - name: all-adblock.txt
     description: "所有广告拦截域名规则"
     inputs:
-      - block/domain/**/*.txt
+      - block/domain/Loyalsoldier/ads.txt
+      - block/domain/github.com/category-ads-all.txt
+      - block/domain/Loyalsoldier/reject-list.txt
   
   # 所有直连域名
-  - name: all-direct.txt
-    description: "所有直连域名规则"
-    inputs:
-      - direct/domain/**/*.txt
+#  - name: all-direct.txt
+#    description: "所有直连域名规则"
+#    inputs:
+#      - direct/domain/**/*.txt
   
   # 所有代理域名
-  - name: all-proxy.txt
-    description: "所有代理域名规则"
-    inputs:
-      - proxy/domain/**/*.txt
+#  - name: all-proxy.txt
+#    description: "所有代理域名规则"
+#    inputs:
+#      - proxy/domain/**/*.txt
   
   # === 按 Type 合并 ===
   
   # 中国IP段（通常在 direct 下）
-  - name: china-ip.txt
-    description: "中国大陆IP段"
-    inputs:
-      - direct/ipcidr/**/*.txt
+#  - name: china-ip.txt
+#    description: "中国大陆IP段"
+#    inputs:
+#      - direct/ipcidr/**/*.txt
   
   # 国外IP段（通常在 proxy 下）
-  - name: global-ip.txt
-    description: "国外IP段"
-    inputs:
-      - proxy/ipcidr/**/*.txt
+#  - name: global-ip.txt
+#    description: "国外IP段"
+#    inputs:
+#      - proxy/ipcidr/**/*.txt
   
   # === 综合规则集 ===
   
   # 超级广告拦截（域名+IP+混合）
-  - name: ultimate-adblock.txt
-    description: "终极广告拦截规则集"
-    inputs:
-      - block/domain/**/*.txt
-      - block/ipcidr/**/*.txt
-      - block/classical/**/*.txt
+#  - name: ultimate-adblock.txt
+#    description: "终极广告拦截规则集"
+#    inputs:
+#      - block/domain/**/*.txt
+#      - block/ipcidr/**/*.txt
+#      - block/classical/**/*.txt
   
   # 中国直连完整版（域名+IP）
-  - name: china-all.txt
-    description: "中国大陆完整直连规则"
-    inputs:
-      - direct/domain/**/*.txt
-      - direct/ipcidr/**/*.txt
+#  - name: china-all.txt
+#    description: "中国大陆完整直连规则"
+#    inputs:
+#      - direct/domain/**/*.txt
+#      - direct/ipcidr/**/*.txt
   
   # 国外代理完整版（域名+IP）
-  - name: global-all.txt
-    description: "国外完整代理规则"
-    inputs:
-      - proxy/domain/**/*.txt
-      - proxy/ipcidr/**/*.txt
+#  - name: global-all.txt
+#    description: "国外完整代理规则"
+#    inputs:
+#      - proxy/domain/**/*.txt
+#      - proxy/ipcidr/**/*.txt
   
   # === 按来源合并 ===
   
   # Loyalsoldier 全部规则
-  - name: loyalsoldier-all.txt
-    description: "Loyalsoldier 提供的所有规则"
-    inputs:
-      - "*/*/Loyalsoldier/*.txt"
+#  - name: loyalsoldier-all.txt
+#    description: "Loyalsoldier 提供的所有规则"
+#    inputs:
+#      - "*/*/Loyalsoldier/*.txt"
   
   # === 自定义组合示例 ===
   
   # 流媒体相关（假设你有这些文件）
-  - name: streaming.txt
-    description: "流媒体服务规则"
-    inputs:
-      - proxy/domain/**/netflix*.txt
-      - proxy/domain/**/youtube*.txt
-      - proxy/domain/**/spotify*.txt
+#  - name: streaming.txt
+#    description: "流媒体服务规则"
+#    inputs:
+#      - proxy/domain/**/netflix*.txt
+#      - proxy/domain/**/youtube*.txt
+#      - proxy/domain/**/spotify*.txt
   
   # 社交媒体
-  - name: social.txt
-    description: "社交媒体规则"
-    inputs:
-      - proxy/domain/**/twitter*.txt
-      - proxy/domain/**/facebook*.txt
-      - proxy/domain/**/instagram*.txt
+#  - name: social.txt
+#    description: "社交媒体规则"
+#    inputs:
+   #   - proxy/domain/**/twitter*.txt
+   #   - proxy/domain/**/facebook*.txt
+   #   - proxy/domain/**/instagram*.txt
