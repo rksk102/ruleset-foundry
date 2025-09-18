@@ -1,11 +1,25 @@
-name: "2. Create Daily Release and Prune Old Ones"
+name: "2. Create Daily Release (with Build Date) and Prune Old Ones"
 
 on:
   push:
     branches: [ main ]
     paths:
       - "rulesets/**"
+      - "mrs-rules/**"
   workflow_dispatch:
+    inputs:
+      tag_date:
+        description: "Build date (YYYY-MM-DD), default = Today (Asia/Shanghai)"
+        required: false
+        type: string
+      force_replace:
+        description: "If a release with same tag exists, delete it first?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: write
@@ -14,6 +28,12 @@ concurrency:
   group: create-release
   cancel-in-progress: true
 
+env:
+  TZ: Asia/Shanghai
+  RETAIN_DAYS: "3"
+  FORCE_REPLACE: ${{ inputs.force_replace || 'false' }}
+  MANUAL_TAG_DATE: ${{ inputs.tag_date || '' }}
+
 jobs:
   release-job:
     runs-on: ubuntu-latest
@@ -21,29 +41,103 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set TODAY env
-        shell: bash
-        run: echo "TODAY=$(date +'%Y-%m-%d')" >> "$GITHUB_ENV"
-
-      - name: Package rule sets
+      - name: Compute Build Date/Time (Asia/Shanghai)
         shell: bash
         run: |
-          set -e
-          if [ ! -d rulesets ]; then
-            echo "No rulesets dir, abort release."
+          set -euo pipefail
+          if [ -n "${MANUAL_TAG_DATE}" ]; then
+            TODAY="${MANUAL_TAG_DATE}"
+          else
+            TODAY="$(date +'%Y-%m-%d')"
+          fi
+          # Validate YYYY-MM-DD
+          if ! [[ "$TODAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "Invalid tag_date format: $TODAY (expected YYYY-MM-DD)"
             exit 1
           fi
-          zip -r "rulesets-${TODAY}.zip" rulesets
+          BUILD_TIME="$(date +'%Y-%m-%d %H:%M:%S %Z')"
+          echo "TODAY=$TODAY" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$BUILD_TIME" >> "$GITHUB_ENV"
+
+      - name: Prepare packages
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f rulesets-*.zip mrs-rules-*.zip || true
+
+          built_any=false
+          files_list=""
+
+          if [ -d rulesets ] && find rulesets -type f -print -quit | grep -q . ; then
+            echo "Packaging rulesets/"
+            zip -r "rulesets-${TODAY}.zip" rulesets >/dev/null
+            built_any=true
+            files_list="${files_list}rulesets-${TODAY}.zip"$'\n'
+          else
+            echo "No rulesets dir or empty, skip packaging rulesets."
+          fi
+
+          if [ -d mrs-rules ] && find mrs-rules -type f -print -quit | grep -q . ; then
+            echo "Packaging mrs-rules/"
+            zip -r "mrs-rules-${TODAY}.zip" mrs-rules >/dev/null
+            built_any=true
+            files_list="${files_list}mrs-rules-${TODAY}.zip"$'\n'
+          else
+            echo "No mrs-rules dir or empty, skip packaging mrs-rules."
+          fi
+
+          if [ "$built_any" = "true" ]; then
+            echo "built_any=true" >> "$GITHUB_OUTPUT"
+            # Pass packaged file list to next step
+            printf "%s" "$files_list" | sed '/^$/d' > files_to_upload.txt
+          else
+            echo "built_any=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop (no artifacts to release)
+        if: steps.pkg.outputs.built_any == 'false'
+        shell: bash
+        run: |
+          echo "Nothing to release for ${TODAY}. Job ends gracefully."
+
+      - name: Replace existing release if needed
+        if: steps.pkg.outputs.built_any == 'true' && env.FORCE_REPLACE == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="rules-${TODAY}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists. Deleting (FORCE_REPLACE=true)."
+            gh release delete "$TAG" --yes || true
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" || true
+          else
+            echo "No existing release for $TAG."
+          fi
 
       - name: Create Release and Upload
+        if: steps.pkg.outputs.built_any == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: rules-${{ env.TODAY }}
-          name: Daily Rules Update - ${{ env.TODAY }}
-          body: Automated daily release of processed rule sets for mihomo-core.
-          files: rulesets-${{ env.TODAY }}.zip
+          name: "Daily Rules Update - ${{ env.TODAY }}"
+          body: |
+            Build date (Asia/Shanghai): ${{ env.TODAY }}
+            Build time: ${{ env.BUILD_TIME }}
 
-      - name: Prune Releases Older Than 3 Days (by createdAt)
+            Included artifacts:
+            - rulesets (if present)
+            - mrs-rules (if present)
+          files: |
+            rulesets-${{ env.TODAY }}.zip
+            mrs-rules-${{ env.TODAY }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune Releases Older Than ${{ env.RETAIN_DAYS }} Days (by createdAt)
+        if: steps.pkg.outputs.built_any == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -51,15 +145,16 @@ jobs:
           set -euo pipefail
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo apt-get install -y jq
+            sudo apt-get install -y jq -y
           fi
-          cutoff_ts=$(date -d '3 days ago' +%s)
-          gh release list --limit 100 --json tagName,createdAt \
+
+          cutoff_ts=$(date -d "${RETAIN_DAYS} days ago" +%s)
+          gh release list --limit 200 --json tagName,createdAt \
           | jq -r '.[] | [.tagName, .createdAt] | @tsv' \
           | while IFS=$'\t' read -r tag created; do
               [ -z "$tag" ] && continue
-              rel_ts=$(date -d "$created" +%s || echo 0)
-              if [ "$rel_ts" -lt "$cutoff_ts" ]; then
+              ts=$(date -d "$created" +%s || echo 0)
+              if [ "$ts" -lt "$cutoff_ts" ]; then
                 echo "Deleting old release: $tag ($created)"
                 gh release delete "$tag" --yes || true
                 gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" || true
