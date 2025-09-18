@@ -8,7 +8,7 @@ SOURCE_DIR="rulesets"
 TMP_DIR="${RUNNER_TEMP:-/tmp}/sync-tmp"
 mkdir -p "$TMP_DIR"
 
-# 退出/中断时清理所有下载残留与空目录（更彻底）
+# 退出/中断时清理所有下载残留与空目录
 cleanup() {
   if [ -d "$SOURCE_DIR" ]; then
     find "$SOURCE_DIR" -type f \( -name "*.download" -o -name "*.source" \) -delete 2>/dev/null || true
@@ -27,36 +27,41 @@ force_txt_ext() {
   return 1
 }
 
-# 类型归一化
-canonicalize_type() {
+# 归一化：规则类型（policy：block/direct/proxy）和 type 类型（domain/ipcidr/classical）
+normalize_policy() {
+  local p="${1,,}"
+  case "$p" in
+    reject|block|deny|ad|ads|adblock|拦截|拒绝|屏蔽|广告) echo "block" ;;
+    direct|bypass|no-proxy|直连|直连规则)               echo "direct" ;;
+    proxy|proxied|forward|代理|代理规则)               echo "proxy" ;;
+    *) echo "" ;; # 未识别返回空串
+  esac
+}
+normalize_type() {
   local t="${1,,}"
   case "$t" in
     domain|domains|domainset) echo "domain" ;;
     ip|ipcidr|ip-cidr|cidr)   echo "ipcidr" ;;
     classical|classic|mix|mixed|general|all) echo "classical" ;;
-    *) echo "$t" ;;
+    *) echo "" ;;
   esac
 }
+is_policy_token() { [[ -n "$(normalize_policy "$1")" ]]; }
+is_type_token()   { [[ -n "$(normalize_type   "$1")" ]]; }
 
-is_type_token() {
-  local t
-  t="$(canonicalize_type "$1")"
-  [[ -n "$t" ]]
-}
-
-# 输出相对路径（类型/来源/文件名.映射扩展）
+# 输出相对路径：<policy>/<type>/<owner>/<文件名[映射ext]>
 map_out_relpath() {
-  local type="$1"; local owner="$2"; local fn="$3"
+  local policy="$1"; local type="$2"; local owner="$3"; local fn="$4"
   local ext="${fn##*.}"
   local base="${fn%.*}"
   local mapped="$fn"
   if force_txt_ext "$ext"; then
     mapped="${base}.txt"
   fi
-  echo "${type}/${owner}/${mapped}"
+  echo "${policy}/${type}/${owner}/${mapped}"
 }
 
-# 1) 预清洗 sources.urls：去 BOM/CR、去行尾内联注释、去首尾空白（保留 [type: ...] 行）
+# 1) 预清洗 sources.urls：去 BOM/CR、行尾内联注释、首尾空白（保留 [policy:] 和 [type:] 段落头）
 if [ ! -f sources.urls ]; then
   echo "sources.urls not found, skip."
   exit 0
@@ -69,107 +74,118 @@ awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
 > "$CLEAN"
 
-# 2) 解析类型与 URL，生成 pairs.tsv（格式：type<TAB>url）
-PAIRS="${TMP_DIR}/pairs.tsv"
-: > "$PAIRS"
+# 2) 解析：生成 triplets.tsv（policy \t type \t url）
+TRIPLETS="${TMP_DIR}/triplets.tsv"
+: > "$TRIPLETS"
 
+current_policy="proxy"
 current_type="domain"
 
 while IFS= read -r line; do
-  # 跳过空行/纯注释行
+  # 跳过空行/纯注释
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^# ]] && continue
 
-  # 段落头：[type: domain]
-  if [[ "$line" =~ ^\[type:[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*\]$ ]]; then
-    current_type="$(canonicalize_type "${BASH_REMATCH[1]}")"
-    [[ -z "$current_type" ]] && current_type="domain"
+  # 段落头：[policy: xxx]
+  if [[ "$line" =~ ^\[policy:[[:space:]]*([A-Za-z0-9_\-一-龥]+)[[:space:]]*\]$ ]]; then
+    local np
+    np="$(normalize_policy "${BASH_REMATCH[1]}")"
+    current_policy="${np:-proxy}"
+    continue
+  fi
+  # 段落头：[type: yyy]
+  if [[ "$line" =~ ^\[type:[[:space:]]*([A-Za-z0-9_\-一-龥]+)[[:space:]]*\]$ ]]; then
+    local nt
+    nt="$(normalize_type "${BASH_REMATCH[1]}")"
+    current_type="${nt:-domain}"
     continue
   fi
 
-  # 前缀方式：domain https://...
-  if [[ "$line" =~ ^([A-Za-z0-9_-]+)[[:space:]]+(https?://.+)$ ]]; then
-    tok="${BASH_REMATCH[1]}"
-    url="${BASH_REMATCH[2]}"
-    if is_type_token "$tok"; then
-      t="$(canonicalize_type "$tok")"
-      echo -e "${t}\t${url}" >> "$PAIRS"
-      continue
-    fi
-  fi
-
-  # 显式键值：type=domain https://...
-  if [[ "$line" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_-]+)[[:space:]]+(https?://.+)$ ]]; then
-    t="$(canonicalize_type "${BASH_REMATCH[1]}")"
-    url="${BASH_REMATCH[2]}"
-    echo -e "${t}\t${url}" >> "$PAIRS"
+  # 前缀：两个 token + URL（顺序可互换）
+  if [[ "$line" =~ ^([A-Za-z0-9_\-一-龥]+)[[:space:]]+([A-Za-z0-9_\-一-龥]+)[[:space:]]+(https?://.+)$ ]]; then
+    t1="${BASH_REMATCH[1]}"; t2="${BASH_REMATCH[2]}"; url="${BASH_REMATCH[3]}"
+    pol=""; typ=""
+    if is_policy_token "$t1"; then pol="$(normalize_policy "$t1")"; fi
+    if is_type_token   "$t1"; then typ="$(normalize_type   "$t1")"; fi
+    if is_policy_token "$t2" && [[ -z "$pol" ]]; then pol="$(normalize_policy "$t2")"; fi
+    if is_type_token   "$t2" && [[ -z "$typ" ]]; then typ="$(normalize_type   "$t2")"; fi
+    [[ -z "$pol" ]] && pol="$current_policy"
+    [[ -z "$typ" ]] && typ="$current_type"
+    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
     continue
   fi
 
-  # 仅 URL：使用 current_type
+  # 前缀：一个 token + URL（另一个维度沿用当前值）
+  if [[ "$line" =~ ^([A-Za-z0-9_\-一-龥]+)[[:space:]]+(https?://.+)$ ]]; then
+    tok="${BASH_REMATCH[1]}"; url="${BASH_REMATCH[2]}"
+    pol="$current_policy"; typ="$current_type"
+    if is_policy_token "$tok"; then pol="$(normalize_policy "$tok")"; fi
+    if is_type_token   "$tok"; then typ="$(normalize_type   "$tok")"; fi
+    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
+    continue
+  fi
+
+  # 键值：policy=.. type=.. URL（可只写一个，另一个沿用当前段落）
+  if [[ "$line" =~ ^([^ ]+)[[:space:]]+([^ ]+)[[:space:]]+(https?://.+)$ ]]; then
+    kv1="${BASH_REMATCH[1]}"; kv2="${BASH_REMATCH[2]}"; url="${BASH_REMATCH[3]}"
+    pol="$current_policy"; typ="$current_type"
+    if [[ "$kv1" =~ ^policy[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]]; then tmp="$(normalize_policy "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && pol="$tmp"; fi
+    if [[ "$kv1" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]];   then tmp="$(normalize_type   "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && typ="$tmp"; fi
+    if [[ "$kv2" =~ ^policy[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]]; then tmp="$(normalize_policy "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && pol="$tmp"; fi
+    if [[ "$kv2" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_\-一-龥]+)$ ]];   then tmp="$(normalize_type   "${BASH_REMATCH[1]}")"; [[ -n "$tmp" ]] && typ="$tmp"; fi
+    echo -e "${pol}\t${typ}\t${url}" >> "$TRIPLETS"
+    continue
+  fi
+
+  # 仅 URL：使用当前段落默认
   if [[ "$line" =~ ^https?://.+$ ]]; then
-    echo -e "${current_type}\t${line}" >> "$PAIRS"
+    echo -e "${current_policy}\t${current_type}\t${line}" >> "$TRIPLETS"
     continue
   fi
-
-  # 其他内容忽略
 done < "$CLEAN"
 
-if [ ! -s "$PAIRS" ]; then
+if [ ! -s "$TRIPLETS" ]; then
   echo "No usable URLs after parsing. Skip."
   exit 0
 fi
 
-# 3) 生成净化器（awk）
+# 3) 净化器（awk）
 SAN_AWK="${TMP_DIR}/sanitize.awk"
 cat > "$SAN_AWK" <<'AWK'
 BEGIN { first=1 }
 {
-  # 首行：去 BOM、去 CR、若为 payload: 则删除该行
   if (first) {
     sub(/^\xEF\xBB\xBF/, "")
     sub(/\r$/, "")
     if ($0 ~ /^[[:space:]]*payload:[[:space:]]*$/) { first=0; next }
     first=0
   }
-  # 去 CR
   sub(/\r$/, "")
 
   line = $0
-
-  # 整行注释（去首空格后以 # 或 ! 开头）
   tmp = line
   sub(/^[[:space:]]+/, "", tmp)
   if (tmp ~ /^#/ || tmp ~ /^!/) next
 
-  # 行尾内联注释（空白 + # 之后）
   sub(/[[:space:]]+#.*$/, "", line)
-
-  # YAML 列表项前缀 "- "
   sub(/^[[:space:]]*-[[:space:]]*/, "", line)
 
-  # 去包裹引号
   if (line ~ /^'.*'$/) { line = substr(line, 2, length(line)-2) }
   if (line ~ /^".*"$/) { line = substr(line, 2, length(line)-2) }
 
-  # 去中文逗号后的备注
   sub(/，.*$/, "", line)
 
-  # Trim 首尾空白
   sub(/^[[:space:]]+/, "", line)
   sub(/[[:space:]]+$/, "", line)
 
-  # 规范逗号两侧空格
   gsub(/[[:space:]]*,[[:space:]]*/, ",", line)
 
-  # 跳过空行
   if (line == "") next
-
   print line
 }
 AWK
 
-# 4) 辅助函数
+# 4) 来源目录名解析
 get_owner_dir() {
   local url="$1"
   local host
@@ -190,6 +206,7 @@ get_owner_dir() {
   fi
 }
 
+# 5) 下载（含 Loyalsoldier 路径纠错）
 try_download() {
   local url="$1"; local out="$2"
   local code
@@ -200,7 +217,6 @@ try_download() {
   fi
   echo "Warn ($code): $url"
 
-  # 已知纠错：Loyalsoldier/clash-rules 的 /release/ruleset/ -> /release/
   if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
     local alt="${url/\/release\/ruleset\//\/release\/}"
     echo "Retry with corrected URL: $alt"
@@ -217,17 +233,20 @@ try_download() {
   return 1
 }
 
-# 5) 构建期望文件列表（类型/来源/文件名.映射扩展）并清理“孤儿”
+# 6) 构建期望文件列表并清理“孤儿”
 EXP="${TMP_DIR}/expected_files.list"
 ACT="${TMP_DIR}/actual_files.list"
 : > "$EXP"; : > "$ACT"
 
-while IFS=$'\t' read -r type url; do
+while IFS=$'\t' read -r policy type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  rel_out="$(map_out_relpath "$type" "$owner" "$fn")"
+  # 规范化，确保只有合法值进入目录
+  pol="$(normalize_policy "$policy")"; typ="$(normalize_type "$type")"
+  pol="${pol:-proxy}"; typ="${typ:-domain}"
+  rel_out="$(map_out_relpath "$pol" "$typ" "$owner" "$fn")"
   echo "${SOURCE_DIR}/${rel_out}" >> "$EXP"
-done < "$PAIRS"
+done < "$TRIPLETS"
 
 if [ -d "$SOURCE_DIR" ]; then
   find "$SOURCE_DIR" -type f > "$ACT"
@@ -240,17 +259,19 @@ comm -23 "$ACT" "$EXP" | while read -r f; do
   [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
 done
 
-# 6) 拉取并净化每个规则文件（写入 类型/来源/ 映射后的文件名）
+# 7) 拉取并净化（写入 <policy>/<type>/<owner>/<文件>）
 mkdir -p "$SOURCE_DIR"
 fail_count=0
 
-while IFS=$'\t' read -r type url; do
+while IFS=$'\t' read -r policy type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  rel_out="$(map_out_relpath "$type" "$owner" "$fn")"
+  pol="$(normalize_policy "$policy")"; typ="$(normalize_type "$type")"
+  pol="${pol:-proxy}"; typ="${typ:-domain}"
+  rel_out="$(map_out_relpath "$pol" "$typ" "$owner" "$fn")"
   out="${SOURCE_DIR}/${rel_out}"
 
-  echo "Fetch [$type] -> ${url}"
+  echo "Fetch [${pol}/${typ}] -> ${url}"
   mkdir -p "$(dirname "$out")"
   if ! try_download "$url" "$out"; then
     echo "::warning::Download failed for $url"
@@ -261,12 +282,12 @@ while IFS=$'\t' read -r type url; do
   awk -f "$SAN_AWK" "${out}.download" > "$out"
   rm -f "${out}.download"
   echo "Saved: $out"
-done < "$PAIRS"
+done < "$TRIPLETS"
 
-# 7) 清空空目录 + 兜底清理一切残留
+# 8) 清空空目录 + 兜底清理一切残留
 cleanup
 
-# 8) 失败汇总 + 严格模式
+# 9) 失败汇总 + 严格模式
 if [ "$fail_count" -gt 0 ]; then
   echo "::warning::Total failed sources: $fail_count"
   if [ "$STRICT" = "true" ]; then
@@ -275,7 +296,7 @@ if [ "$fail_count" -gt 0 ]; then
   fi
 fi
 
-# 9) 提交变更（仅在有变更时）
+# 10) 提交变更（仅在有变更时）
 if [[ -z $(git status -s) ]]; then
   echo "No changes."
   exit 0
@@ -284,5 +305,5 @@ fi
 git config user.name 'GitHub Actions Bot'
 git config user.email 'actions@github.com'
 git add -A
-git commit -m "chore(daily-sync): Update rule sets (typed) for $(date +'%Y-%m-%d')"
+git commit -m "chore(daily-sync): Update rule sets (policy/type/source) for $(date +'%Y-%m-%d')"
 git push
