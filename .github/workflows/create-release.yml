@@ -1,12 +1,15 @@
 name: "2. Create Release (merged-rules only, with Build Date)"
 
 on:
-  # 仅在 merged-rules/ 有变更时自动触发
+  # 添加定时触发：每天北京时间 05:40 自动构建
+  schedule:
+    - cron: "40 21 * * *"   # UTC 21:40 = 北京时间 05:40
+  # 保留推送触发
   push:
     branches: [ main ]
     paths:
       - "merged-rules/**"
-  # 支持手动运行
+  # 保留手动触发
   workflow_dispatch:
     inputs:
       tag_date:
@@ -124,7 +127,7 @@ jobs:
           set -euo pipefail
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo apt-get install -y jq -y
+            sudo apt-get install -y jq
           fi
 
           cutoff_ts=$(date -d "${RETAIN_DAYS} days ago" +%s)
