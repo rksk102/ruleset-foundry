@@ -1,11 +1,12 @@
-name: "2. Create Daily Release (with Build Date) and Prune Old Ones"
+name: "2. Create Release (merged-rules only, with Build Date)"
 
 on:
+  # 仅在 merged-rules/ 有变更时自动触发
   push:
     branches: [ main ]
     paths:
-      - "rulesets/**"
-      - "mrs-rules/**"
+      - "merged-rules/**"
+  # 支持手动运行
   workflow_dispatch:
     inputs:
       tag_date:
@@ -25,7 +26,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: create-release
+  group: create-merged-release
   cancel-in-progress: true
 
 env:
@@ -59,39 +60,19 @@ jobs:
           echo "TODAY=$TODAY" >> "$GITHUB_ENV"
           echo "BUILD_TIME=$BUILD_TIME" >> "$GITHUB_ENV"
 
-      - name: Prepare packages
+      - name: Prepare package (merged-rules only)
         id: pkg
         shell: bash
         run: |
           set -euo pipefail
-          rm -f rulesets-*.zip mrs-rules-*.zip || true
+          rm -f merged-rules-*.zip || true
 
-          built_any=false
-          files_list=""
-
-          if [ -d rulesets ] && find rulesets -type f -print -quit | grep -q . ; then
-            echo "Packaging rulesets/"
-            zip -r "rulesets-${TODAY}.zip" rulesets >/dev/null
-            built_any=true
-            files_list="${files_list}rulesets-${TODAY}.zip"$'\n'
-          else
-            echo "No rulesets dir or empty, skip packaging rulesets."
-          fi
-
-          if [ -d mrs-rules ] && find mrs-rules -type f -print -quit | grep -q . ; then
-            echo "Packaging mrs-rules/"
-            zip -r "mrs-rules-${TODAY}.zip" mrs-rules >/dev/null
-            built_any=true
-            files_list="${files_list}mrs-rules-${TODAY}.zip"$'\n'
-          else
-            echo "No mrs-rules dir or empty, skip packaging mrs-rules."
-          fi
-
-          if [ "$built_any" = "true" ]; then
+          if [ -d merged-rules ] && find merged-rules -type f -print -quit | grep -q . ; then
+            echo "Packaging merged-rules/"
+            zip -r "merged-rules-${TODAY}.zip" merged-rules >/dev/null
             echo "built_any=true" >> "$GITHUB_OUTPUT"
-            # Pass packaged file list to next step
-            printf "%s" "$files_list" | sed '/^$/d' > files_to_upload.txt
           else
+            echo "No merged-rules dir or empty, skip packaging."
             echo "built_any=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -117,22 +98,20 @@ jobs:
             echo "No existing release for $TAG."
           fi
 
-      - name: Create Release and Upload
+      - name: Create Release and Upload (merged-rules only)
         if: steps.pkg.outputs.built_any == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: rules-${{ env.TODAY }}
-          name: "Daily Rules Update - ${{ env.TODAY }}"
+          name: "Merged Rules Release - ${{ env.TODAY }}"
           body: |
             Build date (Asia/Shanghai): ${{ env.TODAY }}
             Build time: ${{ env.BUILD_TIME }}
 
             Included artifacts:
-            - rulesets (if present)
-            - mrs-rules (if present)
+            - merged-rules (only)
           files: |
-            rulesets-${{ env.TODAY }}.zip
-            mrs-rules-${{ env.TODAY }}.zip
+            merged-rules-${{ env.TODAY }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
