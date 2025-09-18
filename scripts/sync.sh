@@ -18,51 +18,109 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 扩展名映射：哪些输入扩展需要强制保存为 .txt
-# 现在只启用 list → txt，如需扩展可把 rule rules 添加进来（空格分隔）
 FORCE_TXT_EXTS="list"
-
 force_txt_ext() {
-  local ext="${1,,}"              # 小写
+  local ext="${1,,}"
   for t in $FORCE_TXT_EXTS; do
     if [[ "$ext" == "$t" ]]; then return 0; fi
   done
   return 1
 }
 
-# 计算输出的相对路径（带可能的扩展名映射）
-# 输入：owner, filename（原始文件名，如 reject.list）
-# 输出：owner/<name>.txt 或 owner/<filename>
-map_out_relpath() {
-  local owner="$1"; local fn="$2"
-  local ext="${fn##*.}"
-  local base="${fn%.*}"
-  if force_txt_ext "$ext"; then
-    echo "${owner}/${base}.txt"
-  else
-    echo "${owner}/${fn}"
-  fi
+# 类型归一化
+canonicalize_type() {
+  local t="${1,,}"
+  case "$t" in
+    domain|domains|domainset) echo "domain" ;;
+    ip|ipcidr|ip-cidr|cidr)   echo "ipcidr" ;;
+    classical|classic|mix|mixed|general|all) echo "classical" ;;
+    *) echo "$t" ;;
+  esac
 }
 
-# 1) 预清洗 sources.urls：去 BOM/CR、去行尾内联注释、去首尾空白、过滤空行与整行注释
+is_type_token() {
+  local t
+  t="$(canonicalize_type "$1")"
+  [[ -n "$t" ]]
+}
+
+# 输出相对路径（类型/来源/文件名.映射扩展）
+map_out_relpath() {
+  local type="$1"; local owner="$2"; local fn="$3"
+  local ext="${fn##*.}"
+  local base="${fn%.*}"
+  local mapped="$fn"
+  if force_txt_ext "$ext"; then
+    mapped="${base}.txt"
+  fi
+  echo "${type}/${owner}/${mapped}"
+}
+
+# 1) 预清洗 sources.urls：去 BOM/CR、去行尾内联注释、去首尾空白（保留 [type: ...] 行）
 if [ ! -f sources.urls ]; then
   echo "sources.urls not found, skip."
   exit 0
 fi
 
-URLS="${TMP_DIR}/urls.cleaned"
+CLEAN="${TMP_DIR}/sources.cleaned"
 awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
 | sed 's/\r$//' \
 | sed -E 's/[[:space:]]+#.*$//' \
 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-| grep -v -E '^#|^$' \
-> "$URLS"
+> "$CLEAN"
 
-if [ ! -s "$URLS" ]; then
-  echo "No usable URLs after cleaning. Skip."
+# 2) 解析类型与 URL，生成 pairs.tsv（格式：type<TAB>url）
+PAIRS="${TMP_DIR}/pairs.tsv"
+: > "$PAIRS"
+
+current_type="domain"
+
+while IFS= read -r line; do
+  # 跳过空行/纯注释行
+  [[ -z "$line" ]] && continue
+  [[ "$line" =~ ^# ]] && continue
+
+  # 段落头：[type: domain]
+  if [[ "$line" =~ ^\[type:[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*\]$ ]]; then
+    current_type="$(canonicalize_type "${BASH_REMATCH[1]}")"
+    [[ -z "$current_type" ]] && current_type="domain"
+    continue
+  fi
+
+  # 前缀方式：domain https://...
+  if [[ "$line" =~ ^([A-Za-z0-9_-]+)[[:space:]]+(https?://.+)$ ]]; then
+    tok="${BASH_REMATCH[1]}"
+    url="${BASH_REMATCH[2]}"
+    if is_type_token "$tok"; then
+      t="$(canonicalize_type "$tok")"
+      echo -e "${t}\t${url}" >> "$PAIRS"
+      continue
+    fi
+  fi
+
+  # 显式键值：type=domain https://...
+  if [[ "$line" =~ ^type[[:space:]]*[:=][[:space:]]*([A-Za-z0-9_-]+)[[:space:]]+(https?://.+)$ ]]; then
+    t="$(canonicalize_type "${BASH_REMATCH[1]}")"
+    url="${BASH_REMATCH[2]}"
+    echo -e "${t}\t${url}" >> "$PAIRS"
+    continue
+  fi
+
+  # 仅 URL：使用 current_type
+  if [[ "$line" =~ ^https?://.+$ ]]; then
+    echo -e "${current_type}\t${line}" >> "$PAIRS"
+    continue
+  fi
+
+  # 其他内容忽略
+done < "$CLEAN"
+
+if [ ! -s "$PAIRS" ]; then
+  echo "No usable URLs after parsing. Skip."
   exit 0
 fi
 
-# 2) 生成净化器（awk）
+# 3) 生成净化器（awk）
 SAN_AWK="${TMP_DIR}/sanitize.awk"
 cat > "$SAN_AWK" <<'AWK'
 BEGIN { first=1 }
@@ -111,7 +169,7 @@ BEGIN { first=1 }
 }
 AWK
 
-# 3) 辅助函数
+# 4) 辅助函数
 get_owner_dir() {
   local url="$1"
   local host
@@ -135,7 +193,6 @@ get_owner_dir() {
 try_download() {
   local url="$1"; local out="$2"
   local code
-  # 第一次下载
   code=$(curl -sL --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
   if [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && [ -s "${out}.download" ]; then
     echo "OK  ($code): $url"
@@ -143,7 +200,7 @@ try_download() {
   fi
   echo "Warn ($code): $url"
 
-  # 已知纠错：/release/ruleset/ -> /release/
+  # 已知纠错：Loyalsoldier/clash-rules 的 /release/ruleset/ -> /release/
   if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
     local alt="${url/\/release\/ruleset\//\/release\/}"
     echo "Retry with corrected URL: $alt"
@@ -156,21 +213,21 @@ try_download() {
     fi
   fi
 
-  rm -f "${out}.download}"
+  rm -f "${out}.download"
   return 1
 }
 
-# 4) 构建期望文件列表并清理“孤儿”文件（使用映射后的目标路径）
+# 5) 构建期望文件列表（类型/来源/文件名.映射扩展）并清理“孤儿”
 EXP="${TMP_DIR}/expected_files.list"
 ACT="${TMP_DIR}/actual_files.list"
 : > "$EXP"; : > "$ACT"
 
-while IFS= read -r url; do
+while IFS=$'\t' read -r type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  rel_out="$(map_out_relpath "$owner" "$fn")"
+  rel_out="$(map_out_relpath "$type" "$owner" "$fn")"
   echo "${SOURCE_DIR}/${rel_out}" >> "$EXP"
-done < "$URLS"
+done < "$PAIRS"
 
 if [ -d "$SOURCE_DIR" ]; then
   find "$SOURCE_DIR" -type f > "$ACT"
@@ -179,22 +236,21 @@ fi
 sort -u "$ACT" -o "$ACT" || true
 sort -u "$EXP" -o "$EXP"
 
-# 删除“孤儿”文件（历史的 .list 会被识别为孤儿并删除）
 comm -23 "$ACT" "$EXP" | while read -r f; do
   [ -n "$f" ] && echo "Prune: $f" && rm -f "$f" || true
 done
 
-# 5) 拉取并净化每个规则文件（保存为映射后的 .txt）
+# 6) 拉取并净化每个规则文件（写入 类型/来源/ 映射后的文件名）
 mkdir -p "$SOURCE_DIR"
 fail_count=0
 
-while IFS= read -r url; do
+while IFS=$'\t' read -r type url; do
   owner="$(get_owner_dir "$url")"
   fn="$(basename "$url")"
-  rel_out="$(map_out_relpath "$owner" "$fn")"
+  rel_out="$(map_out_relpath "$type" "$owner" "$fn")"
   out="${SOURCE_DIR}/${rel_out}"
 
-  echo "Fetch -> ${url}"
+  echo "Fetch [$type] -> ${url}"
   mkdir -p "$(dirname "$out")"
   if ! try_download "$url" "$out"; then
     echo "::warning::Download failed for $url"
@@ -202,16 +258,15 @@ while IFS= read -r url; do
     continue
   fi
 
-  # 使用 awk 净化器（适配 mihomo-core）
   awk -f "$SAN_AWK" "${out}.download" > "$out"
   rm -f "${out}.download"
   echo "Saved: $out"
-done < "$URLS"
+done < "$PAIRS"
 
-# 6) 清空空目录 + 兜底清理一切残留
+# 7) 清空空目录 + 兜底清理一切残留
 cleanup
 
-# 7) 失败汇总 + 严格模式
+# 8) 失败汇总 + 严格模式
 if [ "$fail_count" -gt 0 ]; then
   echo "::warning::Total failed sources: $fail_count"
   if [ "$STRICT" = "true" ]; then
@@ -220,7 +275,7 @@ if [ "$fail_count" -gt 0 ]; then
   fi
 fi
 
-# 8) 提交变更（仅在有变更时）
+# 9) 提交变更（仅在有变更时）
 if [[ -z $(git status -s) ]]; then
   echo "No changes."
   exit 0
@@ -229,5 +284,5 @@ fi
 git config user.name 'GitHub Actions Bot'
 git config user.email 'actions@github.com'
 git add -A
-git commit -m "chore(daily-sync): Update rule sets for $(date +'%Y-%m-%d')"
+git commit -m "chore(daily-sync): Update rule sets (typed) for $(date +'%Y-%m-%d')"
 git push
