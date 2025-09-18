@@ -1,7 +1,7 @@
 # 只需把 raw 链接粘贴在这里即可，一行一个
 [policy:reject]
 [type:domain]
-https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
+https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
@@ -12,9 +12,11 @@ https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 [policy:direct]
 [type:domain]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt
+https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/china-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/apple-cn.txt
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
 
 
 [policy:policy]
@@ -25,8 +27,14 @@ https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
-
+https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
 
 [policy:direct]
 [type:ipcidr]
+#已检查
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
+#已检查
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+已检查
+https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+
