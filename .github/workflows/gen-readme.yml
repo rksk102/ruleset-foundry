@@ -15,8 +15,10 @@ on:
         options:
           - "jsdelivr"
           - "raw"
-  schedule:
-    - cron: "35 21 * * *"   # 每天北京时区 05:35，跟随合并任务之后
+  workflow_run:
+    workflows: ["5. Merge Rule Sets (Smart Copy)"]
+    types: [completed]
+    branches: [main]
   push:
     branches: [ main ]
     paths:
@@ -36,6 +38,8 @@ env:
 jobs:
   gen-readme:
     runs-on: ubuntu-latest
+    # 只在前置工作流成功时运行（如果是 workflow_run 触发）
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
