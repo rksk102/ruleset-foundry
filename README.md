@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-18
-- Build time: 2025-09-18 18:45:58 CST
+- Build time: 2025-09-18 18:51:38 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -13,6 +13,7 @@
 | File | Behavior | URL |
 |---|---|---|
 | all-adblock.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/all-adblock.txt |
+| all-proxy.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/all-proxy.txt |
 | cnip.txt | ipcidr | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/cnip.txt |
 | direct-all.txt | classical | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct-all.txt |
 
@@ -56,8 +57,6 @@ rule-providers:
 | direct | domain | github.com | microsoft-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/github.com/microsoft-cn.txt |
 | direct | ipcidr | Loyalsoldier | lancidr.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/Loyalsoldier/lancidr.txt |
 | proxy | domain | Loyalsoldier | gfw.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/gfw.txt |
-| proxy | domain | Loyalsoldier | proxy-list.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/proxy-list.txt |
-| proxy | domain | Loyalsoldier | proxy.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/proxy.txt |
 | proxy | domain | Loyalsoldier | telegramcidr.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/telegramcidr.txt |
 | proxy | domain | Loyalsoldier | tld-not-cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/tld-not-cn.txt |
 | proxy | domain | gh-proxy.com | category-ai-!cn.txt | https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/gh-proxy.com/category-ai-!cn.txt |
