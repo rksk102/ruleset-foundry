@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 配置（可由工作流 inputs 覆盖）
+# 仅针对 merged-rules 目录生成 README
 TZ="${TZ:-Asia/Shanghai}"
-INPUT_REF="${INPUT_REF:-}"          # 例如 rules-2025-09-18；为空则默认 main
-INPUT_CDN="${INPUT_CDN:-jsdelivr}"  # jsdelivr 或 raw
+INPUT_REF="${INPUT_REF:-}"
+INPUT_CDN="${INPUT_CDN:-jsdelivr}"
 
 REPO="${GITHUB_REPOSITORY:-}"
 if [ -z "$REPO" ]; then
-  # 从 git remote 推断
   origin_url="$(git remote get-url origin 2>/dev/null || echo "")"
-  # 支持 https://github.com/owner/repo.git 或 git@github.com:owner/repo.git
   REPO="$(echo "$origin_url" \
     | sed -E 's#^git@github.com:([^/]+)/([^/]+)(\.git)?$#\1/\2#' \
     | sed -E 's#^https?://github.com/([^/]+)/([^/]+)(\.git)?$#\1/\2#')"
@@ -29,12 +27,38 @@ build_url() {
   esac
 }
 
+detect_behavior() {
+  local f="$1"
+  awk '
+    BEGIN{total=0; domain_ok=1; ipcidr_ok=1}
+    {
+      line=$0
+      sub(/^[ \t]+/,"",line); sub(/[ \t]+$/,"",line)
+      if (line=="" || line ~ /^[#!]/) next
+      total++
+      if (line !~ /^(\*?[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$/) domain_ok=0
+      if (line !~ /^(([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}|[0-9A-Fa-f:]+\/[0-9]{1,3})$/) ipcidr_ok=0
+    }
+    END{
+      if (total==0) { print "domain"; exit }
+      if (domain_ok==1) { print "domain"; exit }
+      if (ipcidr_ok==1) { print "ipcidr"; exit }
+      print "classical"
+    }
+  ' "$f"
+}
+
 now_date="$(TZ="$TZ" date +'%Y-%m-%d')"
 now_time="$(TZ="$TZ" date +'%Y-%m-%d %H:%M:%S %Z')"
 
+if [ ! -d merged-rules ]; then
+  echo "merged-rules directory not found. Nothing to do."
+  exit 0
+fi
+
 TMP_README="$(mktemp)"
 {
-  echo "# Rule Sets Index"
+  echo "# Merged Rules Index"
   echo
   echo "- Build date: ${now_date}"
   echo "- Build time: ${now_time}"
@@ -42,104 +66,89 @@ TMP_README="$(mktemp)"
   echo "- Ref: ${REF}"
   echo "- CDN: ${CDN}"
   echo
-  echo "说明：下表列出了每个规则文件的拉取直链，可直接用于 mihomo 的 rule-providers。目录结构为 rulesets/<policy>/<type>/<owner>/<file>。"
+  echo "本索引仅针对 merged-rules/。根目录为合并产物（建议优先引用），子目录中为未参与任何合并的镜像原文件（保留原始的 policy/type/owner 结构）。"
   echo
 
-  if [ -d rulesets ] && find rulesets -type f -print -quit | grep -q . ; then
-    echo "## Text Rule Sets (rulesets/)"
+  echo "## 1) 合并产物（merged-rules 根目录，推荐引用）"
+  if find merged-rules -maxdepth 1 -type f -print -quit | grep -q . ; then
     echo
-    echo "| Policy | Type | Owner | File | URL |"
-    echo "|---|---|---|---|---|"
+    echo "| File | Behavior | URL |"
+    echo "|---|---|---|"
     while IFS= read -r -d '' f; do
-      rel="${f#rulesets/}"
-      policy="$(echo "$rel" | cut -d/ -f1)"
-      rtype="$(echo "$rel" | cut -d/ -f2)"
-      owner="$(echo "$rel" | cut -d/ -f3)"
       file="$(basename "$f")"
-      url="$(build_url "rulesets/${policy}/${rtype}/${owner}/${file}")"
-      printf "| %s | %s | %s | %s | %s |\n" "$policy" "$rtype" "$owner" "$file" "$url"
-    done < <(find rulesets -type f -print0 | sort -z)
+      beh="$(detect_behavior "$f")"
+      url="$(build_url "merged-rules/${file}")"
+      printf "| %s | %s | %s |\n" "$file" "$beh" "$url"
+    done < <(find merged-rules -maxdepth 1 -type f -print0 | sort -z)
     echo
     echo '示例（mihomo rule-providers）：'
     echo '```yaml'
-    echo '# 选取表格中的某个 URL 替换 <URL>'
+    echo '# 将 <URL> 替换为上表对应链接'
     echo 'rule-providers:'
-    echo '  Example-Domain:'
+    echo '  Merged-Domain:'
     echo '    type: http'
-    echo '    behavior: domain      # 对应 type=domain'
+    echo '    behavior: domain'
     echo '    format: text'
     echo '    url: <URL>'
     echo '    interval: 86400'
     echo ''
-    echo '  Example-IPCidr:'
+    echo '  Merged-IPCidr:'
     echo '    type: http'
-    echo '    behavior: ipcidr      # 对应 type=ipcidr'
+    echo '    behavior: ipcidr'
     echo '    format: text'
     echo '    url: <URL>'
     echo '    interval: 86400'
     echo ''
-    echo '  Example-Classical:'
+    echo '  Merged-Classical:'
     echo '    type: http'
-    echo '    behavior: classical   # 对应 type=classical'
+    echo '    behavior: classical'
     echo '    format: text'
     echo '    url: <URL>'
     echo '    interval: 86400'
     echo '```'
-    echo
   else
-    echo "## Text Rule Sets (rulesets/)"
     echo
-    echo "_No files found under rulesets/_"
-    echo
+    echo "_No merged files at merged-rules/ root_"
   fi
+  echo
 
-  if [ -d mrs-rules ] && find mrs-rules -type f -name '*.mrs' -print -quit | grep -q . ; then
-    echo "## MRS Rule Sets (mrs-rules/)"
+  echo "## 2) 未合并的镜像原文件（merged-rules/<policy>/<type>/<owner>/...）"
+  if find merged-rules -mindepth 2 -type f -print -quit | grep -q . ; then
     echo
     echo "| Policy | Type | Owner | File | URL |"
     echo "|---|---|---|---|---|"
     while IFS= read -r -d '' f; do
-      rel="${f#mrs-rules/}"
+      rel="${f#merged-rules/}"
       policy="$(echo "$rel" | cut -d/ -f1)"
       rtype="$(echo "$rel" | cut -d/ -f2)"
       owner="$(echo "$rel" | cut -d/ -f3)"
       file="$(basename "$f")"
-      url="$(build_url "mrs-rules/${policy}/${rtype}/${owner}/${file}")"
+      url="$(build_url "merged-rules/${policy}/${rtype}/${owner}/${file}")"
       printf "| %s | %s | %s | %s | %s |\n" "$policy" "$rtype" "$owner" "$file" "$url"
-    done < <(find mrs-rules -type f -name '*.mrs' -print0 | sort -z)
+    done < <(find merged-rules -mindepth 2 -type f -print0 | sort -z)
     echo
-    echo '示例（mihomo rule-providers，MRS 二进制）：'
+    echo '示例（mihomo rule-providers，按路径中的 type 选择 behavior）：'
     echo '```yaml'
+    echo '# type=domain -> behavior: domain'
+    echo '# type=ipcidr -> behavior: ipcidr'
+    echo '# type=classical -> behavior: classical'
     echo 'rule-providers:'
-    echo '  Example-MRS-Domain:'
+    echo '  Example-From-Mirrored:'
     echo '    type: http'
-    echo '    behavior: domain'
-    echo '    format: mrs'
-    echo '    url: <URL>'
-    echo '    interval: 86400'
-    echo ''
-    echo '  Example-MRS-IPCidr:'
-    echo '    type: http'
-    echo '    behavior: ipcidr'
-    echo '    format: mrs'
-    echo '    url: <URL>'
-    echo '    interval: 86400'
-    echo ''
-    echo '  Example-MRS-Classical:'
-    echo '    type: http'
-    echo '    behavior: classical'
-    echo '    format: mrs'
+    echo '    behavior: domain   # 替换为对应类型'
+    echo '    format: text'
     echo '    url: <URL>'
     echo '    interval: 86400'
     echo '```'
+  else
     echo
+    echo "_No mirrored unmerged files under merged-rules/_"
   fi
-
+  echo
   echo "---"
-  echo "_This README is auto-generated. Do not edit manually._"
+  echo "_This README is auto-generated from merged-rules. Do not edit manually._"
 } > "$TMP_README"
 
-# 覆盖写入 README.md（仅当有变化时）
 if [ -f README.md ]; then
   if cmp -s "$TMP_README" README.md; then
     echo "README.md unchanged."
@@ -150,12 +159,11 @@ fi
 
 mv "$TMP_README" README.md
 
-# 提交变更（仅 README）
 if [[ -n "$(git status --porcelain README.md)" ]]; then
   git config user.name 'GitHub Actions Bot'
   git config user.email 'actions@github.com'
   git add README.md
-  git commit -m "docs(readme): auto-update index at ${now_time}"
+  git commit -m "docs(readme): auto-update (merged-rules) at ${now_time}"
   git push
 else
   echo "No changes to commit for README.md."
