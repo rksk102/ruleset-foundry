@@ -3,11 +3,11 @@
 > 自动生成的 merged-rules 索引：列出该目录下的全部规则文件（包含子目录），并依据路径结构标注分类。
 
 - Build date: 2025-09-19
-- Build time: 2025-09-19 18:04:11 CST
+- Build time: 2025-09-19 19:43:18 CST
 - Repo: rksk102/rules-Repository
 - Ref: `main`
 - Links via: `jsdelivr`
-- Files total: 17
+- Files total: 16
 
 字段说明：
 - Policy: 路径第 1 段（block/direct/proxy）；根目录文件标记为 merged
@@ -31,7 +31,6 @@
 | direct | ipcidr | Loyalsoldier | `lancidr.txt` | `direct/ipcidr/Loyalsoldier/lancidr.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/Loyalsoldier/lancidr.txt) |
 | direct | ipcidr | rksk102 | `cnip.txt` | `direct/ipcidr/rksk102/cnip.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/ipcidr/rksk102/cnip.txt) |
 | proxy | domain | Loyalsoldier | `gfw.txt` | `proxy/domain/Loyalsoldier/gfw.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/gfw.txt) |
-| proxy | domain | Loyalsoldier | `telegramcidr.txt` | `proxy/domain/Loyalsoldier/telegramcidr.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/telegramcidr.txt) |
 | proxy | domain | Loyalsoldier | `tld-not-cn.txt` | `proxy/domain/Loyalsoldier/tld-not-cn.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/Loyalsoldier/tld-not-cn.txt) |
 | proxy | domain | gh-proxy.com | `category-ai-!cn.txt` | `proxy/domain/gh-proxy.com/category-ai-!cn.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/gh-proxy.com/category-ai-!cn.txt) |
 | proxy | domain | rksk102 | `all-proxy.txt` | `proxy/domain/rksk102/all-proxy.txt` | [Open](https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/proxy/domain/rksk102/all-proxy.txt) |
