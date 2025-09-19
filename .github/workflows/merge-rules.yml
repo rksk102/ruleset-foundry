@@ -8,13 +8,6 @@ on:
         required: false
         type: string
         default: "merge-config.yaml"
-  push:
-    branches: [ main ]
-    paths:
-      - "rulesets/**"
-      - "merge-config.yaml"
-      - "scripts/merge-rules.sh"
-      - "scripts/type-check-and-merge.sh"
 
 permissions:
   contents: write
