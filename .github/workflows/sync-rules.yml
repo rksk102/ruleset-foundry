@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write
-  actions: write  # 需要触发其他工作流
+  actions: write
 
 concurrency:
   group: sync-rules
@@ -27,7 +27,7 @@ jobs:
       - name: Run sync script
         shell: bash
         env:
-          STRICT: "false"   # 任一源失败就终止可改 "true"
+          STRICT: "false"   # 任一源失败就终止可改为 "true"
         run: scripts/sync.sh
 
       # 触发下一个工作流：merge-rules
