@@ -1,234 +1,182 @@
 #!/usr/bin/env bash
+# 合并 rulesets 下的文件到 merge-outputs/，并输出 merge-used.list 与 merge-map.tsv
 set -euo pipefail
 
-# 基本配置
-SOURCE_DIR="${SOURCE_DIR:-rulesets}"
-OUTPUT_DIR="${OUTPUT_DIR:-merged-rules}"
 CONFIG_FILE="${CONFIG_FILE:-merge-config.yaml}"
 
-# 临时目录
-TMP_DIR="${RUNNER_TEMP:-/tmp}/merge-tmp"
-mkdir -p "$TMP_DIR"
+echo "[merge] Using config: ${CONFIG_FILE}" >&2
 
-# 启用 ** 递归通配与空匹配不报错
-shopt -s globstar nullglob
+# 用 Python 解析 YAML（优先 PyYAML；若无则用简易解析器），并执行合并逻辑
+python3 - <<'PY'
+import os, sys, re, glob, io
+from collections import OrderedDict
 
-# 规范化路径函数（优先 realpath，兼容 readlink -f）
-canon() {
-  local p="$1"
-  if command -v realpath >/dev/null 2>&1; then
-    realpath -m "$p"
-  else
-    readlink -f "$p"
-  fi
-}
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "merge-config.yaml")
+OUT_DIR = "merge-outputs"
+USED_LIST = "merge-used.list"
+MAP_TSV = "merge-map.tsv"
 
-# 记录参与合并的“源文件（规范化绝对路径）”
-MERGED_FILES_LIST="${TMP_DIR}/merged_files.list"
-: > "$MERGED_FILES_LIST"
+# 读取文件
+with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+    text = f.read()
 
-# 规范化源目录与输出目录
-SRC_ABS="$(canon "$SOURCE_DIR")"
-OUT_ABS="$(canon "$OUTPUT_DIR")"
+# 尝试 PyYAML 解析
+merges = None
+try:
+    import yaml
+    data = yaml.safe_load(text) or {}
+    merges = data.get('merges', []) or []
+except Exception:
+    # 简易解析器（适配示例格式）
+    merges = []
+    in_merges = False
+    cur = None
+    in_inputs = False
+    for raw in text.splitlines():
+        line = raw.rstrip('\n')
+        if re.match(r'^\s*#', line) or line.strip() == '':
+            continue
+        if re.match(r'^\s*merges\s*:\s*$', line):
+            in_merges = True
+            continue
+        if not in_merges:
+            continue
+        # 新条目
+        m = re.match(r'^\s*-\s+name:\s*(.+?)\s*$', line)
+        if m:
+            name = m.group(1).strip().strip('"').strip("'")
+            cur = {"name": name, "inputs": [], "description": ""}
+            merges.append(cur)
+            in_inputs = False
+            continue
+        # 描述
+        m = re.match(r'^\s*description:\s*(.+?)\s*$', line)
+        if m and cur is not None:
+            desc = m.group(1).strip().strip('"').strip("'")
+            cur["description"] = desc
+            continue
+        # inputs 块开始
+        if re.match(r'^\s*inputs\s*:\s*$', line):
+            in_inputs = True
+            continue
+        # inputs 列表项
+        m = re.match(r'^\s*-\s+(.+?)\s*$', line)
+        if m and in_inputs and cur is not None:
+            pat = m.group(1).strip().strip('"').strip("'")
+            cur["inputs"].append(pat)
+            continue
+        # 其他情况忽略（或下一条目开始时覆盖）
 
-echo "=== Rule Sets Merger (fixed) ==="
-echo "Source: $SRC_ABS"
-echo "Output: $OUT_ABS"
-echo "Config: $( [ -f "$CONFIG_FILE" ] && canon "$CONFIG_FILE" || echo "$CONFIG_FILE (will create sample)" )"
-echo
+# 归一化策略（从路径首段或 name 键推断）
+def normalize_policy(s: str) -> str:
+    s = (s or "").lower()
+    if re.search(r'(reject|block|deny|ads?|adblock|拦截|拒绝|屏蔽|广告)', s): return "block"
+    if re.search(r'(direct|bypass|no-?proxy|直连)', s): return "direct"
+    if re.search(r'(proxy|proxied|forward|代理)', s): return "proxy"
+    return ""
 
-# 若无配置，生成示例
-if [ ! -f "$CONFIG_FILE" ]; then
-  cat > "$CONFIG_FILE" <<'EOF'
-merges:
-  - name: all-adblock.txt
-    description: "所有广告拦截域名规则"
-    inputs:
-      - block/domain/**/*.txt
+os.makedirs(OUT_DIR, exist_ok=True)
+used_set = set()
+merge_map = []  # (name, policy)
 
-  - name: all-direct.txt
-    description: "所有直连域名规则"
-    inputs:
-      - direct/domain/**/*.txt
+def rel_rulesets(path: str) -> str:
+    if path.startswith("rulesets/"):
+        return path[len("rulesets/"):]
+    return path
 
-  - name: all-proxy.txt
-    description: "所有代理域名规则"
-    inputs:
-      - proxy/domain/**/*.txt
+def list_inputs(inputs):
+    files = []
+    for pat in inputs:
+        patt = os.path.join("rulesets", pat)
+        matches = glob.glob(patt, recursive=True)
+        if not matches:
+            print(f"[merge] warn: no matches for pattern: {pat}", file=sys.stderr)
+        for p in matches:
+            if os.path.isfile(p):
+                files.append(p)
+    # 去重、稳定顺序
+    seen = set()
+    res = []
+    for p in files:
+        if p not in seen:
+            seen.add(p)
+            res.append(p)
+    return res
 
-  - name: china-ip.txt
-    description: "中国大陆IP段"
-    inputs:
-      - direct/ipcidr/**/*.txt
+def merge_one(name: str, inputs: list, description: str):
+    # 推断策略：优先用第一个输入的首段 policy，否则看 name；再没有则默认 proxy
+    policy = "proxy"
+    if inputs:
+        first_rel = rel_rulesets(inputs[0])
+        head = first_rel.split("/", 1)[0]
+        pol = normalize_policy(head)
+        if pol: policy = pol
+    if not inputs:
+        # 用 name 启发（all-proxy 等）
+        pol2 = normalize_policy(name)
+        if pol2: policy = pol2
 
-  - name: ultimate-adblock.txt
-    description: "终极广告拦截（域名+IP+classical）"
-    inputs:
-      - block/domain/**/*.txt
-      - block/ipcidr/**/*.txt
-      - block/classical/**/*.txt
-EOF
-  echo "Created sample $CONFIG_FILE"
-fi
+    # 输出文件
+    out_path = os.path.join(OUT_DIR, name)
+    # 确保扩展名
+    if not re.search(r'\.txt$', out_path, re.IGNORECASE):
+        out_path += ".txt"
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-# 清空输出目录
-rm -rf "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR"
+    # 去重合并（跳过空行/注释），保持行序
+    uniq = OrderedDict()
+    for p in inputs:
+        try:
+            with open(p, 'r', encoding='utf-8', errors='ignore') as fin:
+                for line in fin:
+                    s = line.strip()
+                    if not s: continue
+                    if s.startswith('#') or s.startswith('!'): continue
+                    if s not in uniq:
+                        uniq[s] = True
+        except Exception as e:
+            print(f"[merge] warn: read fail {p}: {e}", file=sys.stderr)
 
-# 简易 YAML 解析：识别 - name: / description: / inputs: - 模式
-process_merges() {
-  local in_task=0 in_inputs=0
-  local current_name="" current_desc=""
-  local inputs=()
+    with open(out_path, 'w', encoding='utf-8') as fout:
+        fout.write(f"# merged by merge-rules.sh\n")
+        if description:
+            fout.write(f"# {description}\n")
+        fout.write(f"# inputs: {len(inputs)} files\n")
+        for s in uniq.keys():
+            fout.write(s + "\n")
 
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    # 记录 used
+    for p in inputs:
+        used_set.add(rel_rulesets(p))
 
-    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.+)$ ]]; then
-      if [ -n "$current_name" ] && [ ${#inputs[@]} -gt 0 ]; then
-        execute_merge "$current_name" "$current_desc" "${inputs[@]}"
-      fi
-      in_task=1; in_inputs=0
-      current_name="$(echo "${BASH_REMATCH[1]}" | sed 's/^"[[:space:]]*//; s/[[:space:]]*"$//')"
-      current_desc=""
-      inputs=()
-      continue
-    fi
+    # 记录策略映射
+    base = os.path.basename(out_path)
+    merge_map.append((base, policy))
+    print(f"[merge] built {out_path} (lines={len(uniq)})", file=sys.stderr)
 
-    if [ $in_task -eq 1 ] && [[ "$line" =~ ^[[:space:]]*description:[[:space:]]*(.+)$ ]]; then
-      current_desc="$(echo "${BASH_REMATCH[1]}" | sed 's/^"[[:space:]]*//; s/[[:space:]]*"$//')"
-      continue
-    fi
+# 遍历配置执行合并
+n = 0
+for m in merges:
+    name = (m.get("name") or "").strip()
+    inputs = list_inputs(m.get("inputs") or [])
+    desc = (m.get("description") or "").strip()
+    if not name:
+        print("[merge] skip item without name", file=sys.stderr)
+        continue
+    merge_one(name, inputs, desc)
+    n += 1
 
-    if [ $in_task -eq 1 ] && [[ "$line" =~ ^[[:space:]]*inputs:[[:space:]]*$ ]]; then
-      in_inputs=1
-      continue
-    fi
+# 输出 used list
+with open(USED_LIST, 'w', encoding='utf-8') as f:
+    for rel in sorted(used_set):
+        f.write(rel + "\n")
 
-    if [ $in_task -eq 1 ] && [ $in_inputs -eq 1 ] && [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.+)$ ]]; then
-      local pat="$(echo "${BASH_REMATCH[1]}" | sed 's/^"[[:space:]]*//; s/[[:space:]]*"$//')"
-      inputs+=("$pat")
-      continue
-    fi
+# 输出 merge-map.tsv：name<TAB>policy
+with open(MAP_TSV, 'w', encoding='utf-8') as f:
+    for name, policy in merge_map:
+        f.write(f"{name}\t{policy}\n")
 
-    if [ $in_task -eq 1 ] && [ $in_inputs -eq 1 ] && ! [[ "$line" =~ ^[[:space:]]*-[[:space:]]*.+$ ]]; then
-      in_inputs=0
-      continue
-    fi
-  done < "$CONFIG_FILE"
+print(f"[merge] outputs: {n}, used files: {len(used_set)}", file=sys.stderr)
+PY
 
-  if [ -n "$current_name" ] && [ ${#inputs[@]} -gt 0 ]; then
-    execute_merge "$current_name" "$current_desc" "${inputs[@]}"
-  fi
-}
-
-execute_merge() {
-  local name="$1"; local desc="$2"; shift 2
-  local input_patterns=("$@")
-
-  echo "----------------------------------------"
-  echo "Merging: $name"
-  [ -n "$desc" ] && echo "Description: $desc"
-
-  local tmp_all="${TMP_DIR}/merge_$$_all.txt"
-  : > "$tmp_all"
-
-  local matched_files=()
-  local pat
-  for pat in "${input_patterns[@]}"; do
-    for file in "$SOURCE_DIR"/$pat; do
-      [ -f "$file" ] && matched_files+=("$(canon "$file")")
-    done
-  done
-
-  if [ ${#matched_files[@]} -gt 0 ]; then
-    printf "%s\n" "${matched_files[@]}" | sort -u > "${TMP_DIR}/matched_$$_uniq.list"
-  else
-    echo "  ! No files matched. Skip task."
-    return
-  fi
-
-  local cnt_files
-  cnt_files=$(wc -l < "${TMP_DIR}/matched_$$_uniq.list" | tr -d ' ')
-  echo "  Matched files: $cnt_files"
-
-  while IFS= read -r absf; do
-    local rel="${absf#$SRC_ABS/}"
-    echo "  + $rel"
-    cat "$absf" >> "$tmp_all"
-    echo "$absf" >> "$MERGED_FILES_LIST"
-  done < "${TMP_DIR}/matched_$$_uniq.list"
-
-  local before=0 after=0
-  [ -s "$tmp_all" ] && before=$(wc -l < "$tmp_all" | tr -d ' ')
-
-  local out_file="$OUTPUT_DIR/$name"
-  mkdir -p "$(dirname "$out_file")"
-  grep -v '^[[:space:]]*$' "$tmp_all" 2>/dev/null \
-    | grep -v '^[[:space:]]*[#!]' \
-    | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//' \
-    | awk 'NF' \
-    | sort -u \
-    > "$out_file"
-
-  [ -s "$out_file" ] && after=$(wc -l < "$out_file" | tr -d ' ')
-  echo "  Result: $cnt_files files -> $before lines -> $after unique lines"
-  echo "  Output: $(canon "$out_file")"
-
-  rm -f "$tmp_all" "${TMP_DIR}/matched_$$_uniq.list"
-}
-
-# 执行合并
-process_merges
-
-echo
-echo "Step 2: Copy unmerged source files ..."
-
-ALL_FILES_LIST="${TMP_DIR}/all_files.list"
-: > "$ALL_FILES_LIST"
-while IFS= read -r -d '' f; do
-  echo "$(canon "$f")" >> "$ALL_FILES_LIST"
-done < <(find "$SOURCE_DIR" -type f -print0)
-sort -u -o "$ALL_FILES_LIST" "$ALL_FILES_LIST"
-
-if [ -s "$MERGED_FILES_LIST" ]; then
-  sort -u -o "$MERGED_FILES_LIST" "$MERGED_FILES_LIST"
-else
-  : > "$MERGED_FILES_LIST"
-fi
-
-UNMERGED_FILES_LIST="${TMP_DIR}/unmerged_files.list"
-comm -23 "$ALL_FILES_LIST" "$MERGED_FILES_LIST" > "$UNMERGED_FILES_LIST" || true
-
-copied=0
-while IFS= read -r absf; do
-  [ -z "$absf" ] && continue
-  rel="${absf#$SRC_ABS/}"
-  dest="$OUTPUT_DIR/$rel"
-  mkdir -p "$(dirname "$dest")"
-  cp "$absf" "$dest"
-  copied=$((copied + 1))
-done < "$UNMERGED_FILES_LIST"
-
-echo "  Copied unmerged files: $copied"
-find "$OUTPUT_DIR" -type d -empty -delete 2>/dev/null || true
-
-echo
-echo "=== Summary ==="
-echo "Merged outputs at root: $(find "$OUTPUT_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
-echo "Mirrored unmerged files: $(find "$OUTPUT_DIR" -mindepth 2 -type f | wc -l | tr -d ' ')"
-echo "Total files in $OUTPUT_DIR: $(find "$OUTPUT_DIR" -type f | wc -l | tr -d ' ')"
-
-# 提交变更
-if [[ -z $(git status -s) ]]; then
-  echo "No changes to commit."
-  exit 0
-fi
-
-git config user.name 'GitHub Actions Bot'
-git config user.email 'actions@github.com'
-git add -A
-git commit -m "chore(merge): update merged-rules (fix exclude merged sources) at $(date +'%Y-%m-%d %H:%M:%S %Z')"
-git push
+echo "[merge] Done. Files: $(ls -1 merge-outputs 2>/dev/null | wc -l | tr -d ' ') ; used=$(wc -l < merge-used.list 2>/dev/null || echo 0) ; map=$(wc -l < merge-map.tsv 2>/dev/null || echo 0)" >&2
