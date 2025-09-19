@@ -167,8 +167,9 @@ BEGIN { first=1 }
   sub(/[[:space:]]+#.*$/, "", line)
   sub(/^[[:space:]]*-[[:space:]]*/, "", line)
 
-  # 去成对引号
-  line = gensub(/^['"]|['"]$/, "", "g", line)
+  # 去成对引号（仅当整行被同类引号包裹）
+  if (line ~ /^'.*'$/) { line = substr(line, 2, length(line)-2) }
+  if (line ~ /^".*"$/) { line = substr(line, 2, length(line)-2) }
 
   # 去中文逗号后面的注释/注解
   sub(/，.*$/, "", line)
@@ -183,10 +184,9 @@ BEGIN { first=1 }
 }
 AWK
 
-# 3b) domain 专用净化器：仅保留纯 FQDN（ASCII / punycode），剔除正则/通配/URL/端口等
+# 3b) domain 专用净化器：先去前缀再判定，避免误杀 '+.' '*.','.' 开头的域名
 SAN_DOMAIN_AWK="${TMP_DIR}/sanitize_domain.awk"
 cat > "$SAN_DOMAIN_AWK" <<'AWK'
-BEGIN { IGNORECASE=1 }
 function valid_domain(s,   n,parts,i,tld,p) {
   if (length(s) < 1 || length(s) > 253) return 0
   # 仅允许 a-z 0-9 . -
@@ -212,14 +212,13 @@ function valid_domain(s,   n,parts,i,tld,p) {
 {
   s = $0
 
-  # 丢弃明显是正则/关键字
-  if (s ~ /^[[:space:]]*(regexp|keyword)[[:space:]]*[:=]/) next
-  if (s ~ /[\^\$\|\(\)\[\]\{\}\\\?\*\+]/) next
-
-  # 标准化
+  # 标准化（顺序很重要）
   sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
-  gsub(/^['"]|['"]$/, "", s)
-  gsub(/，.*$/, "", s)
+  # 去成对引号
+  if (s ~ /^'.*'$/) { s = substr(s, 2, length(s)-2) }
+  if (s ~ /^".*"$/) { s = substr(s, 2, length(s)-2) }
+  # 去中文逗号后注解
+  sub(/，.*$/, "", s)
   s = tolower(s)
 
   # 去掉 scheme、认证信息、路径/查询
@@ -228,14 +227,17 @@ function valid_domain(s,   n,parts,i,tld,p) {
   sub(/[\/\?].*$/, "", s)
 
   # 去掉已知前缀 full:/domain:/host:/suffix:
-  s = gensub(/^(full|domain|host|suffix)[[:space:]]*[:=][[:space:]]*/, "", 1, s)
+  sub(/^(full|domain|host|suffix)[[:space:]]*[:=][[:space:]]*/, "", s)
 
-  # Adblock 风格与通配
+  # Adblock 风格
   sub(/^\|\|/, "", s); sub(/^\|/, "", s); sub(/\^$/, "", s)
 
   # 去通配与前导点、'+.'、端口
   sub(/^(\+\.|\*\.|\.)/, "", s)
   sub(/:[0-9]+$/, "", s)
+
+  # 去掉允许前缀后，再检查是否含有正则/通配符等字符；若仍存在则丢弃
+  if (s ~ /[\^\$\|\(\)\[\]\{\}\\\?\*\+]/) next
 
   if (valid_domain(s)) {
     if (!seen[s]++) print s
@@ -283,8 +285,6 @@ import sys, re
 from typing import List
 
 def split_inline_array(s: str) -> List[str]:
-    # 输入类似: [ "a", '+.b.com', 'c' ]
-    # 返回: ["a", "+.b.com", "c"]
     out, cur = [], []
     in_s, in_d, esc, depth = False, False, False, 0
     for ch in s:
@@ -318,14 +318,12 @@ def split_inline_array(s: str) -> List[str]:
         token = ''.join(cur).strip()
         if token:
             out.append(token)
-    # 去掉外层可能残留的引号
     out = [t.strip().strip("'").strip('"') for t in out if t.strip()]
     return out
 
 def extract(lines: List[str]) -> List[str]:
     res: List[str] = []
     i = 0
-    # 去掉首行 BOM
     if lines:
         lines[0] = lines[0].lstrip('\ufeff')
     n = len(lines)
@@ -337,11 +335,9 @@ def extract(lines: List[str]) -> List[str]:
             continue
         rest = m.group(1).strip()
         base_indent = len(line) - len(line.lstrip(' '))
-        # 1) 内联数组 payload: [ ... ]
         if rest.startswith('['):
             buf = [rest]
             j = i + 1
-            # 收集直到配对的 ] 结束（支持跨行）
             open_count = rest.count('[') - rest.count(']')
             while j < n and open_count > 0:
                 seg = lines[j].rstrip('\r\n')
@@ -352,7 +348,6 @@ def extract(lines: List[str]) -> List[str]:
             res.extend(split_inline_array(inline))
             i = j
             continue
-        # 2) 缩进列表：
         i += 1
         while i < n:
             l2 = lines[i].rstrip('\r\n')
@@ -361,14 +356,11 @@ def extract(lines: List[str]) -> List[str]:
             if not stripped:
                 i += 1
                 continue
-            # 低于 payload 缩进，说明列表结束
             if indent <= base_indent and not stripped.startswith('-'):
                 break
-            # 仅接受 list item
             m2 = re.match(r'^\s*-\s*(.*)$', l2)
             if m2:
                 val = m2.group(1).strip()
-                # 去尾注
                 val = re.split(r'\s+#', val, maxsplit=1)[0].strip()
                 val = val.strip().strip("'").strip('"')
                 if val:
@@ -392,7 +384,6 @@ get_owner_dir() {
   if [ "$host" = "raw.githubusercontent.com" ]; then
     echo "$url" | awk -F/ '{print $4}'
   elif [ "$host" = "cdn.jsdelivr.net" ]; then
-    # https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
     local p4
     p4=$(echo "$url" | awk -F/ '{print $4}')
     if [ "$p4" = "gh" ]; then
@@ -469,7 +460,7 @@ is_domain_list() {
       gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
       if (s=="") next
       t++
-      sub(/^(\+\.|\*\.|\.)/, "",s)
+      sub(/^(\+\.|\*\.|\.)/, "", s)
       s=tolower(s)
       if (s ~ /^[a-z0-9-]+(\.[a-z0-9-]+)+$/) d++
     }
@@ -483,7 +474,6 @@ looks_like_yaml_payload() {
   if grep -qiE '^\s*payload\s*:' "$f"; then
     return 0
   fi
-  # 仅凭扩展名不强制，但可用于提示
   case "${f##*.}" in
     yml|yaml) return 0 ;;
   esac
@@ -514,11 +504,9 @@ while IFS=$'\t' read -r policy type url; do
   tmp1="${out}.stage1"
   tmp2="${out}.stage2"
 
-  # 若像 YAML payload，先用 Python 提取器展开（支持内联数组）
   if looks_like_yaml_payload "${out}.download"; then
     python3 "$EXTRACT_YAML_PY" < "${out}.download" > "$tmp0" || true
   fi
-  # 提取失败或不是 YAML payload：直接用原始内容
   if [ ! -s "$tmp0" ]; then
     cp "${out}.download" "$tmp0"
   fi
