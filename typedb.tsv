@@ -4,6 +4,7 @@ proxy/domain/Loyalsoldier/gfw.txt	proxy	domain	Loyalsoldier
 proxy/domain/gh-proxy.com/category-ai-!cn.txt	proxy	domain	gh-proxy.com
 direct/domain/Loyalsoldier/apple-cn.txt	direct	domain	Loyalsoldier
 direct/domain/Loyalsoldier/private.txt	direct	domain	Loyalsoldier
+direct/domain/Loyalsoldier/direct-list.txt	direct	domain	Loyalsoldier
 direct/domain/github.com/microsoft-cn.txt	direct	domain	github.com
 direct/domain/MetaCubeX/geolocation-cn.txt	direct	domain	MetaCubeX
 direct/ipcidr/Loyalsoldier/lancidr.txt	direct	ipcidr	Loyalsoldier
