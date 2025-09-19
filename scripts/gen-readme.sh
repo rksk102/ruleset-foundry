@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 仅针对 merged-rules 目录生成 README（遍历所有文件，按路径分类展示）
+# 仅针对 merged-rules 目录生成 README（遍历所有文件，按路径分类展示，样式优化）
 TZ="${TZ:-Asia/Shanghai}"
 INPUT_REF="${INPUT_REF:-}"
 INPUT_CDN="${INPUT_CDN:-jsdelivr}"
@@ -38,31 +38,37 @@ if [ ! -d merged-rules ]; then
   exit 0
 fi
 
+# 统计总文件数（包含子目录与符号链接）
+TOTAL_FILES="$(find merged-rules -mindepth 1 \( -type f -o -type l \) -print | wc -l | awk '{print $1+0}')"
+
 TMP_README="$(mktemp)"
 {
-  echo "# Merged Rules Index"
+  echo "# Merged Rules Catalog"
+  echo
+  echo "> 自动生成的 merged-rules 索引：列出该目录下的全部规则文件（包含子目录），并依据路径结构标注分类。"
   echo
   echo "- Build date: ${now_date}"
   echo "- Build time: ${now_time}"
   echo "- Repo: ${REPO}"
-  echo "- Ref: ${REF}"
-  echo "- CDN: ${CDN}"
+  echo "- Ref: \`${REF}\`"
+  echo "- Links via: \`${CDN}\`"
+  echo "- Files total: ${TOTAL_FILES}"
   echo
-  echo "本索引直接列出 merged-rules/ 下的全部规则文件（包含子目录），并根据路径结构标注分类："
-  echo "- Policy: 路径第1段（block/direct/proxy）；根目录文件为 merged"
-  echo "- Type: 路径第2段（domain/ipcidr/classical）；根目录文件为 -"
-  echo "- Owner: 路径第3段；根目录文件为 -"
+  echo "字段说明："
+  echo "- Policy: 路径第 1 段（block/direct/proxy）；根目录文件标记为 merged"
+  echo "- Type: 路径第 2 段（domain/ipcidr/classical）；根目录文件为 -"
+  echo "- Owner: 路径第 3 段；根目录文件为 -"
   echo
-
   echo "## All files under merged-rules/"
   if find merged-rules -mindepth 1 \( -type f -o -type l \) -print -quit | grep -q . ; then
     echo
-    echo "| Policy | Type | Owner | File | Path | URL |"
-    echo "|---|---|---|---|---|---|"
+    echo "| Policy | Type | Owner | File | Path | Link |"
+    echo "|:--|:--|:--|:--|:--|:--|"
     # 列出包含子目录的全部文件，支持符号链接；按路径排序
     while IFS= read -r -d '' f; do
       rel="${f#merged-rules/}"
-      # 解析路径段
+      # 解析路径段（>=4 段时取前 3 段作为 Policy/Type/Owner）
+      # 示例：merged-rules/block/domain/Loyalsoldier/xxx.txt
       policy="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $1}')"
       rtype="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $2}')"
       owner="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $3}')"
@@ -71,7 +77,8 @@ TMP_README="$(mktemp)"
         policy="merged"; rtype="-"; owner="-"
       fi
       url="$(build_url "merged-rules/${rel}")"
-      printf "| %s | %s | %s | %s | %s | %s |\n" "$policy" "$rtype" "$owner" "$file" "$rel" "$url"
+      printf "| %s | %s | %s | \`%s\` | \`%s\` | [Open](%s) |\n" \
+        "$policy" "$rtype" "$owner" "$file" "$rel" "$url"
     done < <(find merged-rules -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
   else
     echo
