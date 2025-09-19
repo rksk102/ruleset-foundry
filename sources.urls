@@ -35,8 +35,3 @@ https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/g
 已检查
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
 
-[policy:policy]
-[type:classical]
-https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt
-
-
