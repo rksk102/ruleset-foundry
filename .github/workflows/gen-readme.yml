@@ -20,8 +20,8 @@ on:
       - "5. Merge Rule Sets (Type Check + Organize)"
     types: [completed]
   schedule:
-    # GitHub Actions 使用 UTC；北京时间 04:00 = 前一日 20:00 UTC
-    - cron: "0 20 * * *"
+    # 注意：cron 使用 UTC；03:10 UTC = 北京时间 11:10
+    - cron: "10 3 * * *"
 
 permissions:
   contents: write
@@ -68,7 +68,6 @@ jobs:
         env:
           INPUT_REF: ${{ inputs.ref || 'main' }}
           INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
-          DEBUG: "1"        # 方式B：给该步骤添加 env 变量，开启调试输出
         run: scripts/gen-readme.sh
 
       - name: Commit README changes (if any)
