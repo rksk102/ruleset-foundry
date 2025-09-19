@@ -16,11 +16,15 @@ on:
           - "jsdelivr"
           - "raw"
   workflow_run:
-    # 同时监听工作流名称与文件路径，避免改名或大小写差异导致不触发
     workflows:
       - "5. Merge Rule Sets (Type Check + Organize)"
-      - ".github/workflows/merge-rules.yml"
+      - "merge-rules.yml"  # 也支持通过文件名匹配，避免改名导致不触发
     types: [completed]
+  push:
+    branches: [ main ]
+    # 监听项目文件任意变更，但忽略 README.md，防止 README 提交形成循环触发
+    paths-ignore:
+      - "README.md"
 
 permissions:
   contents: write
@@ -35,8 +39,15 @@ env:
 jobs:
   gen-readme:
     runs-on: ubuntu-latest
-    # 仅在前置 workflow_run 成功时继续执行；手动触发不受此限制
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    # 条件说明：
+    # - workflow_run：仅当上游成功才执行
+    # - push：若是 merge-rules 的自动提交（含 'chore(merge):'），则不跑，避免重复；其他普通 push 则运行
+    # - workflow_dispatch：手动触发总是允许
+    if: ${{ 
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || (github.event_name == 'push' && !contains(github.event.head_commit.message, 'chore(merge):'))
+      || (github.event_name == 'workflow_dispatch')
+    }}
     steps:
       - name: Checkout repository (full history for rebase)
         uses: actions/checkout@v4
