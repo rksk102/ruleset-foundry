@@ -5,6 +5,7 @@ set -euo pipefail
 TZ="${TZ:-Asia/Shanghai}"
 INPUT_REF="${INPUT_REF:-}"
 INPUT_CDN="${INPUT_CDN:-jsdelivr}"
+DEBUG="${DEBUG:-0}"
 
 # 解析仓库名
 REPO="${GITHUB_REPOSITORY:-}"
@@ -73,14 +74,10 @@ line_count_effective() {
   ' "$f"
 }
 
-# 文件大小（兼容 Linux/macOS）
+# 文件大小（通过 wc -c 跟随符号链接）
 file_size_bytes() {
   local f="$1"
-  if stat -c%s "$f" >/dev/null 2>&1; then
-    stat -c%s "$f"
-  else
-    stat -f%z "$f" 2>/dev/null || echo 0
-  fi
+  wc -c < "$f" | awk '{print $1+0}'
 }
 human_size() {
   awk 'function human(x){
@@ -96,13 +93,19 @@ human_size() {
 now_date="$(TZ="$TZ" date +'%Y-%m-%d')"
 now_time="$(TZ="$TZ" date +'%Y-%m-%d %H:%M:%S %Z')"
 
-# 仅处理 merged-rules
+# 必须存在 merged-rules
 if [ ! -d merged-rules ]; then
   echo "merged-rules directory not found. Nothing to do."
   exit 0
 fi
 
-# 根目录汇总
+# 调试：列出目录结构
+if [ "$DEBUG" = "1" ]; then
+  echo "[DEBUG] tree of merged-rules (depth 2):"
+  find merged-rules -maxdepth 2 -printf "%y %p\n" 2>/dev/null || true
+fi
+
+# 根目录汇总（包含普通文件与符号链接）
 total_files=0
 total_bytes=0
 total_lines_eff=0
@@ -120,7 +123,7 @@ while IFS= read -r -d '' f; do
     ipcidr) count_ipcidr=$((count_ipcidr+1));;
     *)      count_classical=$((count_classical+1));;
   esac
-done < <(find merged-rules -maxdepth 1 -type f -print0 | sort -z)
+done < <(find merged-rules -maxdepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
 
 total_bytes_h="$(printf "%s\n" "$total_bytes" | human_size)"
 
@@ -153,7 +156,7 @@ TMP_README="$(mktemp)"
   echo
 
   echo "## 1) 合并产物（merged-rules 根目录，推荐引用）"
-  if find merged-rules -maxdepth 1 -type f -print -quit | grep -q . ; then
+  if find merged-rules -maxdepth 1 \( -type f -o -type l \) -print -quit | grep -q . ; then
     echo
     echo "| File | Behavior | Lines (eff/total) | Size | Links |"
     echo "|---|---|---:|---:|---|"
@@ -168,7 +171,7 @@ TMP_README="$(mktemp)"
       url_alt="$(build_url "merged-rules/${file}" "$ALT_CDN")"
       printf "| %s | %s | %s/%s | %s | [%s](%s) / [%s](%s) |\n" \
         "$file" "$beh" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
-    done < <(find merged-rules -maxdepth 1 -type f -print0 | sort -z)
+    done < <(find merged-rules -maxdepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
   else
     echo
     echo "_No merged files at merged-rules/ root_"
@@ -194,7 +197,7 @@ TMP_README="$(mktemp)"
       url_alt="$(build_url "merged-rules/${policy}/${rtype}/${owner}/${file}" "$ALT_CDN")"
       printf "| %s | %s | %s | %s | %s/%s | %s | [%s](%s) / [%s](%s) |\n" \
         "$policy" "$rtype" "$owner" "$file" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
-    done < <(find merged-rules -mindepth 2 -type f -print0 | sort -z)
+    done < <(find merged-rules -mindepth 2 -type f -print0 | LC_ALL=C sort -z)
   else
     echo
     echo "_No mirrored unmerged files under merged-rules/_"
