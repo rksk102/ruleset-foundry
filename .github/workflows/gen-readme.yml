@@ -68,6 +68,7 @@ jobs:
         env:
           INPUT_REF: ${{ inputs.ref || 'main' }}
           INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
+          DEBUG: "1"        # 方式B：给该步骤添加 env 变量，开启调试输出
         run: scripts/gen-readme.sh
 
       - name: Commit README changes (if any)
