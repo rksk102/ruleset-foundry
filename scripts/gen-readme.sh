@@ -1,43 +1,108 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 仅针对 merged-rules 目录生成 README（不改变原有功能与入TZ="${TZ:-Asia/Shanghai}"
+# 环境变量与默认值
+TZ="${TZ:-Asia/Shanghai}"
 INPUT_REF="${INPUT_REF:-}"
 INPUT_CDN="${INPUT_CDN:-jsdelivr}"
 
+# 解析仓库名
 REPO="${GITHUB_REPOSITORY:-}"
 if [ -z "$REPO" ]; then
   origin_url="$(git remote get-url origin 2>/dev/null || echo "")"
-:-main}"
+  REPO="$(printf "%s" "$origin_url" \
+    | sed -E 's#^git@github.com:([^/]+)/([^/]+)(\.git)?$#\1/\2#' \
+    | sed -E 's#^https?://github.com/([^/]+)/([^/]+)(\.git)?$#\1/\2#')"
+  REPO="${REPO:-owner/repo}"
+fi
+
+REF="${INPUT_REF:-main}"
 CDN="${INPUT_CDN:-jsdelivr}"
 
-# 构建两种链接
+# 构建链接（支持 jsdelivr/raw）
 build_url() {
-  local path"="${:-$ "$kind" in
-    js "https://cdn.jsdelivr/gh/${REPO}@${REF}/${path}" ;;
+  local path="$1"
+  local kind="${2:-$CDN}"
+  case "$kind" in
+    jsdelivr) echo "https://cdn.jsdelivr.net/gh/${REPO}@${REF}/${path}" ;;
     raw)      echo "https://raw.githubusercontent.com/${REPO}/${REF}/${path}" ;;
     *)        echo "https://cdn.jsdelivr.net/gh/${REPO}@${REF}/${path}" ;;
   esac
 }
 
-# 行    BEGIN{total=0; domain_ok=1; ipcidr_ok=1}
+# 检测 behavior（domain/ipcidr/classical）
+detect_behavior() {
+  local f="$1"
+  awk '
+    BEGIN{total=0; domain_ok=1; ipcidr_ok=1}
     {
       line=$0
       sub(/^[ \t]+/,"",line); sub(/[ \t]+$/,"",line)
-      if (line=="" || line ~ /^["
+      if (line=="" || line ~ /^[#!;]/) next
+      total++
+      # 纯 FQDN（不含通配符）
+      if (line !~ /^([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$/) domain_ok=0
+      # IPv4/IPv6 CIDR
+      if (line !~ /^(([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}|[0-9A-Fa-f:]+\/[0-9]{1,3})$/) ipcidr_ok=0
+    }
+    END{
+      if (total==0) { print "domain"; exit }
+      if (domain_ok==1) { print "domain"; exit }
+      if (ipcidr_ok==1) { print "ipcidr"; exit }
+      print "classical"
     }
   ' "$f"
 }
 
-# 统计工具
+# 统计行数
+line_count_total() {
+  local f="$1"
+  wc -l < "$f" | awk '{print $1+0}'
+}
+line_count_effective() {
+  local f="$1"
+  awk '
+    BEGIN{eff=0}
+    {
+      line=$0
+      sub(/^[ \t]+/,"",line); sub(/[ \t]+$/,"",line)
+      if (line=="" || line ~ /^[#!;]/) next
+      eff++
+    }
+    END{ print eff+0 }
+  ' "$f"
+}
+
+# 文件大小（兼容 Linux/macOS）
 file_size_bytes() {
   local f="$1"
-  stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo 0
+  if stat -c%s "$f" >/dev/null 2>&1; then
+    stat -c%s "$f"
+  else
+    stat -f%z "$f" 2>/dev/null || echo 0
+  fi
 }
 human_size() {
-  awk 'function
+  awk 'function human(x){
+    split("B KB MB GB TB PB",u," ")
+    i=1
+    while (x>=1024 && i<6) {x/=1024; i++}
+    return (i==1 ? x : sprintf("%.1f",x)) " " u[i]
+  }
+  {print human($1)}'
+}
 
-# 汇总统计
+# 时间
+now_date="$(TZ="$TZ" date +'%Y-%m-%d')"
+now_time="$(TZ="$TZ" date +'%Y-%m-%d %H:%M:%S %Z')"
+
+# 仅处理 merged-rules
+if [ ! -d merged-rules ]; then
+  echo "merged-rules directory not found. Nothing to do."
+  exit 0
+fi
+
+# 根目录汇总
 total_files=0
 total_bytes=0
 total_lines_eff=0
@@ -45,7 +110,6 @@ count_domain=0
 count_ipcidr=0
 count_classical=0
 
-# 预扫描根目录文件做统计
 while IFS= read -r -d '' f; do
   total_files=$((total_files+1))
   sz="$(file_size_bytes "$f")"; total_bytes=$((total_bytes+sz))
@@ -63,6 +127,7 @@ total_bytes_h="$(printf "%s\n" "$total_bytes" | human_size)"
 ALT_CDN="raw"
 if [ "$CDN" = "raw" ]; then ALT_CDN="jsdelivr"; fi
 
+# 生成 README
 TMP_README="$(mktemp)"
 {
   echo "# Merged Rules Index"
@@ -101,7 +166,8 @@ TMP_README="$(mktemp)"
       szh="$(printf "%s\n" "$szb" | human_size)"
       url_main="$(build_url "merged-rules/${file}" "$CDN")"
       url_alt="$(build_url "merged-rules/${file}" "$ALT_CDN")"
-      printf "| %s | %s | %s/%s | %s | [%-8s](%s) / [%-3s](%s) |\n" "$file" "$beh" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
+      printf "| %s | %s | %s/%s | %s | [%s](%s) / [%s](%s) |\n" \
+        "$file" "$beh" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
     done < <(find merged-rules -maxdepth 1 -type f -print0 | sort -z)
   else
     echo
@@ -126,7 +192,8 @@ TMP_README="$(mktemp)"
       szh="$(printf "%s\n" "$szb" | human_size)"
       url_main="$(build_url "merged-rules/${policy}/${rtype}/${owner}/${file}" "$CDN")"
       url_alt="$(build_url "merged-rules/${policy}/${rtype}/${owner}/${file}" "$ALT_CDN")"
-      printf "| %s | %s | %s | %s | %s/%s | %s | [%-8s](%s) / [%-3s](%s) |\n" "$policy" "$rtype" "$owner" "$file" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
+      printf "| %s | %s | %s | %s | %s/%s | %s | [%s](%s) / [%s](%s) |\n" \
+        "$policy" "$rtype" "$owner" "$file" "$le" "$lt" "$szh" "$CDN" "$url_main" "$ALT_CDN" "$url_alt"
     done < <(find merged-rules -mindepth 2 -type f -print0 | sort -z)
   else
     echo
@@ -136,7 +203,6 @@ TMP_README="$(mktemp)"
 
   echo "## 使用示例"
   echo "<details><summary>mihomo rule-providers（合并产物示例）</summary>"
-  echo
   echo
   echo '```yaml'
   echo '# 将 <URL> 替换为上表对应链接（可用 jsdelivr/raw 任一）'
@@ -167,7 +233,6 @@ TMP_README="$(mktemp)"
   echo
   echo "<details><summary>mihomo rule-providers（镜像原文件示例）</summary>"
   echo
-  echo
   echo '```yaml'
   echo '# 按路径中的 type 选择 behavior:'
   echo '# type=domain   -> behavior: domain'
@@ -184,7 +249,6 @@ TMP_README="$(mktemp)"
   echo
   echo "</details>"
   echo
-
   echo "---"
   echo "## 注记"
   echo "- README 由工作流自动生成；请勿手动编辑。"
@@ -192,7 +256,7 @@ TMP_README="$(mktemp)"
   echo "- 行数统计的“有效行”已排除空行与以 #/;/! 开头的注释。"
 } > "$TMP_README"
 
-# 若未变化则退出（保持原有逻辑；下方仍保留自提交以兼容你的当前流程）
+# 若未变化则退出（保持原有逻辑）
 if [ -f README.md ]; then
   if cmp -s "$TMP_README" README.md; then
     echo "README.md unchanged."
