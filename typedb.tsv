@@ -1,6 +1,6 @@
 proxy/domain/Loyalsoldier/proxy-list.txt	proxy	domain	Loyalsoldier
 proxy/domain/Loyalsoldier/proxy.txt	proxy	domain	Loyalsoldier
-proxy/domain/Loyalsoldier/telegramcidr.txt	proxy	ipcidr	Loyalsoldier
+proxy/domain/Loyalsoldier/telegramcidr.txt	proxy	domain	Loyalsoldier
 proxy/domain/Loyalsoldier/tld-not-cn.txt	proxy	domain	Loyalsoldier
 proxy/domain/Loyalsoldier/gfw.txt	proxy	domain	Loyalsoldier
 proxy/domain/gh-proxy.com/category-ai-!cn.txt	proxy	domain	gh-proxy.com
