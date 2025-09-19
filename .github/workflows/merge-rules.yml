@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # 新增：允许本工作流触发 gen-readme.yml 的 workflow_dispatch
 
 concurrency:
   group: merge-rules
@@ -41,3 +42,22 @@ jobs:
         env:
           CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
         run: ./scripts/merge-rules.sh
+
+      # 新增：合并成功后触发 gen-readme.yml（要求该工作流包含 on: workflow_dispatch）
+      - name: Trigger gen-readme.yml
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_FILE: gen-readme.yml
+          REF: ${{ github.ref_name || 'main' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Dispatching ${WORKFLOW_FILE} on ${REPO}@${REF} ..."
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
+            -d "{\"ref\":\"${REF}\",\"inputs\":{\"ref\":\"${REF}\"}}"
+          echo "Dispatched gen-readme."
