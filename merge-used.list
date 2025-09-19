@@ -1,0 +1,7 @@
+block/domain/Loyalsoldier/reject-list.txt
+block/domain/github.com/ads.txt
+block/domain/github.com/category-ads-all.txt
+direct/ipcidr/Loyalsoldier/cncidr.txt
+direct/ipcidr/MetaCubeX/cn.txt
+proxy/domain/Loyalsoldier/proxy-list.txt
+proxy/domain/Loyalsoldier/proxy.txt
