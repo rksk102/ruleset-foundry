@@ -1,4 +1,4 @@
-name: "5. Merge Rule Sets (Smart Copy)"
+name: "5. Merge Rule Sets (Type Check + Organize)"
 
 on:
   workflow_dispatch:
@@ -14,10 +14,10 @@ on:
       - "rulesets/**"
       - "merge-config.yaml"
       - "scripts/merge-rules.sh"
+      - "scripts/type-check-and-merge.sh"
 
 permissions:
   contents: write
-  actions: write   # 新增：允许本工作流触发 gen-readme.yml 的 workflow_dispatch
 
 concurrency:
   group: merge-rules
@@ -30,34 +30,45 @@ jobs:
   merge-rules:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (full history for rebase)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Make merge script executable
-        shell: bash
-        run: chmod +x scripts/merge-rules.sh
+      - name: Configure Git
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
 
-      - name: Run merge script
-        shell: bash
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/merge-rules.sh
+          chmod +x scripts/type-check-and-merge.sh
+
+      - name: Run type-check + merge + organize
         env:
           CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
-        run: ./scripts/merge-rules.sh
+          INPUT_REF: ${{ github.ref_name || 'main' }}
+          MERGED_OWNER: "rksk102"
+        run: scripts/type-check-and-merge.sh
 
-      # 新增：合并成功后触发 gen-readme.yml（要求该工作流包含 on: workflow_dispatch）
-      - name: Trigger gen-readme.yml
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          WORKFLOW_FILE: gen-readme.yml
-          REF: ${{ github.ref_name || 'main' }}
+      - name: Commit merged-rules and indexes
         shell: bash
         run: |
           set -euo pipefail
-          echo "Dispatching ${WORKFLOW_FILE} on ${REPO}@${REF} ..."
-          curl -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
-            -d "{\"ref\":\"${REF}\",\"inputs\":{\"ref\":\"${REF}\"}}"
-          echo "Dispatched gen-readme."
+          git add merged-rules typedb.tsv merge-used.list merge-map.tsv || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(merge): type-check rulesets, merge by config, and rebuild merged-rules at $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          if git push origin "$BRANCH"; then
+            exit 0
+          fi
+          echo "Non-fast-forward, rebasing and retrying..."
+          git pull --rebase origin "$BRANCH"
+          git push origin "$BRANCH" || {
+            echo "::error::Failed to push after rebase retry."
+            exit 1
+          }
