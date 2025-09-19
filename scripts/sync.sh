@@ -159,9 +159,9 @@ BEGIN { first=1 }
   tmp = line
   sub(/^[[:space:]]+/, "", tmp)
 
-  # 丢弃注释和 payload:（无论出现在哪一行；内联数组另行提取）
+  # 丢弃注释和 payload:（大小写不敏感）
   if (tmp ~ /^(#|!)/) next
-  if (tmp ~ /^payload[[:space:]]*:/i) next
+  if (tmp ~ /^[Pp][Aa][Yy][Ll][Oo][Aa][Dd][[:space:]]*:/) next
 
   # 行内注释与 YAML 列表项
   sub(/[[:space:]]+#.*$/, "", line)
@@ -189,17 +189,12 @@ SAN_DOMAIN_AWK="${TMP_DIR}/sanitize_domain.awk"
 cat > "$SAN_DOMAIN_AWK" <<'AWK'
 function valid_domain(s,   n,parts,i,tld,p) {
   if (length(s) < 1 || length(s) > 253) return 0
-  # 仅允许 a-z 0-9 . -
   if (s ~ /[^a-z0-9\.-]/) return 0
-  # 不允许首尾是 . 或 -
   if (s ~ /^[\.-]/ || s ~ /[\.-]$/) return 0
-  # 折叠重复点
   while (s ~ /\.\./) gsub(/\.\./,".",s)
-  # 必须至少一个点
   if (s !~ /\./) return 0
   n = split(s, parts, ".")
   tld = parts[n]
-  # TLD 需为字母 2-63 或 punycode
   if (!(tld ~ /^[a-z]{2,63}$/ || tld ~ /^xn--[a-z0-9-]{2,59}$/)) return 0
   for (i=1;i<=n;i++) {
     p = parts[i]
@@ -245,34 +240,53 @@ function valid_domain(s,   n,parts,i,tld,p) {
 }
 AWK
 
-# 3c) ipcidr 专用净化器：借助 Python 严格校验 IPv4/IPv6（含 CIDR）
+# 3c) ipcidr 专用净化器：严格校验 IPv4/IPv6（含 CIDR），从行内提取
 SAN_IP_PY="${TMP_DIR}/sanitize_ipcidr.py"
 cat > "$SAN_IP_PY" <<'PY'
 import sys, re, ipaddress
 seen = set()
+
+# 粗略正则：提取行内第一个可能的 IPv4/IPv6（可带 CIDR）
+re_v4 = re.compile(r'(?<![\d])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d])')
+# 非贪婪 IPv6 + 可选 CIDR（允许 :: 缩写）
+re_v6 = re.compile(r'([0-9A-Fa-f:]+:+[0-9A-Fa-f:]*)(?:/\d{1,3})?')
+
 for raw in sys.stdin:
-    s = raw.strip()
-    if not s or s.startswith('#') or s.startswith('!'):
+    s0 = raw.strip()
+    if not s0 or s0.startswith('#') or s0.startswith('!'):
         continue
-    s = s.strip('\'"')
-    # 从经典格式提取：IP-CIDR[,|-]value[,flags]
+
+    s = s0.strip('\'"')
+
+    # 1) 经典写法前缀（IP-CIDR、IP-CIDR6、IP、IP6）
     m = re.match(r'(?i)^\s*(ip(?:-)?cidr6?|ip6(?:-)?cidr|ip6|ip)\s*[:,]\s*([^,\s#;]+)', s)
     if m:
         s = m.group(2)
-    # 去 flags/尾注
+    else:
+        # 2) 从整行中尽力抓第一个 IP/网段
+        m4 = re_v4.search(s)
+        m6 = re_v6.search(s)
+        if m4 and (not m6 or m4.start() <= m6.start()):
+            s = m4.group(0)
+        elif m6:
+            s = m6.group(0)
+        else:
+            continue
+
+    # 去掉 flags/尾注/括号等
     s = re.split(r'[#\s,;]', s)[0].strip()
-    # 去中括号
-    s = s.strip('[]')
-    out = None
+    s = s.strip('[]()')
+
     try:
         if '/' in s:
-            n = ipaddress.ip_network(s, strict=False)  # 接受主机地址形式的网段
+            n = ipaddress.ip_network(s, strict=False)
             out = str(n)
         else:
             a = ipaddress.ip_address(s)
             out = str(a)
     except Exception:
         continue
+
     if out not in seen:
         print(out)
         seen.add(out)
@@ -285,6 +299,8 @@ import sys, re
 from typing import List
 
 def split_inline_array(s: str) -> List[str]:
+    # 输入类似: [ "a", '+.b.com', 'c' ]
+    # 返回: ["a", "+.b.com", "c"]
     out, cur = [], []
     in_s, in_d, esc, depth = False, False, False, 0
     for ch in s:
@@ -318,12 +334,14 @@ def split_inline_array(s: str) -> List[str]:
         token = ''.join(cur).strip()
         if token:
             out.append(token)
+    # 去掉外层可能残留的引号
     out = [t.strip().strip("'").strip('"') for t in out if t.strip()]
     return out
 
 def extract(lines: List[str]) -> List[str]:
     res: List[str] = []
     i = 0
+    # 去掉首行 BOM
     if lines:
         lines[0] = lines[0].lstrip('\ufeff')
     n = len(lines)
@@ -335,9 +353,11 @@ def extract(lines: List[str]) -> List[str]:
             continue
         rest = m.group(1).strip()
         base_indent = len(line) - len(line.lstrip(' '))
+        # 1) 内联数组 payload: [ ... ]
         if rest.startswith('['):
             buf = [rest]
             j = i + 1
+            # 收集直到配对的 ] 结束（支持跨行）
             open_count = rest.count('[') - rest.count(']')
             while j < n and open_count > 0:
                 seg = lines[j].rstrip('\r\n')
@@ -348,6 +368,7 @@ def extract(lines: List[str]) -> List[str]:
             res.extend(split_inline_array(inline))
             i = j
             continue
+        # 2) 缩进列表：
         i += 1
         while i < n:
             l2 = lines[i].rstrip('\r\n')
@@ -356,11 +377,14 @@ def extract(lines: List[str]) -> List[str]:
             if not stripped:
                 i += 1
                 continue
+            # 低于 payload 缩进，说明列表结束
             if indent <= base_indent and not stripped.startswith('-'):
                 break
+            # 仅接受 list item
             m2 = re.match(r'^\s*-\s*(.*)$', l2)
             if m2:
                 val = m2.group(1).strip()
+                # 去尾注
                 val = re.split(r'\s+#', val, maxsplit=1)[0].strip()
                 val = val.strip().strip("'").strip('"')
                 if val:
@@ -384,6 +408,7 @@ get_owner_dir() {
   if [ "$host" = "raw.githubusercontent.com" ]; then
     echo "$url" | awk -F/ '{print $4}'
   elif [ "$host" = "cdn.jsdelivr.net" ]; then
+    # https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/...
     local p4
     p4=$(echo "$url" | awk -F/ '{print $4}')
     if [ "$p4" = "gh" ]; then
@@ -450,7 +475,7 @@ done
 
 # 7) 拉取并净化（写入 <policy>/<type>/<owner>/<文件>）
 
-# 自动判别是否为域名列表：即便 type 标错也兜底为 domain 处理
+# 自动判别是否为“域名列表”
 is_domain_list() {
   local f="$1"
   awk '
@@ -465,6 +490,27 @@ is_domain_list() {
       if (s ~ /^[a-z0-9-]+(\.[a-z0-9-]+)+$/) d++
     }
     END{ if (t>0 && d*100/t >= 80) exit 0; else exit 1 }
+  ' "$f"
+}
+
+# 自动判别是否为“IP/CIDR 列表”
+is_ipcidr_list() {
+  local f="$1"
+  awk '
+    BEGIN{t=0; p=0}
+    {
+      s=$0
+      gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
+      if (s=="") next
+      t++
+      # 经典前缀
+      if (tolower(s) ~ /^(ip(-)?cidr6?|ip6(-)?cidr|ip6|ip)[ ,:]/) { p++; next }
+      # 粗略 IPv4 / IPv4-CIDR
+      if (s ~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]{1,2})?([ ,].*)?$/) { p++; next }
+      # 粗略 IPv6（含 ::）
+      if (s ~ /:[0-9a-fA-F]/) { p++; next }
+    }
+    END{ if (t>0 && p*100/t >= 60) exit 0; else exit 1 }
   ' "$f"
 }
 
@@ -499,30 +545,39 @@ while IFS=$'\t' read -r policy type url; do
     continue
   fi
 
-  # 阶段化处理：先尽力从 YAML 中提取 payload，再做通用净化，再做类型净化
-  tmp0="${out}.stage0"
-  tmp1="${out}.stage1"
-  tmp2="${out}.stage2"
+  # 阶段化处理：先尽力从 YAML 中提取 payload，再做净化/解析
+  tmp0="${out}.stage0"  # YAML 提取后的原始条目或原始内容
+  tmp1="${out}.stage1"  # 通用净化结果（非 ipcidr 才生成）
+  tmp2="${out}.stage2"  # 最终产物
 
+  # 若像 YAML payload，先用 Python 提取器展开（支持内联数组）
   if looks_like_yaml_payload "${out}.download"; then
     python3 "$EXTRACT_YAML_PY" < "${out}.download" > "$tmp0" || true
   fi
+  # 提取失败或不是 YAML payload：直接用原始内容
   if [ ! -s "$tmp0" ]; then
     cp "${out}.download" "$tmp0"
   fi
 
-  # 通用净化 -> 类型化净化
-  awk -f "$SAN_AWK" "$tmp0" > "$tmp1"
-
-  if [ "$typ" = "domain" ] || is_domain_list "$tmp1"; then
-    if [ "$typ" != "domain" ]; then
-      echo "Auto-detect: looks like domain list, override to domain for $fn"
-    fi
-    awk -f "$SAN_DOMAIN_AWK" "$tmp1" > "$tmp2"
-  elif [ "$typ" = "ipcidr" ]; then
-    python3 "$SAN_IP_PY" < "$tmp1" > "$tmp2"
+  # 类型化净化（注意：ipcidr 跳过通用净化，直接解析）
+  if [ "$typ" = "ipcidr" ]; then
+    python3 "$SAN_IP_PY" < "$tmp0" > "$tmp2"
   else
-    cp "$tmp1" "$tmp2"
+    # 其他类型先做通用净化
+    awk -f "$SAN_AWK" "$tmp0" > "$tmp1"
+
+    if [ "$typ" = "domain" ] || is_domain_list "$tmp1"; then
+      if [ "$typ" != "domain" ]; then
+        echo "Auto-detect: looks like domain list, override to domain for $fn"
+      fi
+      awk -f "$SAN_DOMAIN_AWK" "$tmp1" > "$tmp2"
+    elif is_ipcidr_list "$tmp1"; then
+      echo "Auto-detect: looks like IP/CIDR list, override to ipcidr for $fn"
+      # 即便自动识别为 ipcidr，也用 tmp0 作为源喂给解析器，避免通用净化的副作用
+      python3 "$SAN_IP_PY" < "$tmp0" > "$tmp2"
+    else
+      cp "$tmp1" "$tmp2"
+    fi
   fi
 
   # 去重保持顺序
