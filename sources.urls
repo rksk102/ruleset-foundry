@@ -20,7 +20,6 @@ https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/mi
 
 [policy:policy]
 [type:domain]
-https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
@@ -35,4 +34,9 @@ https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
 已检查
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+
+[policy:policy]
+[type:classical]
+https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt
+
 
