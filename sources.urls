@@ -21,7 +21,7 @@ https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/mi
 [policy:policy]
 [type:domain]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt
-https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt
+https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
