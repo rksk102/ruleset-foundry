@@ -3,27 +3,27 @@
 > 自动生成的合并规则索引，仅覆盖 merged-rules/ 目录。
 
 - 构建日期：2025-09-19
-- 构建时间：2025-09-19 17:27:41 CST
+- 构建时间：2025-09-19 17:39:44 CST
 - 仓库：rksk102/rules-Repository
 - 引用 Ref：main
 - 默认链接：jsdelivr（每条目同时提供 raw 备用链接）
 
 快速统计：
-- 根目录文件数：0（domain: 0｜ipcidr: 0｜classical: 0）
-- 有效规则行总计：0
-- 总体积：0 B
+- 合并产出文件数（根目录）：0（domain: 0｜ipcidr: 0｜classical: 0）
+- 合并产出有效规则行总计：0
+- 合并产出总体积：0 B
 
 目录
-- [合并产物（推荐引用）](#1-合并产物merged-rules-根目录推荐引用)
-- [未合并的镜像原文件](#2-未合并的镜像原文件merged-rulespolicytypeowner)
+- [参与合并的规则（合并产出，推荐引用）](#1-参与合并的规则合并产出推荐引用)
+- [未参与合并的镜像原文件](#2-未参与合并的镜像原文件)
 - [使用示例](#使用示例)
 - [注记](#注记)
 
-## 1) 合并产物（merged-rules 根目录，推荐引用）
+## 1) 参与合并的规则（合并产出，推荐引用）
 
-_No merged files at merged-rules/ root_
+_No merged outputs found at merged-rules/ root_
 
-## 2) 未合并的镜像原文件（merged-rules/<policy>/<type>/<owner>/...）
+## 2) 未参与合并的镜像原文件
 
 | Policy | Type | Owner | File | Lines (eff/total) | Size | Links |
 |---|---|---|---|---:|---:|---|
@@ -75,26 +75,8 @@ rule-providers:
 
 </details>
 
-<details><summary>mihomo rule-providers（镜像原文件示例）</summary>
-
-```yaml
-# 按路径中的 type 选择 behavior:
-# type=domain   -> behavior: domain
-# type=ipcidr   -> behavior: ipcidr
-# type=classical-> behavior: classical
-rule-providers:
-  Example-From-Mirrored:
-    type: http
-    behavior: domain   # 替换为对应类型
-    format: text
-    url: <URL>
-    interval: 86400
-```
-
-</details>
-
 ---
 ## 注记
+- 本 README 仅展示：合并产出（根目录）与“未参与合并”的镜像原文件。已参与合并的镜像原文件不再展示。
 - README 由工作流自动生成；请勿手动编辑。
-- 若需切换为原始 Raw 链接，可使用“Links”列中的备用链接。
 - 行数统计的“有效行”已排除空行与以 #/;/! 开头的注释。
