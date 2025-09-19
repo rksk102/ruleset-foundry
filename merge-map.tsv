@@ -1,3 +1,4 @@
 all-adblock.txt	block
-cnip.txt	direct
+all-cnip.txt	direct
+all-direct.txt	direct
 all-proxy.txt	proxy
