@@ -1,0 +1,100 @@
+name: "Check README links (manual, append report)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to check (branch/tag), default main"
+        required: false
+        type: string
+      include_regex:
+        description: "Include regex (filter links to check)"
+        required: false
+        default: "(cdn\\.jsdelivr\\.net/gh/.+@.*/merged-rules/|raw\\.githubusercontent\\.com/.+/.+/.+/merged-rules/)"
+        type: string
+      exclude_regex:
+        description: "Exclude regex (optional)"
+        required: false
+        default: ""
+        type: string
+      check_timeout:
+        description: "Per-link timeout (seconds)"
+        required: false
+        default: "6"
+        type: string
+      check_retries:
+        description: "Per-link retries"
+        required: false
+        default: "0"
+        type: string
+      parallel:
+        description: "Parallel workers"
+        required: false
+        default: "8"
+        type: string
+      output_file:
+        description: "Output report file name"
+        required: false
+        default: "README_LINKS_CHECK.md"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: check-readme-links
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history for rebase)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
+
+      - name: Make checker executable
+        run: chmod +x scripts/check-readme-links.sh
+
+      - name: Run README links check and append report
+        env:
+          INPUT_REF: ${{ inputs.ref || 'main' }}
+          INPUT_CHECK_TIMEOUT: ${{ inputs.check_timeout || '6' }}
+          INPUT_CHECK_RETRIES: ${{ inputs.check_retries || '0' }}
+          INPUT_PARALLEL: ${{ inputs.parallel || '8' }}
+          INPUT_OUTPUT_FILE: ${{ inputs.output_file || 'README_LINKS_CHECK.md' }}
+          INPUT_INCLUDE_REGEX: ${{ inputs.include_regex }}
+          INPUT_EXCLUDE_REGEX: ${{ inputs.exclude_regex }}
+        run: scripts/check-readme-links.sh
+
+      - name: Commit README + report (with rebase retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${{ inputs.output_file || 'README_LINKS_CHECK.md' }}"
+          if git diff --quiet README.md "$OUT"; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git add README.md "$OUT"
+          git commit -m "docs(readme): append link availability report at $(date +'%Y-%m-%d %H:%M:%S %Z')"
+
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          if git push origin "$BRANCH"; then
+            exit 0
+          fi
+          echo "Non-fast-forward, rebasing and retrying..."
+          git pull --rebase origin "$BRANCH"
+          git push origin "$BRANCH" || {
+            echo "::error::Failed to push after rebase retry."
+            exit 1
+          }
