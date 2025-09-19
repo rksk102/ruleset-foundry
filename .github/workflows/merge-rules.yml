@@ -64,34 +64,4 @@ jobs:
           git push origin "$BRANCH" || {
             echo "::error::Failed to push after rebase retry."
             exit 1
-          }        run: |
-          chmod +x scripts/merge-rules.sh
-          chmod +x scripts/type-check-and-merge.sh
-
-      - name: Run type-check + merge + organize
-        env:
-          CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
-          INPUT_REF: ${{ github.ref_name || 'main' }}
-          MERGED_OWNER: "rksk102"
-        run: scripts/type-check-and-merge.sh
-
-      - name: Commit merged-rules and indexes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add merged-rules typedb.tsv merge-used.list merge-map.tsv || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-          git commit -m "chore(merge): type-check rulesets, merge by config, and rebuild merged-rules at $(date +'%Y-%m-%d %H:%M:%S %Z')"
-          BRANCH="${GITHUB_REF_NAME:-main}"
-          if git push origin "$BRANCH"; then
-            exit 0
-          fi
-          echo "Non-fast-forward, rebasing and retrying..."
-          git pull --rebase origin "$BRANCH"
-          git push origin "$BRANCH" || {
-            echo "::error::Failed to push after rebase retry."
-            exit 1
           }
