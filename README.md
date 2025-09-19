@@ -1,7 +1,7 @@
 # Merged Rules Index
 
 - Build date: 2025-09-19
-- Build time: 2025-09-19 10:39:53 CST
+- Build time: 2025-09-19 11:00:15 CST
 - Repo: rksk102/rules-Repository
 - Ref: main
 - CDN: jsdelivr
@@ -77,17 +77,3 @@ rule-providers:
 
 ---
 _This README is auto-generated from merged-rules. Do not edit manually._
-
-## 链接可用性检查（README 内链接） @ 2025-09-19 10:50:34 CST
-
-- 分支/标签：main
-- 过滤规则：INCLUDE='(cdn\.jsdelivr\.net/gh/.+@.*/merged-rules/|raw\.githubusercontent\.com/.+/.+/.+/merged-rules/)' EXCLUDE=''
-
-未匹配到需要检查的链接。
-
-## 链接可用性检查（README 内 jsDelivr merged-rules） @ 2025-09-19 10:57:49 CST
-
-- 分支/标签：main
-- 基础前缀：https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/
-
-未匹配到该前缀的链接。
