@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 仅针对 merged-rules 目录生成 README（遍历所有文件，直接展示链接）
+# 仅针对 merged-rules 目录生成 README（遍历所有文件，按路径分类展示）
 TZ="${TZ:-Asia/Shanghai}"
 INPUT_REF="${INPUT_REF:-}"
 INPUT_CDN="${INPUT_CDN:-jsdelivr}"
@@ -48,19 +48,30 @@ TMP_README="$(mktemp)"
   echo "- Ref: ${REF}"
   echo "- CDN: ${CDN}"
   echo
-  echo "本索引直接列出 merged-rules/ 下的全部规则文件（包含子目录），仅提供可直接引用的链接。"
+  echo "本索引直接列出 merged-rules/ 下的全部规则文件（包含子目录），并根据路径结构标注分类："
+  echo "- Policy: 路径第1段（block/direct/proxy）；根目录文件为 merged"
+  echo "- Type: 路径第2段（domain/ipcidr/classical）；根目录文件为 -"
+  echo "- Owner: 路径第3段；根目录文件为 -"
   echo
 
-  echo "## Files under merged-rules/"
+  echo "## All files under merged-rules/"
   if find merged-rules -mindepth 1 \( -type f -o -type l \) -print -quit | grep -q . ; then
     echo
-    echo "| Path (relative to merged-rules) | URL |"
-    echo "|---|---|"
+    echo "| Policy | Type | Owner | File | Path | URL |"
+    echo "|---|---|---|---|---|---|"
     # 列出包含子目录的全部文件，支持符号链接；按路径排序
     while IFS= read -r -d '' f; do
       rel="${f#merged-rules/}"
+      # 解析路径段
+      policy="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $1}')"
+      rtype="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $2}')"
+      owner="$(printf '%s' "$rel" | awk -F/ 'NF>=4{print $3}')"
+      file="$(basename "$f")"
+      if [ -z "$policy" ]; then
+        policy="merged"; rtype="-"; owner="-"
+      fi
       url="$(build_url "merged-rules/${rel}")"
-      printf "| %s | %s |\n" "$rel" "$url"
+      printf "| %s | %s | %s | %s | %s | %s |\n" "$policy" "$rtype" "$owner" "$file" "$rel" "$url"
     done < <(find merged-rules -mindepth 1 \( -type f -o -type l \) -print0 | LC_ALL=C sort -z)
   else
     echo
