@@ -41,8 +41,25 @@ jobs:
     # 只在前置工作流成功时运行（如果是 workflow_run 触发）
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (full history for rebase)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
+
+      - name: Rebase to latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH"
 
       - name: Make generator executable
         shell: bash
@@ -54,3 +71,33 @@ jobs:
           INPUT_REF: ${{ inputs.ref || 'main' }}
           INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
         run: scripts/gen-readme.sh
+
+      - name: Commit README changes (if any)
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No README changes."
+            exit 0
+          fi
+          git add README.md
+          git commit -m "docs(readme): auto-update (merged-rules) at $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push with rebase retry
+        if: steps.commit.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          if git push origin "$BRANCH"; then
+            exit 0
+          fi
+          echo "Non-fast-forward, rebasing and retrying..."
+          git pull --rebase origin "$BRANCH"
+          git push origin "$BRANCH" || {
+            echo "::error::Failed to push after rebase retry."
+            exit 1
+          }
