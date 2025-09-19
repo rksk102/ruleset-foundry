@@ -23,6 +23,7 @@ https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/google-cn.txt
 https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
 
 [policy:direct]
