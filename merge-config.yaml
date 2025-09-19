@@ -20,11 +20,6 @@ merges:
     inputs:
       - direct/ipcidr/Loyalsoldier/cncidr.txt
       - direct/ipcidr/MetaCubeX/cn.txt
-
-  - name: all-direct.txt
-    description: "直连域名规则"
-    inputs:
-      - direct/domain/Loyalsoldier/direct-list.txt
   
   # 所有代理域名
   - name: all-proxy.txt
