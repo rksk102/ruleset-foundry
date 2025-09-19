@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # 可选严格模式：任一源失败就让 Job 失败；默认 false
-STRICT="${STRICT:-ture}"
+STRICT="${STRICT:-true}"
 
 SOURCE_DIR="rulesets"
 TMP_DIR="${RUNNER_TEMP:-/tmp}/sync-tmp"
