@@ -11,7 +11,7 @@ mkdir -p "$TMP_DIR"
 # 退出/中断时清理所有下载残留与空目录
 cleanup() {
   if [ -d "$SOURCE_DIR" ]; then
-    find "$SOURCE_DIR" -type f \( -name "*.download" -o -name "*.source" \) -delete 2>/dev/null || true
+    find "$SOURCE_DIR" -type f \( -name "*.download" -o -name "*.source" -o -name "*.stage0" -o -name "*.stage1" -o -name "*.stage2" \) -delete 2>/dev/null || true
     find "$SOURCE_DIR" -type d -empty -delete 2>/dev/null || true
   fi
 }
@@ -69,10 +69,10 @@ fi
 
 CLEAN="${TMP_DIR}/sources.cleaned"
 awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
-| sed 's/\r$//' \
-| sed -E 's/[[:space:]]+#.*$//' \
-| sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-> "$CLEAN"
+  | sed 's/\r$//' \
+  | sed -E 's/[[:space:]]+#.*$//' \
+  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+  > "$CLEAN"
 
 # 2) 解析：生成 triplets.tsv（policy \t type \t url）
 TRIPLETS="${TMP_DIR}/triplets.tsv"
@@ -143,7 +143,7 @@ if [ ! -s "$TRIPLETS" ]; then
   exit 0
 fi
 
-# 3) 通用净化器（去注释、去 YAML payload: 与行首 -、去引号等）
+# 3) 通用净化器（去注释、去 YAML payload: 与行首 -、去引号等；涵盖常见 payload 列表）
 SAN_AWK="${TMP_DIR}/sanitize.awk"
 cat > "$SAN_AWK" <<'AWK'
 BEGIN { first=1 }
@@ -151,7 +151,6 @@ BEGIN { first=1 }
   if (first) {
     sub(/^\xEF\xBB\xBF/, "")
     sub(/\r$/, "")
-    if ($0 ~ /^[[:space:]]*payload:[[:space:]]*$/) { first=0; next }
     first=0
   }
   sub(/\r$/, "")
@@ -159,19 +158,24 @@ BEGIN { first=1 }
   line = $0
   tmp = line
   sub(/^[[:space:]]+/, "", tmp)
-  if (tmp ~ /^#/ || tmp ~ /^!/) next
 
+  # 丢弃注释和 payload:（无论出现在哪一行；内联数组另行提取）
+  if (tmp ~ /^(#|!)/) next
+  if (tmp ~ /^payload[[:space:]]*:/i) next
+
+  # 行内注释与 YAML 列表项
   sub(/[[:space:]]+#.*$/, "", line)
   sub(/^[[:space:]]*-[[:space:]]*/, "", line)
 
-  if (line ~ /^'.*'$/) { line = substr(line, 2, length(line)-2) }
-  if (line ~ /^".*"$/) { line = substr(line, 2, length(line)-2) }
+  # 去成对引号
+  line = gensub(/^['"]|['"]$/, "", "g", line)
 
+  # 去中文逗号后面的注释/注解
   sub(/，.*$/, "", line)
 
+  # 修剪两端空白与逗号空白
   sub(/^[[:space:]]+/, "", line)
   sub(/[[:space:]]+$/, "", line)
-
   gsub(/[[:space:]]*,[[:space:]]*/, ",", line)
 
   if (line == "") next
@@ -226,11 +230,11 @@ function valid_domain(s,   n,parts,i,tld,p) {
   # 去掉已知前缀 full:/domain:/host:/suffix:
   s = gensub(/^(full|domain|host|suffix)[[:space:]]*[:=][[:space:]]*/, "", 1, s)
 
-  # Adblock 风格
+  # Adblock 风格与通配
   sub(/^\|\|/, "", s); sub(/^\|/, "", s); sub(/\^$/, "", s)
 
-  # 去通配与前导点、端口
-  sub(/^(\*\.|\.|\+\.)/, "", s)
+  # 去通配与前导点、'+.'、端口
+  sub(/^(\+\.|\*\.|\.)/, "", s)
   sub(/:[0-9]+$/, "", s)
 
   if (valid_domain(s)) {
@@ -270,6 +274,114 @@ for raw in sys.stdin:
     if out not in seen:
         print(out)
         seen.add(out)
+PY
+
+# 3d) YAML payload 提取器：支持 payload: - item 和 payload: [ ... ]，可多段出现
+EXTRACT_YAML_PY="${TMP_DIR}/extract_yaml_payload.py"
+cat > "$EXTRACT_YAML_PY" <<'PY'
+import sys, re
+from typing import List
+
+def split_inline_array(s: str) -> List[str]:
+    # 输入类似: [ "a", '+.b.com', 'c' ]
+    # 返回: ["a", "+.b.com", "c"]
+    out, cur = [], []
+    in_s, in_d, esc, depth = False, False, False, 0
+    for ch in s:
+        if esc:
+            cur.append(ch); esc = False; continue
+        if ch == '\\':
+            esc = True; continue
+        if ch == "'" and not in_d:
+            in_s = not in_s; continue
+        if ch == '"' and not in_s:
+            in_d = not in_d; continue
+        if not in_s and not in_d:
+            if ch == '[':
+                depth += 1; continue
+            if ch == ']':
+                if cur:
+                    token = ''.join(cur).strip()
+                    if token:
+                        out.append(token)
+                    cur = []
+                depth = max(0, depth-1)
+                continue
+            if ch == ',' and depth >= 1:
+                token = ''.join(cur).strip()
+                if token:
+                    out.append(token)
+                cur = []
+                continue
+        cur.append(ch)
+    if cur:
+        token = ''.join(cur).strip()
+        if token:
+            out.append(token)
+    # 去掉外层可能残留的引号
+    out = [t.strip().strip("'").strip('"') for t in out if t.strip()]
+    return out
+
+def extract(lines: List[str]) -> List[str]:
+    res: List[str] = []
+    i = 0
+    # 去掉首行 BOM
+    if lines:
+        lines[0] = lines[0].lstrip('\ufeff')
+    n = len(lines)
+    while i < n:
+        line = lines[i].rstrip('\r\n')
+        m = re.match(r'^\s*payload\s*:\s*(.*)$', line, flags=re.IGNORECASE)
+        if not m:
+            i += 1
+            continue
+        rest = m.group(1).strip()
+        base_indent = len(line) - len(line.lstrip(' '))
+        # 1) 内联数组 payload: [ ... ]
+        if rest.startswith('['):
+            buf = [rest]
+            j = i + 1
+            # 收集直到配对的 ] 结束（支持跨行）
+            open_count = rest.count('[') - rest.count(']')
+            while j < n and open_count > 0:
+                seg = lines[j].rstrip('\r\n')
+                buf.append(seg)
+                open_count += seg.count('[') - seg.count(']')
+                j += 1
+            inline = ' '.join(buf)
+            res.extend(split_inline_array(inline))
+            i = j
+            continue
+        # 2) 缩进列表：
+        i += 1
+        while i < n:
+            l2 = lines[i].rstrip('\r\n')
+            stripped = l2.lstrip(' ')
+            indent = len(l2) - len(stripped)
+            if not stripped:
+                i += 1
+                continue
+            # 低于 payload 缩进，说明列表结束
+            if indent <= base_indent and not stripped.startswith('-'):
+                break
+            # 仅接受 list item
+            m2 = re.match(r'^\s*-\s*(.*)$', l2)
+            if m2:
+                val = m2.group(1).strip()
+                # 去尾注
+                val = re.split(r'\s+#', val, maxsplit=1)[0].strip()
+                val = val.strip().strip("'").strip('"')
+                if val:
+                    res.append(val)
+            i += 1
+    return res
+
+if __name__ == "__main__":
+    data = sys.stdin.read().splitlines()
+    items = extract(data)
+    for x in items:
+        if x:
+            print(x)
 PY
 
 # 4) 来源目录名解析
@@ -346,6 +458,38 @@ comm -23 "$ACT" "$EXP" | while read -r f; do
 done
 
 # 7) 拉取并净化（写入 <policy>/<type>/<owner>/<文件>）
+
+# 自动判别是否为域名列表：即便 type 标错也兜底为 domain 处理
+is_domain_list() {
+  local f="$1"
+  awk '
+    BEGIN{t=0; d=0}
+    {
+      s=$0
+      gsub(/^[[:space:]]+|[[:space:]]+$/,"",s)
+      if (s=="") next
+      t++
+      sub(/^(\+\.|\*\.|\.)/, "",s)
+      s=tolower(s)
+      if (s ~ /^[a-z0-9-]+(\.[a-z0-9-]+)+$/) d++
+    }
+    END{ if (t>0 && d*100/t >= 80) exit 0; else exit 1 }
+  ' "$f"
+}
+
+# 粗判是否包含 YAML payload（触发提取器）
+looks_like_yaml_payload() {
+  local f="$1"
+  if grep -qiE '^\s*payload\s*:' "$f"; then
+    return 0
+  fi
+  # 仅凭扩展名不强制，但可用于提示
+  case "${f##*.}" in
+    yml|yaml) return 0 ;;
+  esac
+  return 1
+}
+
 mkdir -p "$SOURCE_DIR"
 fail_count=0
 
@@ -365,25 +509,38 @@ while IFS=$'\t' read -r policy type url; do
     continue
   fi
 
-  # 通用净化 -> 类型化净化 -> 去重
+  # 阶段化处理：先尽力从 YAML 中提取 payload，再做通用净化，再做类型净化
+  tmp0="${out}.stage0"
   tmp1="${out}.stage1"
   tmp2="${out}.stage2"
 
-  awk -f "$SAN_AWK" "${out}.download" > "$tmp1"
+  # 若像 YAML payload，先用 Python 提取器展开（支持内联数组）
+  if looks_like_yaml_payload "${out}.download"; then
+    python3 "$EXTRACT_YAML_PY" < "${out}.download" > "$tmp0" || true
+  fi
+  # 提取失败或不是 YAML payload：直接用原始内容
+  if [ ! -s "$tmp0" ]; then
+    cp "${out}.download" "$tmp0"
+  fi
 
-  if [ "$typ" = "domain" ]; then
+  # 通用净化 -> 类型化净化
+  awk -f "$SAN_AWK" "$tmp0" > "$tmp1"
+
+  if [ "$typ" = "domain" ] || is_domain_list "$tmp1"; then
+    if [ "$typ" != "domain" ]; then
+      echo "Auto-detect: looks like domain list, override to domain for $fn"
+    fi
     awk -f "$SAN_DOMAIN_AWK" "$tmp1" > "$tmp2"
   elif [ "$typ" = "ipcidr" ]; then
     python3 "$SAN_IP_PY" < "$tmp1" > "$tmp2"
   else
-    # classical 等其他类型保持通用净化即可
     cp "$tmp1" "$tmp2"
   fi
 
   # 去重保持顺序
   awk '!seen[$0]++' "$tmp2" > "$out"
 
-  rm -f "${out}.download" "$tmp1" "$tmp2"
+  rm -f "${out}.download" "$tmp0" "$tmp1" "$tmp2"
   echo "Saved: $out"
 done < "$TRIPLETS"
 
