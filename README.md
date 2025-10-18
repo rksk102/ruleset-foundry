@@ -2,8 +2,8 @@
 
 > 自动生成的 merged-rules 索引：列出该目录下的全部规则文件（包含子目录），并依据路径结构标注分类。
 
-- Build date: 2025-10-17
-- Build time: 2025-10-17 11:37:59 CST
+- Build date: 2025-10-18
+- Build time: 2025-10-18 11:34:20 CST
 - Repo: rksk102/rules-Repository
 - Ref: `main`
 - Links via: `jsdelivr`
