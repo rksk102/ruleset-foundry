@@ -18,7 +18,7 @@
     "timeout_minutes": 5
   },
   {
-    "name": "4. Release SRS",
+    "name": "4. Release",
     "file": "create-release.yml", 
     "description": "发布二进制规则文件",
     "timeout_minutes": 15
