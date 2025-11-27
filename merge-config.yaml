@@ -22,8 +22,6 @@ merges:
       - "direct/ipcidr/Loyalsoldier/cncidr.txt"
       - "direct/ipcidr/MetaCubeX/cn.txt"
 
-
-  # 示例：不需要合并，单文件处理 (清洗、排序、移动到规范目录)
   - strategy: "proxy"
     type: "domain"
     owner: "rksk102"
