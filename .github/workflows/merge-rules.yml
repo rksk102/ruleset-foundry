@@ -1,67 +1,53 @@
-name: "5. Merge Rule Sets (Type Check + Organize)"
+name: "2. Merge Rules based on Config"
 
 on:
   workflow_dispatch:
-    inputs:
-      config_file:
-        description: "Merge config file (default: merge-config.yaml)"
-        required: false
-        type: string
-        default: "merge-config.yaml"
+  workflow_run:
+    workflows: ["1. Daily Sync and Sanitize Rules"]
+    types:
+      - completed
 
 permissions:
   contents: write
 
-concurrency:
-  group: merge-rules
-  cancel-in-progress: true
-
-env:
-  TZ: Asia/Shanghai
-
 jobs:
-  merge-rules:
+  merge:
+    # 仅当上一个流程成功时才运行
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository (full history for rebase)
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: main 
 
-      - name: Configure Git
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Dependencies
+        run: pip install PyYAML
+
+      - name: Run Merge Script
+        run: |
+          chmod +x scripts/merge-rules.sh
+          ./scripts/merge-rules.sh
+
+      - name: Commit and Push
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
-
-      - name: Make scripts executable
-        run: |
-          chmod +x scripts/merge-rules.sh
-          chmod +x scripts/type-check-and-merge.sh
-
-      - name: Run type-check + merge + organize
-        env:
-          CONFIG_FILE: ${{ inputs.config_file || 'merge-config.yaml' }}
-          INPUT_REF: ${{ github.ref_name || 'main' }}
-          MERGED_OWNER: "rksk102"
-        run: scripts/type-check-and-merge.sh
-
-      - name: Commit merged-rules and indexes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add merged-rules typedb.tsv merge-used.list merge-map.tsv || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
+          
+          # 【重点修改】添加 merged-rules 文件夹
+          git add merged-rules/
+          
+          # 检查是否有变更
+          if git diff-index --quiet HEAD; then
+            echo "No changes in merged rules."
             exit 0
           fi
-          git commit -m "chore(merge): type-check rulesets, merge by config, and rebuild merged-rules at $(date +'%Y-%m-%d %H:%M:%S %Z')"
-          BRANCH="${GITHUB_REF_NAME:-main}"
-          if git push origin "$BRANCH"; then
-            exit 0
-          fi
-          echo "Non-fast-forward, rebasing and retrying..."
-          git pull --rebase origin "$BRANCH"
-          git push origin "$BRANCH" || {
-            echo "::error::Failed to push after rebase retry."
-            exit 1
-          }
+          
+          echo "Changes detected. Committing..."
+          git commit -m "build: Update merged rulesets in 'merged-rules/'"
+          git push
