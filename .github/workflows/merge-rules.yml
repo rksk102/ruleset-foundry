@@ -29,11 +29,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip' # 开启缓存，加快速度
+          # cache: 'pip'  <-- 已删除此行，修复报错
 
       - name: 📦 Install Dependencies
         run: |
           pip install --upgrade pip
+          # 直接安装依赖，因为包很小，不需要缓存
           pip install PyYAML
           
       - name: 🔍 Validate Config
