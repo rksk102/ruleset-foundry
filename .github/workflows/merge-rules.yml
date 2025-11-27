@@ -1,7 +1,11 @@
 name: "2. Merge Rules based on Config"
 
 on:
+  # 1. 手动触发
   workflow_dispatch:
+  # 2. 允许其他 Repository 调用触发 (例如通过 POST 请求)
+  repository_dispatch:
+    types: [merge-rules-trigger]
 
 permissions:
   contents: write
@@ -26,28 +30,40 @@ jobs:
       - name: 📦 Install Dependencies
         run: |
           pip install pyyaml rich
+          echo "### 📦 Environment Prepared" >> $GITHUB_STEP_SUMMARY
+          echo "- Pthon 3.11 Setup Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependencies: PyYAML, Rich installed" >> $GITHUB_STEP_SUMMARY
 
-      - name: 🚀 Run Merger
+      - name: 🚀 Run Merger (Strict Mode)
         id: merger
         env:
           TERM: xterm-color
-          FORCE_COLOR: "1"  # 强制 Rich 输出颜色
+          FORCE_COLOR: "1"
         run: |
+          # 运行脚本，如果脚本 exit 1，整个 Job 会立即停止
           python3 scripts/merger.py
 
       - name: 💾 Commit & Push
-        if: success()
+        if: success() # 只有上一步成功才执行
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
           
-          # 添加所有变更
+          # 强制添加 merged-rules 目录
           git add merged-rules/
           
+          echo "### 💾 Git Operations" >> $GITHUB_STEP_SUMMARY
+          
           if git diff-index --quiet HEAD; then
-             echo "::notice::No changes in rules."
+             echo "::notice::No changes detected."
+             echo "- ✅ **Status**: No changes to commit." >> $GITHUB_STEP_SUMMARY
           else
              CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
-             git commit -m "build: 🧩 Optimized $CHANGE_COUNT rule files"
+             COMMIT_MSG="build: 🧩 Re-merged $CHANGE_COUNT lists (Strict Structure)"
+             
+             git commit -m "$COMMIT_MSG"
              git push
+             
+             echo "- 🚀 **Pushed**: $CHANGE_COUNT files changed." >> $GITHUB_STEP_SUMMARY
+             echo "- 📝 **Commit**: $COMMIT_MSG" >> $GITHUB_STEP_SUMMARY
           fi
