@@ -1,0 +1,46 @@
+name: "4. Convert to MRS"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  convert-job:
+    name: "🦄 Convert & Compile"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Scripts
+        uses: actions/checkout@v4
+
+      - name: 📦 Download Source (TXT)
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: merge-rules.yml
+          name: merged_rules_artifact
+          path: merged-rules
+          search_artifacts: true
+          workflow_conclusion: success
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ⬇️ Install Python Deps
+        run: pip install requests
+
+      - name: 🚀 Run Conversion Script
+        env:
+          # 关键：传递 Token 给脚本，用于无限流获取 Latest Release API
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 赋予脚本执行权限
+          chmod +x scripts/convert_mrs.py
+          # 运行，并确保日志流实时刷新
+          python3 -u scripts/convert_mrs.py
+
+      - name: 📤 Upload Result (MRS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrs_rules_artifact
+          path: merged-rules-mrs/
+          retention-days: 1
