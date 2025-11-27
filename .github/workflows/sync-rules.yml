@@ -1,4 +1,4 @@
-name: "1. Daily Sync and Sanitize Rules (mihomo-core)"
+name: "1. Daily Sync and Sanitize Rules"
 
 on:
   workflow_dispatch:
@@ -19,18 +19,110 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Make sync script executable
-        shell: bash
-        run: chmod +x scripts/sync.sh
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
-      - name: Run sync script
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/sync.sh
+          if [ -f "scripts/lib/processor.py" ]; then
+            chmod +x scripts/lib/processor.py
+          fi
+
+      # 核心步骤：运行同步脚本，并使用 tee 记录日志以便后续分析
+      - name: Run Sync Script with Logging
+        id: run_sync
         shell: bash
         env:
-          STRICT: "false"   # 任一源失败就终止可改为 "true"
-        run: scripts/sync.sh
+          STRICT: "false"
+          TERM: xterm-color #以此保留颜色输出
+        run: |
+          echo "::group::📜 Real-time Execution Logs (Click to expand)"
+          
+          # 创建临时日志文件
+          touch sync_execution.log
+          
+          # 运行脚本 | tee 同时输出到屏幕和文件
+          # 使用 pipefail 确保脚本出错能被捕获
+          set -o pipefail
+          ./scripts/sync.sh 2>&1 | tee sync_execution.log
+          
+          EXIT_CODE=$?
+          
+          echo "::endgroup::"
+          
+          # 将退出代码传递给下一步（即使失败也先继续，以便生成报告）
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
 
-      # 触发下一个工作流：merge-rules
+      # 美化步骤：生成可视化的作业摘要报告
+      - name: Generate Execution Report
+        if: always() # 无论成功失败都运行
+        shell: bash
+        run: |
+          LOG_FILE="sync_execution.log"
+          
+          # --- 统计数据提取 ---
+          # 统计 "Saved:" 出现的次数作为成功数
+          SUCCESS_COUNT=$(grep -c "Saved:" "$LOG_FILE" || echo 0)
+          # 统计 "::warning::Download failed" 或 "::error::" 出现的次数
+          FAIL_COUNT=$(grep -E -c "(::warning::Download failed|::error::)" "$LOG_FILE" || echo 0)
+          # 统计总共下载的规则行数 (从 Saved: ... (\d+) lines 提取)
+          TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk -F'\\(' '{print $2}' | awk '{print $1}' | awk '{s+=$1} END {print s}' || echo 0)
+          
+          # 提取所有的失败 URL
+          FAILED_URLS=$(grep -E "Source: https?://" "$LOG_FILE" -A 2 | grep -B 2 "::warning" | grep "Source:" | awk '{print $2}' | sort | uniq)
+          
+          # --- 生成 Markdown 摘要 ---
+          {
+            echo "## 🔄 Daily Sync Report"
+            echo ""
+            echo "| Metric | Count |"
+            echo "| :--- | :--- |"
+            echo "| ✅ **Success Sources** | **$SUCCESS_COUNT** |"
+            echo "| ❌ **Failed Sources** | **$FAIL_COUNT** |"
+            echo "| 📊 **Total Rules Parsed** | $TOTAL_LINES lines |"
+            echo ""
+            
+            if [ "$FAIL_COUNT" -gt 0 ]; then
+              echo "### ⚠️ Failed Sources List"
+              echo "> The following URLs failed to download or parse:"
+              echo ""
+              echo "| Failed URL |"
+              echo "| :--- |"
+              while IFS= read -r url; do
+                [ -z "$url" ] && continue
+                echo "| \`$url\` |"
+              done <<< "$FAILED_URLS"
+              echo ""
+              echo "💡 _Check the logs above for specific HTTP errors._"
+            else
+              echo "### 🎉 All Systems Operational"
+              echo "No download errors detected."
+            fi
+            
+            echo ""
+            echo "---"
+            echo "Build Time: $(date +'%Y-%m-%d %H:%M:%S UTC')"
+            
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check Final Status
+        if: steps.run_sync.outputs.status == 'failure'
+        run: |
+          echo "::error::Sync script failed with exit code ${{ steps.run_sync.outputs.exit_code }}"
+          exit 1
+
+      # 触发下一个工作流
       - name: Trigger merge-rules workflow
         if: success()
         env:
