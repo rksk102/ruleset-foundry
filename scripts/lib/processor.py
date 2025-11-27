@@ -1,62 +1,93 @@
 #!/usr/bin/env python3
+import os
 import sys
 import re
 import ipaddress
 import base64
 
-# 配置：是否跳过本地回环和保留地址（对于公共规则集通常设为 True）
-SKIP_LOCAL = True
+# =========================
+# 配置与全局变量
+# =========================
+SOURCE_DIR = "rulesets"
+
+STATS = {
+    "files_processed": 0,
+    "base64_decoded": 0,
+    "original_lines": 0,
+    "valid_lines": 0,
+    "errors": []
+}
+
+# =========================
+# GitHub Actions 辅助函数
+# =========================
+def gh_group_start(title):
+    print(f"::group::🛠️ {title}")
+    sys.stdout.flush()
+
+def gh_group_end():
+    print("::endgroup::")
+    sys.stdout.flush()
+
+def print_step(msg):
+    print(f"\033[1;34m[PROC]\033[0m {msg}")
+
+def print_success(msg):
+    print(f"\033[1;32m[OK]\033[0m   {msg}")
+
+def gh_error(msg, file=None):
+    msg_str = f"::error::{msg}" if not file else f"::error file={file}::{msg}"
+    print(msg_str)
+    STATS["errors"].append(msg)
+
+# =========================
+# 核心逻辑 (来源于你上传的文件)
+# =========================
 
 def decode_if_base64(content):
-    """尝试探测并解码 Base64 内容 (适配某些订阅源)"""
+    """尝试探测并解码 Base64 内容"""
     s = content.strip()
-    # 简单的 heuristic: 没有任何空格，且长度是4的倍数，且只含 base64 字符
     if ' ' not in s and len(s) % 4 == 0 and len(s) > 20:
         try:
-            # 尝试解码
             decoded = base64.b64decode(s).decode('utf-8', errors='ignore')
-            # 如果解码结果看起来像文本列表（有换行），则采纳
             if '\n' in decoded or '\r' in decoded:
+                STATS["base64_decoded"] += 1
                 return decoded
         except Exception:
             pass
     return content
 
-def parse_content(text):
+def parse_content_to_list(text):
     """
-    从文本中提取有效行。
-    处理 YAML Payload, List item (- item), 行内注释等。
+    提取文本中的有效行，支持 Yaml Payload 提取
     """
     lines = []
     text = decode_if_base64(text)
     
-    # 状态机提取 payload (替代复杂的 regex)
-    in_payload = False
     # 简单的 YAML payload 探测
     has_payload_keyword = re.search(r'^[\s]*payload:', text, re.MULTILINE | re.IGNORECASE)
+    in_payload = False
     
     raw_lines = text.splitlines()
+    STATS["original_lines"] += len(raw_lines)
     
     for line in raw_lines:
         line = line.strip()
         if not line: continue
+        if line.startswith('#') or line.startswith('!') or line.startswith('//'): continue
         
-        # 1. 处理注释
-        if line.startswith('#') or line.startswith('!'): continue
-        
-        # 2. 去除行尾注释 ( # comment)
-        if '#' in line:
-            line = line.split('#', 1)[0].strip()
-        
-        # 3. 处理 Clash YAML 结构
-        # 如果整篇看起来有 payload 关键字，我们启用严格抓取
+        # 去除行尾注释
+        if ' #' in line: line = line.split(' #', 1)[0].strip()
+        if '#' in line and not has_payload_keyword: # 简单防止误伤 url anchor
+             line = line.split('#', 1)[0].strip()
+
+        # 处理 Clash YAML 结构 (payload:)
         if has_payload_keyword:
             if re.match(r'^[\s]*payload:', line, re.IGNORECASE):
                 in_payload = True
-                # 检查是否有内联数组 payload: [a, b]
+                # 检查内联 [a, b]
                 m_inline = re.match(r'^[\s]*payload:\s*\[(.*)\]', line, re.IGNORECASE)
                 if m_inline:
-                    # 简单的逗号分割，注意 strip
                     parts = m_inline.group(1).split(',')
                     for p in parts:
                         p = p.strip().strip("'").strip('"')
@@ -64,129 +95,163 @@ def parse_content(text):
                 continue
             
             if in_payload:
-                # 遇到顶级 key (不带缩进或是缩进变小)，可能退出了 payload
-                # 这里简单判定：如果是 - 开头，提取；否则如果不是 payload，可能是下一个 key
                 if line.startswith('-'):
                     val = line[1:].strip().strip("'").strip('"')
                     if val: lines.append(val)
                 elif ':' in line:
-                    # 只是个粗略防卫：如果是 key: value 且没有缩进，说明 payload 结束
-                    # Clash 缩进通常是 2 空格。这里假设非列表项即结束
-                    in_payload = False
-            continue
-        
-        # 4. 普通列表处理 (兼容 Adblock ||domain^ 写法 和 普通 yaml 列表 - domain)
+                    in_payload = False # 遇到下一个 key
+                continue
+
+        # 普通列表处理 (- domain)
         if line.startswith('- '):
             line = line[2:].strip()
         
-        # 去除引号
         line = line.strip("'").strip('"')
-        
         if line:
             lines.append(line)
             
     return lines
 
-def process_domain(raw_list):
+def process_domain_list(raw_list):
     """
-    清洗域名：转小写、去前缀(+. *.)、去多余符号、去重
+    清洗域名：转小写、去前缀、去重、排序
     """
     valid_domains = set()
-    
-    # 预编译正则
-    # 允许 中文域名 (xn--),, 字母数字, 点, 连字符
-    # 排除 IP 地址 (简单的排除，后续 verify 也可以)
-    re_ip = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    re_ip = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$') # 简单过滤纯IP
     
     for item in raw_list:
-        s = item.lower()
+        s = item.lower().strip()
         
-        # 1. Adblock 转换 (||example.com^ -> example.com)
+        # Adblock 转换 ||example.com^ -> example.com
         if s.startswith('||'): s = s[2:]
         if s.endswith('^'): s = s[:-1]
         
-        # 2. 去除通配符的前缀 (+. *. .)
-        # 注意：保留 exact match 还是 subdomain match 取决于上游逻辑。
-        # 为了通用性，我们通常只取 pure domain。
+        # 去除通配符
         s = re.sub(r'^(\*\.|\+\.|\.)', '', s)
         
-        # 3. 丢弃 URL 路径，只留 domain
-        if '/' in s:
-            s = s.split('/')[0]
-        if ':' in s: # 去端口
-            s = s.split(':')[0]
+        # 丢弃路径和端口
+        if '/' in s: s = s.split('/')[0]
+        if ':' in s: s = s.split(':')[0]
             
-        # 4. 校验
         if not s or '.' not in s: continue
-        if re_ip.match(s): continue # 混入的 IP 丢掉，因为这是 domain 列表
+        if re_ip.match(s): continue 
         
-        # 简单的字符合法性检查
-        if not all(c.isalnum() or c in '-._' for c in s):
-            continue
+        # 合法性检查
+        if not all(c.isalnum() or c in '-._' for c in s): continue
             
         valid_domains.add(s)
         
     return sorted(list(valid_domains))
 
-def process_ip(raw_list):
+def process_ip_list(raw_list):
     """
-    清洗 IP：标准化格式、过滤无效 IP、**合并网段 (CIDR Merge)**
+    清洗 IP：标准化、合并网段 (Collapsing)
     """
     ipv4_nets = []
     ipv6_nets = []
     
     for item in raw_list:
         s = item.strip()
-        # 提取经典写法 "IP-CIDR, 1.1.1.1/24" -> "1.1.1.1/24"
+        # 提取 "IP-CIDR, 1.1.1.1/24"
         m = re.match(r'^(?:ip(?:-)?cidr6?|ip6|ip)\s*[:,]?\s*([^,\s]+)', s, re.IGNORECASE)
-        if m:
-            s = m.group(1)
+        if m: s = m.group(1)
             
         try:
-            # strict=False 允许 192.168.1.1/24 这种非网络号写法 (自动转为 192.168.1.0/24)
+            # strict=False 允许主机位不为0的写法
             net = ipaddress.ip_network(s, strict=False)
-            
-            # 分类存入 v4 或 v6 列表
             if net.version == 4:
                 ipv4_nets.append(net)
             else:
                 ipv6_nets.append(net)
-                
         except ValueError:
             continue
 
-    # **核心修复：分别合并 v4 和 v6**
-    merged_v4 = list(ipaddress.collapse_addresses(ipv4_nets))
-    merged_v6 = list(ipaddress.collapse_addresses(ipv6_nets))
-    
-    # 合并结果返回
-    return [str(n) for n in merged_v4 + merged_v6]
+    # 核心功能：合并网段 (例如 1.1.1.1/32 + 1.1.1.0/32 -> 无需合并，或相邻合并)
+    try:
+        merged_v4 = list(ipaddress.collapse_addresses(ipv4_nets))
+        merged_v6 = list(ipaddress.collapse_addresses(ipv6_nets))
+        return [str(n) for n in merged_v4 + merged_v6]
+    except Exception as e:
+        # 万一合并出错，回退到包含重复的列表
+        return sorted([str(n) for n in ipv4_nets + ipv6_nets])
+
+# =========================
+# 适配工作流的新 Main 函数
+# =========================
+
+def process_file(filepath):
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # 1. 初步解析 (通用)
+        raw_list = parse_content_to_list(content)
+        
+        # 2. 判断处理模式 (根据路径判断 IP 还是 Domain)
+        # 规则结构通常为: rulesets/block/domain/owner/file.txt
+        # 或者 rulesets/direct/ipcidr/owner/file.txt
+        # 我们检测路径中是否包含 'ipcidr' 或 'ip'，否则默认为 domain
+        
+        path_lower = filepath.lower()
+        is_ip_mode = 'ipcidr' in path_lower or '/ip/' in path_lower
+        
+        if is_ip_mode:
+            final_list = process_ip_list(raw_list)
+        else:
+            final_list = process_domain_list(raw_list)
+            
+        # 3. 写回
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for line in final_list:
+                f.write(line + "\n")
+        
+        STATS["files_processed"] += 1
+        STATS["valid_lines"] += len(final_list)
+
+    except UnicodeDecodeError:
+        gh_error(f"Encoding error", file=filepath)
+    except Exception as e:
+        gh_error(f"Process error: {e}", file=filepath)
 
 def main():
-    if len(sys.argv) < 2:
-        # 默认为 domain 模式方便调试，或者报错
-        mode = "domain"
-    else:
-        mode = sys.argv[1] # domain 或 ipcidr
+    print("::notice::Starting Smart Rule Processor (Base64/YAML/CIDR-Merge)...")
     
-    # 1. 读取 stdin
-    try:
-        raw_content = sys.stdin.read()
-    except Exception:
-        sys.exit(0) # 空输入
+    if not os.path.exists(SOURCE_DIR):
+        print(f"::warning::Directory '{SOURCE_DIR}' not found.")
+        return
 
-    # 2. 初步解析成行
-    lines = parse_content(raw_content)
+    gh_group_start(f"Processing {SOURCE_DIR}")
     
-    # 3. 按类型智能处理
-    if mode == 'ipcidr':
-        result = process_ip(lines)
-    else:
-        result = process_domain(lines)
+    # 扫描文件
+    target_files = []
+    for root, dirs, files in os.walk(SOURCE_DIR):
+        for file in files:
+            if file.endswith(('.txt', '.list', '.conf', '.yaml')):
+                target_files.append(os.path.join(root, file))
+    
+    print_step(f"Found {len(target_files)} files.")
+    
+    # 执行处理
+    for fp in target_files:
+        process_file(fp)
         
-    # 4. 输出
-    for r in result:
-        print(r)
+    gh_group_end()
+
+    # 输出报告
+    removed_total = STATS["original_lines"] - STATS["valid_lines"]
+    print_success("Sanitization & Optimization Complete.")
+    print(f"  - Files: {STATS['files_processed']}")
+    print(f"  - Base64 Decoded: {STATS['base64_decoded']}")
+    print(f"  - Lines Kept: {STATS['valid_lines']}")
+    print(f"  - Lines Reduced: {removed_total}")
+
+    if os.getenv('GITHUB_STEP_SUMMARY'):
+        with open(os.getenv('GITHUB_STEP_SUMMARY'), 'a', encoding='utf-8') as f:
+            f.write("## 🧠 Intelligent Processor Report\n")
+            f.write(f"- **Files Processed**: `{STATS['files_processed']}`\n")
+            f.write(f"- **Base64 Sources Decoded**: `{STATS['base64_decoded']}`\n")
+            f.write(f"- **Cleaned Rules**: `{STATS['valid_lines']}`\n")
+            f.write(f"- **Reduction**: `{removed_total}` lines removed (duplicates, invalid, or aggregated CIDRs)\n")
 
 if __name__ == '__main__':
     main()
