@@ -1,288 +1,97 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-# ==============================================================================
-# 配置区域
-# ==============================================================================
+# =================================================
+# 配置
+# =================================================
+RULES_DIR="rulesets"
+SOURCES_FILE="sources.urls"
 
-STRICT="${STRICT:-false}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROCESSOR="${SCRIPT_DIR}/lib/processor.py"
-SOURCE_DIR="rulesets"
-TMP_DIR="${RUNNER_TEMP:-/tmp}/sync-tmp"
-mkdir -p "$TMP_DIR"
+# 计数器
+STATS_SUCCESS=0
+STATS_FAIL=0
 
-# ==============================================================================
-# 通用函数
-# ==============================================================================
+# 颜色定义
+INFO="\033[1;34m"
+OK="\033[1;32m"
+WARN="\033[1;33m"
+ERR="\033[1;31m"
+NC="\033[0m"
 
-cleanup() {
-  rm -rf "$TMP_DIR"
-  if [ -d "$SOURCE_DIR" ]; then
-    find "$SOURCE_DIR" -type f -name "*.download" -delete 2>/dev/null || true
-    find "$SOURCE_DIR" -type d -empty -delete 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT INT TERM
+# GitHub Actions 辅助函数
+gh_group_start() { echo "::group::🔹 $1"; }
+gh_group_end() { echo "::endgroup::"; }
+gh_error() { echo "::error file=$SOURCES_FILE::$1"; }
 
-FORCE_TXT_EXTS="list"
-force_txt_ext() {
-  local ext="${1,,}"
-  for t in $FORCE_TXT_EXTS; do
-    if [[ "$ext" == "$t" ]]; then return 0; fi
-  done
-  return 1
-}
+# =================================================
+# 1. 环境清理 (强制重置)
+# =================================================
+gh_group_start "Resetting Workspace"
+echo -e "${INFO}[INIT]${NC} Wiping directory: $RULES_DIR"
 
-normalize_policy() {
-  local p="${1,,}"
-  case "$p" in
-    reject|block|deny|ad|ads|adblock|拦截|拒绝|屏蔽|广告) echo "block" ;;
-    direct|bypass|no-proxy|直连|直连规则)               echo "direct" ;;
-    proxy|proxied|forward|代理|代理规则)               echo "proxy" ;;
-    *) echo "" ;;
-  esac
-}
-
-normalize_type() {
-  local t="${1,,}"
-  case "$t" in
-    domain|domains|domainset) echo "domain" ;;
-    ip|ipcidr|ip-cidr|cidr)   echo "ipcidr" ;;
-    classical|classic|mix|mixed|general|all) echo "classical" ;;
-    *) echo "" ;;
-  esac
-}
-
-map_out_relpath() {
-  local policy="$1"; local type="$2"; local owner="$3"; local fn="$4"
-  local ext="${fn##*.}"
-  local base="${fn%.*}"
-  local mapped="$fn"
-  if force_txt_ext "$ext"; then
-    mapped="${base}.txt"
-  fi
-  echo "${policy}/${type}/${owner}/${mapped}"
-}
-
-get_owner_dir() {
-  local url="$1"
-  local host
-  host=$(echo "$url" | awk -F/ '{print $3}')
-  if [ "$host" = "raw.githubusercontent.com" ]; then
-    echo "$url" | awk -F/ '{print $4}'
-  elif [ "$host" = "cdn.jsdelivr.net" ]; then
-    local p4
-    p4=$(echo "$url" | awk -F/ '{print $4}' || echo "")
-    if [ "$p4" = "gh" ]; then
-      echo "$url" | awk -F/ '{print $5}'
-    else
-      echo "$host"
-    fi
-  else
-    echo "$host"
-  fi
-}
-
-try_download() {
-  local url="$1"; local out="$2"
-  local code
-  
-  code=$(curl -sL --connect-timeout 10 --retry 2 --create-dirs -o "${out}.download" -w "%{http_code}" "$url" || true)
-  
-  if [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && [ -s "${out}.download" ]; then
-    echo "OK  ($code): $url"
-    return 0
-  fi
-  echo "Warn ($code): $url"
-
-  if [[ "$url" == https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/ruleset/* ]]; then
-    local alt="${url/\/release\/ruleset\//\/release\/}"
-    echo "Retry with corrected URL: $alt"
-    code=$(curl -sL --connect-timeout 10 --retry 2 -o "${out}.download" -w "%{http_code}" "$alt" || true)
-    if [ "$code" -ge 200 ] && [ "$code" -lt 300 ] && [ -s "${out}.download" ]; then
-      echo "OK  ($code): $alt"
-      return 0
-    else
-      echo "Fail($code): $alt"
-    fi
-  fi
-
-  rm -f "${out}.download"
-  return 1
-}
-
-# ==============================================================================
-# 主逻辑
-# ==============================================================================
-
-if [ ! -f "$PROCESSOR" ]; then
-  echo "::error::Processor script not found at $PROCESSOR"
-  exit 1
+if [ -d "$RULES_DIR" ]; then
+    rm -rf "$RULES_DIR"
 fi
+mkdir -p "$RULES_DIR"
+echo -e "${OK}[OK]${NC} Directory clean and ready."
+gh_group_end
 
-if [ ! -f sources.urls ]; then
-  echo "sources.urls not found, skip."
-  exit 0
-fi
+# =================================================
+# 2. 下载流程
+# =================================================
+gh_group_start "Downloading Sources"
 
-CLEAN="${TMP_DIR}/sources.cleaned"
-awk 'NR==1{ sub(/^\xEF\xBB\xBF/,"") } { print }' sources.urls \
-  | sed 's/\r$//' \
-  | sed -E 's/[[:space:]]+#.*$//' \
-  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-  > "$CLEAN"
-
-TRIPLETS="${TMP_DIR}/triplets.tsv"
-: > "$TRIPLETS"
-
-current_policy="proxy"
-current_type="domain"
-
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  [[ "$line" =~ ^# ]] && continue
-
-  if [[ "$line" =~ ^\[policy:[[:space:]]*([^\]]+)[[:space:]]*\]$ ]]; then
-    pol_guess="${BASH_REMATCH[1]}"
-    current_policy="$(normalize_policy "$pol_guess" || echo "proxy")"
-    continue
-  fi
-  if [[ "$line" =~ ^\[type:[[:space:]]*([^\]]+)[[:space:]]*\]$ ]]; then
-    type_guess="${BASH_REMATCH[1]}"
-    current_type="$(normalize_type "$type_guess" || echo "domain")"
-    continue
-  fi
-
-  if [[ "$line" =~ https?:// ]]; then
-    url_word="$(awk '{ for (i=1;i<=NF;i++) if ($i ~ /^https?:\/\//) { print $i; exit } }' <<< "$line")"
-    prefix="${line%%$url_word*}"
-    
-    pol="$current_policy"
-    typ="$current_type"
-    
-    IFS=' ' read -r -a toks <<< "$prefix"
-    for tk in "${toks[@]}"; do
-      [[ -z "$tk" ]] && continue
-      if [[ "$tk" =~ ^policy[:=](.+)$ ]]; then
-        v="$(normalize_policy "${BASH_REMATCH[1]}")"
-        [[ -n "$v" ]] && pol="$v"
-        continue
-      fi
-      if [[ "$tk" =~ ^type[:=](.+)$ ]]; then
-        v="$(normalize_type "${BASH_REMATCH[1]}")"
-        [[ -n "$v" ]] && typ="$v"
-        continue
-      fi
-      v_pol="$(normalize_policy "$tk")"
-      if [[ -n "$v_pol" ]]; then pol="$v_pol"; continue; fi
-      v_typ="$(normalize_type "$tk")"
-      if [[ -n "$v_typ" ]]; then typ="$v_typ"; continue; fi
-    done
-    
-    pol="${pol:-proxy}"
-    typ="${typ:-domain}"
-    
-    echo -e "${pol}\t${typ}\t${url_word}" >> "$TRIPLETS"
-    continue
-  fi
-done < "$CLEAN"
-
-if [ ! -s "$TRIPLETS" ]; then
-  echo "No usable URLs found. Exiting."
-  exit 0
-fi
-
-EXP="${TMP_DIR}/expected_files.list"
-ACT="${TMP_DIR}/actual_files.list"
-: > "$EXP"
-
-while IFS=$'\t' read -r policy type url; do
-  owner="$(get_owner_dir "$url")"
-  fn="$(basename "$url")"
-  rel_out="$(map_out_relpath "$policy" "$type" "$owner" "$fn")"
-  echo "${SOURCE_DIR}/${rel_out}" >> "$EXP"
-done < "$TRIPLETS"
-
-if [ -d "$SOURCE_DIR" ]; then
-  find "$SOURCE_DIR" -type f > "$ACT"
-  sort -u "$ACT" -o "$ACT" || true
-  sort -u "$EXP" -o "$EXP"
-  comm -23 "$ACT" "$EXP" | while read -r f; do
-    [ -n "$f" ] && echo "Prune orphan: $f" && rm -f "$f" || true
-  done
-fi
-
-mkdir -p "$SOURCE_DIR"
-fail_count=0
-
-while IFS=$'\t' read -r policy type url; do
-  owner="$(get_owner_dir "$url")"
-  fn="$(basename "$url")"
-  
-  pol_norm="$(normalize_policy "$policy")"; pol="${pol_norm:-proxy}"
-  typ_norm="$(normalize_type "$type")";     typ="${typ_norm:-domain}"
-  
-  rel_out="$(map_out_relpath "$pol" "$typ" "$owner" "$fn")"
-  out="${SOURCE_DIR}/${rel_out}"
-  dir="$(dirname "$out")"
-  mkdir -p "$dir"
-
-  echo ""
-  echo "## Target: [${pol}/${typ}] ${fn}"
-  echo "Source: ${url}"
-
-  if ! try_download "$url" "$out"; then
-    echo "::warning::Download failed: $url"
-    fail_count=$((fail_count+1))
-    continue
-  fi
-
-  proc_mode="domain"
-  if [ "$typ" == "ipcidr" ]; then
-    proc_mode="ipcidr"
-  fi
-  
-  echo "Processing mode: ${proc_mode}"
-  
-  if python3 "$PROCESSOR" "$proc_mode" < "${out}.download" > "$out"; then
-    line_count=$(wc -l < "$out" | tr -d ' ')
-    echo "Success. Saved $line_count lines to ${rel_out}"
-    rm -f "${out}.download"
-  else
-    echo "::error::Processing failed for $url"
-    if [ -f "${out}.download" ]; then
-       head -n 5 "${out}.download" || true
-    fi
-    rm -f "${out}.download" "$out"
-    fail_count=$((fail_count+1))
-  fi
-
-done < "$TRIPLETS"
-
-cleanup
-
-if [ "$fail_count" -gt 0 ]; then
-  echo "::warning::Summary: $fail_count sources failed."
-  if [ "$STRICT" = "true" ]; then
-    echo "STRICT mode on. Failing job."
+if [ ! -f "$SOURCES_FILE" ]; then
+    echo -e "${ERR}[ERR]${NC} Sources file not found: $SOURCES_FILE"
+    gh_error "Missing sources.urls file"
     exit 1
-  fi
 fi
 
-# 7. Git 提交
-git config user.name 'GitHub Actions Bot'
-git config user.email 'actions@github.com'
+# 读取 sources.urls
+mapfile -t URLS < <(grep -v '^\s*#' "$SOURCES_FILE" | grep -v '^\s*$')
+TOTAL_URLS=${#URLS[@]}
 
-# 先 add 所有变更
-git add -A
+echo -e "${INFO}[INFO]${NC} Processing $TOTAL_URLS sources..."
 
-# 再次检查是否有实际内容变更 (避免 git commit 报错)
-if git diff-index --quiet HEAD; then
-  echo "No content changes detected. Skipping commit."
-  exit 0
+for line in "${URLS[@]}"; do
+    # 读取 4 个参数
+    read -r policy type owner url <<< "$line"
+    
+    if [[ -z "$url" ]]; then continue; fi
+
+    filename=$(basename "$url")
+    
+    # 目标路径: rulesets/policy/type/owner/file
+    target_dir="$RULES_DIR/$policy/$type/$owner"
+    target_file="$target_dir/$filename"
+    
+    mkdir -p "$target_dir"
+    
+    echo -e "${INFO}[DOWN]${NC} $owner ($type) -> $filename"
+    
+    if curl -sSL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$target_file" "$url"; then
+        if [ -s "$target_file" ]; then
+            echo -e "${OK}[ OK ]${NC} Success."
+            STATS_SUCCESS=$((STATS_SUCCESS + 1))
+        else
+            echo -e "${ERR}[FAIL]${NC} Empty file downloaded."
+            rm "$target_file"
+            STATS_FAIL=$((STATS_FAIL + 1))
+        fi
+    else
+        echo -e "${ERR}[FAIL]${NC} Download error: $url"
+        echo "::warning::Failed to download: $url"
+        STATS_FAIL=$((STATS_FAIL + 1))
+    fi
+done
+
+gh_group_end
+
+# =================================================
+# 3. 摘要输出
+# =================================================
+echo "::notice::Download phase complete. Success: $STATS_SUCCESS, Failed: $STATS_FAIL"
+
+if [ $STATS_SUCCESS -eq 0 ] && [ $STATS_FAIL -gt 0 ]; then
+    exit 1
 fi
-
-echo "Changes detected. Committing..."
-git commit -m "chore(daily-sync): Update rule sets (policy/type/source) for $(date +'%Y-%m-%d')"
-git push
