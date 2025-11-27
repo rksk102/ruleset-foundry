@@ -130,24 +130,19 @@ def main():
 
     log(f"Starting Conversion Task: {SRC_ROOT} -> {DST_ROOT}", "group")
     
-# 保留文件夹，只清空内容
-if os.path.exists(DST_ROOT):
-    # 情况 A: 文件夹存在 -> 清空里面的内容，但保留文件夹本身
-    log(f"Cleaning existing directory: {DST_ROOT}")
-    for filename in os.listdir(DST_ROOT):
-        file_path = os.path.join(DST_ROOT, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            log(f"Failed to delete {file_path}: {e}", "warn")
-else:
-    # 情况 B: 文件夹不存在 (GitHub Actions 里的常见情况) -> 创建它
-    log(f"Creating directory: {DST_ROOT}")
-    os.makedirs(DST_ROOT)
-# ==========================================
+    if os.path.exists(DST_ROOT):
+        for filename in os.listdir(DST_ROOT):
+            file_path = os.path.join(DST_ROOT, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print(f"Failed to delete {file_path}. Reason: {e}")
+    else:
+        # 必须要有这一步！否则新环境下不会创建文件夹
+        os.makedirs(DST_ROOT)
 
     if not os.path.exists(SRC_ROOT):
         log(f"Source dir {SRC_ROOT} not found!", "err")
