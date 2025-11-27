@@ -1,57 +1,49 @@
-name: "4. Generate README (Rules Index)"
+name: "4. Generate README"
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Links base ref (e.g. main)"
-        required: false
-        type: string
-      cdn:
-        description: "CDN (reserved, currently unused)"
-        required: false
-        default: "jsdelivr"
-        type: choice
-        options:
-          - "jsdelivr"
-          - "raw"
-  schedule:
-    - cron: "10 3 * * *"  # 可按需修改
+  workflow_run:
+    # 确保与你之前的 Merge 工作流名称完全一致
+    workflows: ["2. Merge Rules based on Config"]
+    types:
+      - completed
 
 permissions:
   contents: write
 
-env:
-  TZ: Asia/Shanghai
-
 jobs:
-  gen-readme:
+  docs:
+    # 仅在 Merge 成功后运行
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    name: "📝 Update Documentation"
+    
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: main
+          fetch-depth: 0 # 获取完整历史以确保 Git 信息正确
 
-      - name: Setup Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Generate README via template
-        env:
-          INPUT_REF: ${{ inputs.ref || 'main' }}
+      - name: 🚀 Generate README
         run: |
           python3 scripts/gen_readme.py
 
-      - name: Commit README changes (if any)
+      - name: 💾 Commit & Push
         run: |
-          if git diff --quiet README.md; then
-            echo "No README changes."
-            exit 0
-          fi
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
-          git add README.md
-          git commit -m "docs: auto-update README (rules index)"
-          git push
+          
+          # 检查是否有变动，避免空提交
+          if [[ -n $(git status -s README.md) ]]; then
+            git add README.md
+            git commit -m "docs: update README with latest rules [skip ci]"
+            git push
+          else
+            echo "::notice::README is up to date."
+          fi
