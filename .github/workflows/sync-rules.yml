@@ -65,7 +65,7 @@ jobs:
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-      # 美化步骤：生成可视化的作业摘要报告
+      # 美化步骤：生成可视化的作业摘要报告 (修复：精准提取下载失败与解析失败的URL)
       - name: Generate Execution Report
         if: always() # 无论成功失败都运行
         shell: bash
@@ -80,20 +80,25 @@ jobs:
           
           # --- 统计数据提取 ---
           
-          # 统计 "Saved:" 出现次数
+          # 统计 "Saved:" 出现次数 (|| echo 0 防止 grep 找不到返回错误码)
           SUCCESS_COUNT=$(grep -c "Saved:" "$LOG_FILE" || echo 0)
           
-          # 统计失败次数
-          FAIL_COUNT=$(grep -E -c "(::warning::Download failed|::error::)" "$LOG_FILE" || echo 0)
-          
           # 统计总行数：提取 'Saved: ... 1234 lines' 中的数字
+          # 使用 awk 从倒数第二列提取数字，防止路径中有数字干扰
           TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk '{print $(NF-1)}' | awk '{s+=$1} END {print s+0}' || echo 0)
           
-          # 提取失败 URL (仅当有失败时尝试提取，并加 || true 兜底)
-          FAILED_URLS=""
-          if [ "$FAIL_COUNT" -gt 0 ]; then
-             FAILED_URLS=$(grep -B 5 "::warning::Download failed" "$LOG_FILE" | grep "Source:" | awk '{print $2}' | sort | uniq || true)
-          fi
+          # 1. 提取下载失败的 URL (grep 匹配 http)
+          # 对应 sync.sh 输出: "::warning::Download failed: https://..."
+          DOWNLOAD_FAILS=$(grep "::warning::Download failed" "$LOG_FILE" | grep -oE 'https?://[^ ]+' | sort | uniq || true)
+          
+          # 2. 提取解析/Python失败的 URL
+          # 对应 sync.sh 输出: "::error::Processing failed for https://..."
+          PARSE_FAILS=$(grep "::error::Processing failed" "$LOG_FILE" | grep -oE 'https?://[^ ]+' | sort | uniq || true)
+          
+          # 计算各类失败数
+          COUNT_DL=$(echo "$DOWNLOAD_FAILS" | grep -c "http" || echo 0)
+          COUNT_PS=$(echo "$PARSE_FAILS" | grep -c "http" || echo 0)
+          FAIL_COUNT=$((COUNT_DL + COUNT_PS))
           
           # --- 生成 Markdown 摘要到 GITHUB_STEP_SUMMARY ---
           {
@@ -101,30 +106,37 @@ jobs:
             echo ""
             echo "| Metric | Count |"
             echo "| :--- | :--- |"
-            echo "| ✅ **Success Sources** | **$SUCCESS_COUNT** |"
-            echo "| ❌ **Failed Sources** | **$FAIL_COUNT** |"
-            echo "| 📊 **Total Rules Parsed** | $TOTAL_LINES lines |"
+            echo "| ✅ **Success** | **$SUCCESS_COUNT** |"
+            echo "| ❌ **Failures** | **$FAIL_COUNT** |"
+            echo "| 📊 **Total Lines** | \`$TOTAL_LINES\` |"
             echo ""
             
             if [ "$FAIL_COUNT" -gt 0 ]; then
-              echo "### ⚠️ Failed Sources List"
-              echo "> The following URLs failed to download or parse:"
-              echo ""
-              echo "| Failed URL |"
-              echo "| :--- |"
-              if [ -z "$FAILED_URLS" ]; then
-                 echo "| _(Unknown sources, check logs)_ |"
-              else
-                 while IFS= read -r url; do
-                   [ -z "$url" ] && continue
-                   echo "| \`$url\` |"
-                 done <<< "$FAILED_URLS"
+              echo "### ⚠️ Failure Details"
+              echo "| Type | Failed Source URL |"
+              echo "| :--- | :--- |"
+              
+              # 输出下载失败列表
+              if [ "$COUNT_DL" -gt 0 ]; then
+                while IFS= read -r url; do
+                  [ -z "$url" ] && continue
+                  echo "| 📥 **Download** | \`$url\` |"
+                done <<< "$DOWNLOAD_FAILS"
               fi
+              
+              # 输出解析失败列表
+              if [ "$COUNT_PS" -gt 0 ]; then
+                while IFS= read -r url; do
+                   [ -z "$url" ] && continue
+                   echo "| ⚙️ **Parse** | \`$url\` |"
+                done <<< "$PARSE_FAILS"
+              fi
+              
               echo ""
-              echo "💡 _Check the **Run Sync Script** logs for specific HTTP errors._"
+              echo "> 💡 _Check the **Run Sync Script** logs above for Python tracebacks or HTTP errors._"
             else
               echo "### 🎉 All Systems Operational"
-              echo "No download errors detected."
+              echo "No errors detected."
             fi
             
             echo ""
