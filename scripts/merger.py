@@ -28,8 +28,8 @@ STATS = {
     "failed": 0,
     "total_rules": 0
 }
-ERROR_LOGS = []     # 收集错误信息
-SUMMARY_ROWS = []   # 收集成功信息用于报告
+ERROR_LOGS = []
+SUMMARY_ROWS = []
 
 # =========================
 # 功能函数
@@ -43,19 +43,39 @@ def detect_mode(type_str, filename):
     return 'DOMAIN'
 
 def flatten_ip_cidr(cidr_set):
-    """IP CIDR 聚合去重"""
-    try:
-        nets = [ipaddress.ip_network(c.strip(), strict=False) for c in cidr_set if c.strip()]
-        collapsed = ipaddress.collapse_addresses(nets)
-        return [str(n) for n in collapsed]
-    except ValueError as e:
-        # 这是一个严重的数据错误，不应该忽略，应该抛出让 Task 失败
-        raise ValueError(f"Invalid CIDR format: {e}")
+    """
+    IP CIDR 聚合去重 (修复版)
+    自动分离 IPv4 和 IPv6 进行处理，防止版本混合报错
+    """
+    ipv4_nets = []
+    ipv6_nets = []
+
+    for c in cidr_set:
+        c = c.strip()
+        if not c: continue
+        try:
+            net = ipaddress.ip_network(c, strict=False)
+            if net.version == 4:
+                ipv4_nets.append(net)
+            else:
+                ipv6_nets.append(net)
+        except ValueError as e:
+            # 如果 IP 格式完全错误，可以选择报错或跳过
+            # 这里选择抛出异常，保持严格模式
+            raise ValueError(f"Invalid CIDR format '{c}': {e}")
+
+    # 分别进行聚合计算
+    # collapse_addresses 只能处理同版本的 IP 列表
+    collapsed_v4 = ipaddress.collapse_addresses(ipv4_nets)
+    collapsed_v6 = ipaddress.collapse_addresses(ipv6_nets)
+
+    # 将结果转回字符串并合并
+    result = [str(n) for n in collapsed_v4] + [str(n) for n in collapsed_v6]
+    return result
 
 def process_single_task(task_config):
     """
     处理单个具体任务
-    返回: dict 成功结果 | 抛出 Exception 失败
     """
     # 1. 校验必填项
     required_fields = ['strategy', 'type', 'owner', 'filename', 'inputs']
@@ -70,8 +90,7 @@ def process_single_task(task_config):
     inputs = task_config['inputs']
     desc = task_config.get('description', 'No Description')
 
-    # 2. 构建强制目录结构: merged-rules/Strategy/Type/Owner/File
-    # os.path.join 会处理路径分隔符
+    # 2. 构建强制目录结构
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
@@ -83,7 +102,7 @@ def process_single_task(task_config):
     for rel_input in inputs:
         src_path = os.path.join(SOURCE_DIR, rel_input)
         if not os.path.exists(src_path):
-            # 严重错误：配置了文件但找不到
+            # 抛出文件找不到的异常，这会被主循环捕获并记录为 Failure
             raise FileNotFoundError(f"Source file not found: {src_path}")
         
         with open(src_path, 'r', encoding='utf-8') as f:
@@ -91,18 +110,19 @@ def process_single_task(task_config):
                 line = line.strip()
                 if not line or line.startswith('#') or line.startswith('//'): 
                     continue
-                # 简单的行内注释清理
                 if '#' in line: line = line.split('#')[0].strip()
                 combined_rules.add(line)
             files_read += 1
 
-    if files_read == 0:
-        return None # 即使没有读取到文件，如果是 inputs 为空，视为空任务跳过
+    if files_read == 0 and inputs:
+        # 如果 input 有配置但没文件读到（虽然上面已经 raise 了，这里是双重保险）
+        return None
 
-    # 4. 处理逻辑 (去重/聚合)
+    # 4. 处理逻辑
     mode = detect_mode(rule_type, filename)
     count_raw = len(combined_rules)
     
+    # 这里调用修复后的 flatten_ip_cidr
     if mode == 'IP-CIDR':
         final_list = flatten_ip_cidr(combined_rules)
     else:
@@ -141,11 +161,10 @@ def process_single_task(task_config):
 def main():
     console.rule("[bold blue]🚀 Rule Merger & Validator[/bold blue]")
 
-    # 1. 环境检查
+    # 环境检查
     if not os.path.exists(CONFIG_FILE):
         console.print(f"[bold red]❌ CRITICAL: Config '{CONFIG_FILE}' not found![/bold red]")
         sys.exit(1)
-    
     if not os.path.exists(SOURCE_DIR):
         console.print(f"[bold red]❌ CRITICAL: Directory '{SOURCE_DIR}' not found![/bold red]")
         sys.exit(1)
@@ -166,10 +185,10 @@ def main():
         sys.exit(1)
 
     if not tasks:
-        console.print("[yellow]⚠️ Config file is empty (no 'merges' section).[/yellow]")
+        console.print("[yellow]⚠️ Config file is empty.[/yellow]")
         sys.exit(0)
 
-    # 2. 执行循环
+    # 执行循环
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -200,7 +219,7 @@ def main():
             
             progress.advance(main_task)
 
-    # 3. 终端表格报告
+    # 终端表格报告
     table = Table(title="Execution Result", header_style="bold magenta")
     table.add_column("File", style="cyan")
     table.add_column("Directory (Output)", style="dim")
@@ -213,36 +232,30 @@ def main():
     console.print("\n")
     console.print(table)
 
-    # 4. 生成 GitHub Actions Summary (Markdown)
+    # GitHub Actions Summary
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.getenv('GITHUB_STEP_SUMMARY'), 'a') as f:
             f.write("### 🧩 Rule Processing Report\n\n")
-            
-            # 概览
             f.write(f"- ✅ **Success**: {STATS['success']}\n")
-            f.write(f"- ⏭️ **Skipped**: {STATS['skipped']}\n")
             f.write(f"- ❌ **Failed**: {STATS['failed']}\n")
-            f.write(f"- 📊 **Total Rules**: {STATS['total_rules']}\n\n")
-
-            # 错误部分 (高亮)
+            
             if ERROR_LOGS:
-                f.write("#### ❌ Failures (Action Needed)\n")
+                f.write("\n> [!CAUTION]\n> **The following errors occurred:**\n\n")
                 f.write("```diff\n")
                 for err in ERROR_LOGS:
                     f.write(f"- {err}\n")
                 f.write("```\n\n")
 
-            # 成功明细表
             f.write("#### 📋 Details\n")
-            f.write("| File | Output Path | Type | Raw | **Optimized** |\n")
-            f.write("| :--- | :--- | :---: | :---: | :---: |\n")
+            f.write("| File | Path | Inputs | Optimized Count |\n")
+            f.write("| :--- | :--- | :---: | :---: |\n")
             for r in SUMMARY_ROWS:
-                f.write(f"| `{r['file']}` | `{r['path']}` | {r['mode']} | {r['raw']} | **{r['opt']}** |\n")
+                f.write(f"| `{r['file']}` | `{r['path']}` | {r['src_count']} | **{r['opt']}** |\n")
 
-    # 5. 决定退出状态 (Fail Fast)
+    # 退出状态
     if STATS["failed"] > 0:
         console.print(Panel(f"[bold red]Workflow Failed with {STATS['failed']} errors![/bold red]\nCheck logs above.", title="FAILURE", border_style="red"))
-        sys.exit(1) # 这会让 Github Action 变红并停止
+        sys.exit(1)
     else:
         console.print(Panel(f"[bold green]All {STATS['success']} tasks completed successfully.[/bold green]", title="SUCCESS", border_style="green"))
         sys.exit(0)
