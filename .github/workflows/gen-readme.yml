@@ -2,11 +2,6 @@ name: "4. Generate README"
 
 on:
   workflow_dispatch:
-  workflow_run:
-    # 确保与你之前的 Merge 工作流名称完全一致
-    workflows: ["2. Merge Rules based on Config"]
-    types:
-      - completed
 
 permissions:
   contents: write
