@@ -11,15 +11,13 @@ REPO_ROOT = os.getcwd()
 MERGED_DIR = os.path.join(REPO_ROOT, "merged-rules")
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 
-# 动态获取仓库信息 (例如: yourname/your-repo)
-REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Outcome/Rule-Set")
+REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
-OWNER_NAME = REPO_NAME.split("/")[0]
 
-# 基础链接构建
+# URL 构建
 BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH_NAME}"
-BASE_MIRROR = f"https://raw.gitmirror.com/{REPO_NAME}/{BRANCH_NAME}"
 BASE_GHPROXY = f"https://ghproxy.net/{BASE_RAW}"
+BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{BRANCH_NAME}"
 
 # 样式配置
 SHIELDS_STYLE = "flat-square"
@@ -29,7 +27,6 @@ SHIELDS_STYLE = "flat-square"
 # =================================================
 
 def format_size(size_bytes):
-    """将字节转换为人类可读格式 (KB, MB)"""
     if size_bytes == 0: return "0 B"
     units = ("B", "KB", "MB", "GB")
     i = 0
@@ -39,155 +36,131 @@ def format_size(size_bytes):
         i += 1
     return f"{p:.2f} {units[i]}"
 
-def get_current_time_str():
-    """生成 URL 编码的时间字符串"""
-    now = time.strftime("%Y-%m-%d %H:%M")
-    return urllib.parse.quote(now)
+def get_time_badge():
+    now = time.strftime("%Y--%m--%d %H:%M")
+    enc_now = urllib.parse.quote(now)
+    return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={SHIELDS_STYLE}&logo=github"
 
-def scan_rules():
-    """扫描合并目录"""
-    rule_files = []
+def scan_files():
+    files_list = []
     if not os.path.exists(MERGED_DIR):
         return []
     for root, _, files in os.walk(MERGED_DIR):
         for file in files:
-            # 只要是文件就列出来，不限制后缀
-            if not file.startswith("."):
-                full_path = os.path.join(root, file)
-                rule_files.append(full_path)
-    return sorted(rule_files)
+            if not file.startswith("."): # 忽略隐藏文件
+                files_list.append(os.path.join(root, file))
+    return sorted(files_list)
 
 # =================================================
-# 3. 模板 (样式参考版 - 内容已通用化)
+# 3. 模板设计
 # =================================================
 
-HEADER_TEMPLATE = f"""<div align="center">
+HEADER = f"""<div align="center">
 
-<!-- 标题 -->
-<h1>{REPO_NAME.split('/')[-1]}</h1>
-
-<!-- Badges 徽章区域 -->
-[![Build Status](https://img.shields.io/github/actions/workflow/status/{REPO_NAME}/sync-rules.yml?style={SHIELDS_STYLE}&logo=github&label=Build)](https://github.com/{REPO_NAME}/actions)
-[![Repo Size](https://img.shields.io/github/repo-size/{REPO_NAME}?style={SHIELDS_STYLE}&label=Size&color=orange)](https://github.com/{REPO_NAME})
-[![Updated](https://img.shields.io/badge/Updated-{get_current_time_str()}-blue?style={SHIELDS_STYLE}&logo=time)](https://github.com/{REPO_NAME}/commits/{BRANCH_NAME})
+<h1>📂 {REPO_NAME.split('/')[-1]}</h1>
 
 <p>
-🚀 <strong>Auto Updates</strong> · 🌏 <strong>Global CDN</strong> · 🎯 <strong>Categorized</strong>
+  <a href="https://github.com/{REPO_NAME}/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/{REPO_NAME}/sync-rules.yml?style={SHIELDS_STYLE}&label=Build&color=2ea44f" alt="Build">
+  </a>
+  <a href="https://github.com/{REPO_NAME}">
+    <img src="https://img.shields.io/github/repo-size/{REPO_NAME}?style={SHIELDS_STYLE}&label=Size&color=orange" alt="Size">
+  </a>
+  <a href="#">
+    <img src="{get_time_badge()}" alt="Updated">
+  </a>
 </p>
-</div>
 
-<!-- 三列特性表格 -->
-<table>
-<thead>
-<tr>
-<th align="center">🤖 <strong>Automated</strong></th>
-<th align="center">⚡ <strong>Fast</strong></th>
-<th align="center">📦 <strong>Organized</strong></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td align="center">Daily upstream sync<br>Auto-merge & clean</td>
-<td align="center">Multi-CDN support<br>GhProxy / GitMirror</td>
-<td align="center">Structured folders<br>Generic compatibility</td>
-</tr>
-</tbody>
-</table>
+<p>
+  <strong>🚀 每日全自动同步构建</strong> · <strong>🌍 多线路 CDN 加速</strong> · <strong>📦 标准化目录分类</strong>
+</p>
+
+</div>
 
 ---
 
-## ⚙️ 使用说明 (Usage)
+### 📖 使用说明 (Usage)
 
 <div class="markdown-alert markdown-alert-tip">
 <p class="markdown-alert-title">Tip</p>
-<p>推荐使用 <strong>GhProxy</strong> 通道以下载规则，可获得更快的国内访问速度。</p>
+<p>推荐使用 <strong>GhProxy</strong> 加速通道，对于中国大陆地区网络更友好。</p>
+<p><strong>基础链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/merged-rules/{{分类}}/{{文件名}}</code></p>
 </div>
 
-<details>
-<summary><strong>📝 点击查看引用链接示例</strong></summary>
-
-使用以下链接格式引用规则：
-
-- **GhProxy (推荐)**: `https://ghproxy.net/{BASE_RAW}/merged-rules/Category/Name.txt`
-- **GitMirror**: `https://raw.gitmirror.com/{REPO_NAME}/{BRANCH_NAME}/merged-rules/Category/Name.txt`
-- **GitHub Raw**: `{BASE_RAW}/merged-rules/Category/Name.txt`
-
-</details>
-
-## 📥 规则列表 (Downloads)
+### 📥 文件列表 (Files)
 
 <div class="markdown-alert markdown-alert-note">
 <p class="markdown-alert-title">Note</p>
-<p>点击 <code>🚀 Fast Download</code> 按钮可直接获取加速链接。</p>
+<p>点击表格中的 <img src="https://img.shields.io/badge/🚀_CDN-009688?style=flat-square" height="14"> 徽章即可快速下载。</p>
 </div>
 
-| 规则名称 (Name) | 类型 (Ext) | 大小 (Size) | 下载通道 (Download) |
+| File (Category / Name) | Size | Fast Download (CDN) | Source |
 | :--- | :--- | :--- | :--- |
 """
 
-FOOTER_TEMPLATE = """
+FOOTER = """
 <div align="center">
 <br>
-<p><strong>Total Files:</strong> <code>{count}</code></p>
-<p><a href="#">🔼 Back to Top</a></p>
-<sub>Generated by GitHub Actions</sub>
+<p><sub><strong>Total Files:</strong> {count}</sub></p>
+<p><sub>Powered by <a href="https://github.com/actions">GitHub Actions</a></sub></p>
 </div>
 """
 
 # =================================================
-# 4. 执行生成
+# 4. 生成逻辑
 # =================================================
 
 def main():
-    print("::group::📝 Generating README...")
+    print("::group::✨ Beautifying README...")
     
-    files = scan_rules()
-    print(f"::notice::Found {len(files)} files to list.")
-
+    files = scan_files()
+    
     try:
         with open(README_FILE, 'w', encoding='utf-8') as f:
-            f.write(HEADER_TEMPLATE)
+            f.write(HEADER)
             
             if not files:
-                f.write("| ❌ Emtpy | - | - | - |\n")
+                f.write("| ❌ No files found | - | - | - |\n")
             else:
                 for filepath in files:
                     filename = os.path.basename(filepath)
-                    filesize = os.path.getsize(filepath)
-                    human_size = format_size(filesize)
-                    extension = os.path.splitext(filename)[1].replace(".", "").upper() or "FILE"
+                    filesize = format_size(os.path.getsize(filepath))
                     
                     # 路径处理
-                    display_path = os.path.relpath(filepath, MERGED_DIR) # e.g. reject/domain/geo.txt
-                    subdir = os.path.dirname(display_path)               # e.g. reject/domain
+                    rel_path = os.path.relpath(filepath, MERGED_DIR)
+                    # 生成 URL (强制 /)
+                    url_path = rel_path.replace(os.sep, '/')
                     
-                    # 显示路径 (样式优化: 📂 reject/domain /)
-                    dir_tag = f"📂 {subdir} /" if subdir else "📂 Root /"
-
-                    # URL 生成 (强制 /)
-                    url_path = display_path.replace(os.sep, '/')
+                    # 提取目录作为分类标签
+                    category = os.path.dirname(url_path)
+                    if not category: category = "Root"
+                    
+                    # 链接
                     link_ghproxy = f"{BASE_GHPROXY}/merged-rules/{url_path}"
-                    link_mirror = f"{BASE_MIRROR}/merged-rules/{url_path}"
+                    link_jsd = f"{BASE_JSDELIVR}/merged-rules/{url_path}"
                     link_raw = f"{BASE_RAW}/merged-rules/{url_path}"
                     
-                    # 写入行
+                    # 这里的表格设计：
+                    # 第一列：用灰色小字显示目录，下面加粗显示文件名，视觉层次分明
+                    # 第三列：放置显眼的 🚀 按钮
+                    # 第四列：放置不起眼的 Raw 链接
                     row = (
-                        f"| <sub>{dir_tag}</sub><br>**{filename}** | "
-                        f"`{extension}` | "
-                        f"`{human_size}` | "
-                        f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_Fast_Download-GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="Fast Download"></a><br>'
-                        f"[CDN Mirror]({link_mirror}) • [Raw Source]({link_raw}) |\n"
+                        f"| <sub>📂 {category}</sub><br>**{filename}** | "
+                        f"`{filesize}` | "
+                        f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
+                        f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a> | '
+                        f"[Raw]({link_raw}) |\n"
                     )
                     f.write(row)
 
-            f.write(FOOTER_TEMPLATE.format(count=len(files)))
-            
-        print("::endgroup::")
-        print("✅ README.md updated.")
-        
+            f.write(FOOTER.format(count=len(files)))
+    
     except Exception as e:
-        print(f"::error::Error generating README: {e}")
+        print(f"::error::Error: {e}")
         sys.exit(1)
+        
+    print("::endgroup::")
+    print("✅ README.md updated successfully.")
 
 if __name__ == "__main__":
     main()
