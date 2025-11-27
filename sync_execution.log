@@ -99,71 +99,17 @@ Target: [direct/ipcidr] cncidr.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
 OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
 Processing mode: ipcidr
-Traceback (most recent call last):
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
-    main()
-    ~~~~^^
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
-    result = process_ip(lines)
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
-    merged = ipaddress.collapse_addresses(networks)
-  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
-    raise TypeError("%s and %s are not of the same version" % (
-                     ip, nets[-1]))
-TypeError: 2001:250::/30 and 223.255.252.0/23 are not of the same version
-::error::Processing failed for https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
-payload:
-  - '1.0.1.0/24'
-  - '1.0.2.0/23'
-  - '1.0.8.0/21'
-  - '1.0.32.0/19'
-cat: write error: Broken pipe
+Success. Saved 18822 lines to direct/ipcidr/Loyalsoldier/cncidr.txt
 ---------------------------------------------------
 Target: [direct/ipcidr] cn.list
 Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
 OK  (200): https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
 Processing mode: ipcidr
-Traceback (most recent call last):
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
-    main()
-    ~~~~^^
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
-    result = process_ip(lines)
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
-    merged = ipaddress.collapse_addresses(networks)
-  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
-    raise TypeError("%s and %s are not of the same version" % (
-                     ip, nets[-1]))
-TypeError: 2001:250::/30 and 223.255.252.0/23 are not of the same version
-::error::Processing failed for https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
-1.0.1.0/24
-1.0.2.0/23
-1.0.8.0/21
-1.0.32.0/19
-1.1.0.0/24
-cat: write error: Broken pipe
+Success. Saved 18822 lines to direct/ipcidr/MetaCubeX/cn.txt
 ---------------------------------------------------
 Target: [direct/ipcidr] lancidr.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
 OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
 Processing mode: ipcidr
-Traceback (most recent call last):
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
-    main()
-    ~~~~^^
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
-    result = process_ip(lines)
-  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
-    merged = ipaddress.collapse_addresses(networks)
-  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
-    raise TypeError("%s and %s are not of the same version" % (
-                     ip, nets[-1]))
-TypeError: ::/127 and 224.0.0.0/3 are not of the same version
-::error::Processing failed for https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
-payload:
-  - '0.0.0.0/8'
-  - '10.0.0.0/8'
-  - '100.64.0.0/10'
-  - '127.0.0.0/8'
-::warning::Summary: 3 sources failed.
+Success. Saved 18 lines to direct/ipcidr/Loyalsoldier/lancidr.txt
 Changes detected. Committing...
