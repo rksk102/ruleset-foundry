@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/github/repo-size/rksk102/rules-Repository?style=flat-square&label=Size&color=orange" alt="Size">
   </a>
   <a href="#">
-    <img src="https://img.shields.io/badge/Updated-2025--11--27%2010%3A18-blue?style=flat-square&logo=github" alt="Updated">
+    <img src="https://img.shields.io/badge/Updated-2025--11--27%2010%3A22-blue?style=flat-square&logo=github" alt="Updated">
   </a>
 </p>
 
@@ -27,17 +27,18 @@
 <div class="markdown-alert markdown-alert-tip">
 <p class="markdown-alert-title">Tip</p>
 <p>推荐优先使用 <strong>GhProxy</strong> 通道，可显著提升国内网络环境下的下载速度。</p>
-<p><strong>链接模板：</strong> <code>https://ghproxy.net/https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/{分类}/{文件名}</code></p>
+<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/{分类}/{文件名}</code></p>
 </div>
 
-### 📥文件列表 (Files)
+### 📥 文件列表 (Files)
 
 <div class="markdown-alert markdown-alert-note">
 <p class="markdown-alert-title">Note</p>
 <p>点击表格中的 <img src="https://img.shields.io/badge/🚀_CDN-009688?style=flat-square" height="14"> 徽章即可快速下载。</p>
 </div>
 
-| File (Category / Name) | Size | Fast Download (CDN) | Original Source |
+<!-- 表头使用定义好的宽表头变量 -->
+| File (Category / Name)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Size | Fast Download (CDN)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Source&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |
 | :--- | :--- | :--- | :--- |
 | <sub>📂 direct/domain/DustinWin</sub><br>**microsoft-cn.list** | `2.95 KB` | <a href="https://ghproxy.net/https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/direct/domain/DustinWin/microsoft-cn.list"><img src="https://img.shields.io/badge/🚀_GhProxy-009688?style=flat-square&logo=rocket" alt="GhProxy"></a> <a href="https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/DustinWin/microsoft-cn.list"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style=flat-square&logo=jsdelivr" alt="jsDelivr"></a> | <a href="https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/direct/domain/DustinWin/microsoft-cn.list"><img src="https://img.shields.io/badge/Raw_Source-181717?style=flat-square&logo=github" alt="GitHub Raw"></a> |
 | <sub>📂 direct/domain/Loyalsoldier</sub><br>**apple-cn.txt** | `0 B` | <a href="https://ghproxy.net/https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt"><img src="https://img.shields.io/badge/🚀_GhProxy-009688?style=flat-square&logo=rocket" alt="GhProxy"></a> <a href="https://cdn.jsdelivr.net/gh/rksk102/rules-Repository@main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style=flat-square&logo=jsdelivr" alt="jsDelivr"></a> | <a href="https://raw.githubusercontent.com/rksk102/rules-Repository/main/merged-rules/direct/domain/Loyalsoldier/apple-cn.txt"><img src="https://img.shields.io/badge/Raw_Source-181717?style=flat-square&logo=github" alt="GitHub Raw"></a> |
