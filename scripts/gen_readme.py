@@ -11,7 +11,7 @@ REPO_ROOT = os.getcwd()
 MERGED_DIR = os.path.join(REPO_ROOT, "merged-rules")
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 
-# 自动获取仓库名，例如: user/repo
+# 自动获取仓库名
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
 
@@ -20,8 +20,19 @@ BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH_NAME}"
 BASE_GHPROXY = f"https://ghproxy.net/{BASE_RAW}"
 BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{BRANCH_NAME}"
 
-# 样式配置: flat, flat-square, for-the-badge, plastic
+# 样式配置
 SHIELDS_STYLE = "flat-square"
+
+# -------------------------------------------------
+# [核心优化] 表格列宽控制
+# GitHub Markdown 不支持 CSS width，我们使用 &nbsp; (空格) 来暴力撑开列宽
+# -------------------------------------------------
+# padding: 撑开文件名列，使其看着像主列
+HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35  
+# padding: 撑开下载列，防止两个按钮换行，保持美观
+HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25     
+# padding: 稍微撑开源站列
+HEADER_SRC  = "Source" + "&nbsp;" * 10                  
 
 # =================================================
 # 2. 辅助函数
@@ -39,7 +50,7 @@ def format_size(size_bytes):
     return f"{p:.2f} {units[i]}"
 
 def get_time_badge():
-    """生成更新时间徽章"""
+    """生成更新时间徽章 (URL safe)"""
     now = time.strftime("%Y--%m--%d %H:%M")
     enc_now = urllib.parse.quote(now)
     return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={SHIELDS_STYLE}&logo=github"
@@ -56,10 +67,10 @@ def scan_files():
     return sorted(files_list)
 
 # =================================================
-# 3. 模板设计
+# 3. 页面模板
 # =================================================
 
-HEADER = f"""<div align="center">
+HEADER_HTML = f"""<div align="center">
 
 <h1>📂 {REPO_NAME.split('/')[-1]}</h1>
 
@@ -88,21 +99,22 @@ HEADER = f"""<div align="center">
 <div class="markdown-alert markdown-alert-tip">
 <p class="markdown-alert-title">Tip</p>
 <p>推荐优先使用 <strong>GhProxy</strong> 通道，可显著提升国内网络环境下的下载速度。</p>
-<p><strong>链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/merged-rules/{{分类}}/{{文件名}}</code></p>
+<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/merged-rules/{{分类}}/{{文件名}}</code></p>
 </div>
 
-### 📥文件列表 (Files)
+### 📥 文件列表 (Files)
 
 <div class="markdown-alert markdown-alert-note">
 <p class="markdown-alert-title">Note</p>
 <p>点击表格中的 <img src="https://img.shields.io/badge/🚀_CDN-009688?style=flat-square" height="14"> 徽章即可快速下载。</p>
 </div>
 
-| File (Category / Name) | Size | Fast Download (CDN) | Original Source |
+<!-- 表头使用定义好的宽表头变量 -->
+| {HEADER_NAME} | Size | {HEADER_DL} | {HEADER_SRC} |
 | :--- | :--- | :--- | :--- |
 """
 
-FOOTER = """
+FOOTER_HTML = """
 <div align="center">
 <br>
 <p><sub><strong>Total Files:</strong> {count}</sub></p>
@@ -115,13 +127,13 @@ FOOTER = """
 # =================================================
 
 def main():
-    print("::group::✨ Beautifying README with Badges...")
+    print("::group::✨ Generating Wide README...")
     
     files = scan_files()
     
     try:
         with open(README_FILE, 'w', encoding='utf-8') as f:
-            f.write(HEADER)
+            f.write(HEADER_HTML)
             
             if not files:
                 f.write("| ❌ No files found | - | - | - |\n")
@@ -132,35 +144,37 @@ def main():
                     
                     # 路径计算
                     rel_path = os.path.relpath(filepath, MERGED_DIR)
-                    url_path = rel_path.replace(os.sep, '/') # URL 必须是 /
+                    url_path = rel_path.replace(os.sep, '/') 
                     
-                    # 分类名 (目录名)
+                    # 提取目录 (分类)
                     category = os.path.dirname(url_path)
                     if not category: category = "Root"
                     
-                    # 链接
+                    # 构建 URL
                     link_ghproxy = f"{BASE_GHPROXY}/merged-rules/{url_path}"
                     link_jsd = f"{BASE_JSDELIVR}/merged-rules/{url_path}"
                     link_raw = f"{BASE_RAW}/merged-rules/{url_path}"
                     
-                    # 表格行构建
-                    # 1. 文件名列：显示目录小字和加粗文件名
-                    # 2. 大小列
-                    # 3. CDN列：两个加速徽章 (GhProxy, jsDelivr)
-                    # 4. Source列：GitHub 风格的深色徽章
-                    row = (
-                        f"| <sub>📂 {category}</sub><br>**{filename}** | "
-                        f"`{filesize}` | "
+                    # 构建行
+                    # 使用 <br> 换行，上面是灰色小字路径，下面是加粗文件名
+                    # 增加 &nbsp; 确保即使文件名很短，内容也不会太挤
+                    name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
+                    
+                    # 两个 CDN 按钮并排
+                    cdn_column = (
                         f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
-                        f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a> | '
-                        f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a> |\n'
+                        f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
                     )
-                    f.write(row)
+                    
+                    # 源码徽章
+                    src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
+                    
+                    f.write(f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n")
 
-            f.write(FOOTER.format(count=len(files)))
+            f.write(FOOTER_HTML.format(count=len(files)))
     
     except Exception as e:
-        print(f"::error::Error generating README: {e}")
+        print(f"::error::Error: {e}")
         sys.exit(1)
         
     print("::endgroup::")
