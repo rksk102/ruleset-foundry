@@ -1,153 +1,72 @@
 name: "1. Daily Sync and Sanitize Rules"
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 21 * * *"  # 北京时间 05:00
+    - cron: '0 20 * * *'  # UTC 20:00 = 北京时间 04:00
+  workflow_dispatch:
 
 permissions:
   contents: write
-  actions: write
-
-concurrency:
-  group: sync-rules
-  cancel-in-progress: true
 
 jobs:
-  sync-job:
+  sync:
     runs-on: ubuntu-latest
+    name: "📥 Sync & Process"
+    
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Setup Python
+      - name: 🐍 Setup Python 3
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
-      - name: Make scripts executable
-        run: |
-          chmod +x scripts/sync.sh
-          if [ -f "scripts/lib/processor.py" ]; then
-            chmod +x scripts/lib/processor.py
-          fi
-
-      # 核心步骤：运行同步脚本，并使用 tee 记录日志以便后续分析
-      - name: Run Sync Script with Logging
-        id: run_sync
-        shell: bash
+      # 步骤 1：下载 (调用 sync.sh)
+      - name: 📡 Download Rules
+        id: download
         env:
-          STRICT: "false"
-          TERM: xterm-color # 保留颜色输出
+          TERM: xterm-color
         run: |
-          echo "::group::📜 Real-time Execution Logs (Click to expand)"
+          # 确保脚本有执行权限
+          chmod +x scripts/sync.sh
+          # 执行脚本
+          ./scripts/sync.sh
+
+      # 步骤 2：清洗与优化 (调用 processor.py)
+      - name: 🧠 Sanitize & Optimize
+        id: sanitize
+        env:
+          TERM: xterm-color
+        run: |
+          python3 scripts/lib/processor.py
+
+      - name: 💾 Commit Changes
+        id: commit
+        run: |
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
           
-          # 创建日志文件
-          touch sync_execution.log
+          # 添加 rulesets 目录变动
+          git add rulesets/
           
-          # 使用 pipefail 确保管道中任何错误都能被捕获
-          set -o pipefail
-          
-          # 运行脚本，同时输出到屏幕和文件
-          # 2>&1 确保错误输出也被捕捉
-          ./scripts/sync.sh 2>&1 | tee sync_execution.log
-          EXIT_CODE=$?
-          
-          echo "::endgroup::"
-          
-          # 保存状态供后续步骤判断
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "status=failure" >> "$GITHUB_OUTPUT"
+          if git diff-index --quiet HEAD; then
+             echo "::notice::No updates found."
           else
-            echo "status=success" >> "$GITHUB_OUTPUT"
+             CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
+             echo "::notice::$CHANGE_COUNT files updated."
+             
+             git commit -m "chore: 📥 Sync & Sanitize $CHANGE_COUNT rule files [$(date +'%Y-%m-%d')]"
+             git push
           fi
 
-      # 美化步骤：生成可视化的作业摘要报告 (修复：精准提取下载失败与解析失败的URL)
-      - name: Generate Execution Report
-        if: always() # 无论成功失败都运行
-        shell: bash
+      - name: ✨ Final Status
+        if: always()
         run: |
-          LOG_FILE="sync_execution.log"
-          
-          # 防止日志文件不存在导致脚本崩溃
-          if [ ! -f "$LOG_FILE" ]; then
-            echo "Log file not found. Skipping report."
-            exit 0
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "Sync workflow finished successfully."
+          else
+            echo "::error::Workflow failed. Check logs."
           fi
-          
-          # --- 统计数据提取 ---
-          
-          # 统计 "Saved:" 出现次数 (|| echo 0 防止 grep 找不到返回错误码)
-          SUCCESS_COUNT=$(grep -c "Saved:" "$LOG_FILE" || echo 0)
-          
-          # 统计总行数：提取 'Saved: ... 1234 lines' 中的数字
-          # 使用 awk 从倒数第二列提取数字，防止路径中有数字干扰
-          TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk '{print $(NF-1)}' | awk '{s+=$1} END {print s+0}' || echo 0)
-          
-          # 1. 提取下载失败的 URL (grep 匹配 http)
-          # 对应 sync.sh 输出: "::warning::Download failed: https://..."
-          DOWNLOAD_FAILS=$(grep "::warning::Download failed" "$LOG_FILE" | grep -oE 'https?://[^ ]+' | sort | uniq || true)
-          
-          # 2. 提取解析/Python失败的 URL
-          # 对应 sync.sh 输出: "::error::Processing failed for https://..."
-          PARSE_FAILS=$(grep "::error::Processing failed" "$LOG_FILE" | grep -oE 'https?://[^ ]+' | sort | uniq || true)
-          
-          # 计算各类失败数
-          COUNT_DL=$(echo "$DOWNLOAD_FAILS" | grep -c "http" || echo 0)
-          COUNT_PS=$(echo "$PARSE_FAILS" | grep -c "http" || echo 0)
-          FAIL_COUNT=$((COUNT_DL + COUNT_PS))
-          
-          # --- 生成 Markdown 摘要到 GITHUB_STEP_SUMMARY ---
-          {
-            echo "## 🔄 Daily Sync Report"
-            echo ""
-            echo "| Metric | Count |"
-            echo "| :--- | :--- |"
-            echo "| ✅ **Success** | **$SUCCESS_COUNT** |"
-            echo "| ❌ **Failures** | **$FAIL_COUNT** |"
-            echo "| 📊 **Total Lines** | \`$TOTAL_LINES\` |"
-            echo ""
-            
-            if [ "$FAIL_COUNT" -gt 0 ]; then
-              echo "### ⚠️ Failure Details"
-              echo "| Type | Failed Source URL |"
-              echo "| :--- | :--- |"
-              
-              # 输出下载失败列表
-              if [ "$COUNT_DL" -gt 0 ]; then
-                while IFS= read -r url; do
-                  [ -z "$url" ] && continue
-                  echo "| 📥 **Download** | \`$url\` |"
-                done <<< "$DOWNLOAD_FAILS"
-              fi
-              
-              # 输出解析失败列表
-              if [ "$COUNT_PS" -gt 0 ]; then
-                while IFS= read -r url; do
-                   [ -z "$url" ] && continue
-                   echo "| ⚙️ **Parse** | \`$url\` |"
-                done <<< "$PARSE_FAILS"
-              fi
-              
-              echo ""
-              echo "> 💡 _Check the **Run Sync Script** logs above for Python tracebacks or HTTP errors._"
-            else
-              echo "### 🎉 All Systems Operational"
-              echo "No errors detected."
-            fi
-            
-            echo ""
-            echo "---"
-            echo "Build Time: $(date +'%Y-%m-%d %H:%M:%S UTC')"
-            
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # 检查之前的同步脚本是否失败，如果失败则在此处终止 Workflow
-      - name: Check Final Status
-        if: steps.run_sync.outputs.status == 'failure'
-        run: |
-          echo "::error::Sync script failed with exit code ${{ steps.run_sync.outputs.exit_code }}"
-          exit 1
