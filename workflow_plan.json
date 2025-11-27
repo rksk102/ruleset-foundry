@@ -16,5 +16,11 @@
     "file": "gen-readme.yml",
     "description": "生成美化版 README",
     "timeout_minutes": 5
+  },
+  {
+    "name": "4. Release SRS",
+    "file": "create-release.yml", 
+    "description": "发布二进制规则文件",
+    "timeout_minutes": 15
   }
 ]
