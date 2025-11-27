@@ -7,7 +7,7 @@ on:
       strict_mode:
         description: 'Strict Mode (Stop immediately on error)'
         required: false
-        default: 'false'
+        default: true
         type: boolean
 
 permissions:
