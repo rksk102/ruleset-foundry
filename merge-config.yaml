@@ -28,5 +28,5 @@ merges:
     filename: "all-proxy.txt"
     description: "代理域名规则"
     inputs:
-      - "proxy/domain/Loyalsoldier/proxy.txt"
-      - "proxy/domain/Loyalsoldier/proxy-list.txt"
+      - "policy/domain/Loyalsoldier/proxy.txt"
+      - "policy/domain/Loyalsoldier/proxy-list.txt"
