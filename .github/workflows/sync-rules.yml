@@ -40,23 +40,24 @@ jobs:
         shell: bash
         env:
           STRICT: "false"
-          TERM: xterm-color #以此保留颜色输出
+          TERM: xterm-color # 保留颜色输出
         run: |
           echo "::group::📜 Real-time Execution Logs (Click to expand)"
           
-          # 创建临时日志文件
+          # 创建日志文件
           touch sync_execution.log
           
-          # 运行脚本 | tee 同时输出到屏幕和文件
-          # 使用 pipefail 确保脚本出错能被捕获
+          # 使用 pipefail 确保管道中任何错误都能被捕获
           set -o pipefail
-          ./scripts/sync.sh 2>&1 | tee sync_execution.log
           
+          # 运行脚本，同时输出到屏幕和文件
+          # 2>&1 确保错误输出也被捕捉
+          ./scripts/sync.sh 2>&1 | tee sync_execution.log
           EXIT_CODE=$?
           
           echo "::endgroup::"
           
-          # 将退出代码传递给下一步（即使失败也先继续，以便生成报告）
+          # 保存状态供后续步骤判断
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ $EXIT_CODE -ne 0 ]; then
             echo "status=failure" >> "$GITHUB_OUTPUT"
@@ -64,25 +65,40 @@ jobs:
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-      # 美化步骤：生成可视化的作业摘要报告
+      # 美化步骤：生成可视化的作业摘要报告 (已修复 grep 退出码问题)
       - name: Generate Execution Report
         if: always() # 无论成功失败都运行
         shell: bash
         run: |
           LOG_FILE="sync_execution.log"
           
+          # 防止日志文件不存在导致脚本崩溃
+          if [ ! -f "$LOG_FILE" ]; then
+            echo "Log file not found. Skipping report."
+            exit 0
+          fi
+          
           # --- 统计数据提取 ---
-          # 统计 "Saved:" 出现的次数作为成功数
+          
+          # 统计 "Saved:" 出现次数 (|| echo 0 防止 grep 找不到返回错误码)
           SUCCESS_COUNT=$(grep -c "Saved:" "$LOG_FILE" || echo 0)
-          # 统计 "::warning::Download failed" 或 "::error::" 出现的次数
+          
+          # 统计失败次数
           FAIL_COUNT=$(grep -E -c "(::warning::Download failed|::error::)" "$LOG_FILE" || echo 0)
-          # 统计总共下载的规则行数 (从 Saved: ... (\d+) lines 提取)
-          TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk -F'\\(' '{print $2}' | awk '{print $1}' | awk '{s+=$1} END {print s}' || echo 0)
           
-          # 提取所有的失败 URL
-          FAILED_URLS=$(grep -E "Source: https?://" "$LOG_FILE" -A 2 | grep -B 2 "::warning" | grep "Source:" | awk '{print $2}' | sort | uniq)
+          # 统计总行数：提取 'Saved: ... 1234 lines' 中的数字
+          # 使用 awk 从倒数第二列提取数字，防止路径中有数字干扰
+          TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk '{print $(NF-1)}' | awk '{s+=$1} END {print s+0}' || echo 0)
           
-          # --- 生成 Markdown 摘要 ---
+          # 提取失败 URL (仅当有失败时尝试提取，并加 || true 兜底)
+          FAILED_URLS=""
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+             # 提取逻辑：找到 Warning 行，向上找 Source 行，提取 URL
+             # 加上 || true 确保 grep 链即使为空也不报错
+             FAILED_URLS=$(grep -B 5 "::warning::Download failed" "$LOG_FILE" | grep "Source:" | awk '{print $2}' | sort | uniq || true)
+          fi
+          
+          # --- 生成 Markdown 摘要到 GITHUB_STEP_SUMMARY ---
           {
             echo "## 🔄 Daily Sync Report"
             echo ""
@@ -99,12 +115,17 @@ jobs:
               echo ""
               echo "| Failed URL |"
               echo "| :--- |"
-              while IFS= read -r url; do
-                [ -z "$url" ] && continue
-                echo "| \`$url\` |"
-              done <<< "$FAILED_URLS"
+              # 如果 FAILED_URLS 为空但 COUNT > 0 (例如解析错误而非下载错误)，显示提示
+              if [ -z "$FAILED_URLS" ]; then
+                 echo "| _(Unknown sources, check logs)_ |"
+              else
+                 while IFS= read -r url; do
+                   [ -z "$url" ] && continue
+                   echo "| \`$url\` |"
+                 done <<< "$FAILED_URLS"
+              fi
               echo ""
-              echo "💡 _Check the logs above for specific HTTP errors._"
+              echo "💡 _Check the **Run Sync Script** logs for specific HTTP errors._"
             else
               echo "### 🎉 All Systems Operational"
               echo "No download errors detected."
@@ -116,13 +137,14 @@ jobs:
             
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # 检查之前的同步脚本是否失败，如果失败则在此处终止 Workflow
       - name: Check Final Status
         if: steps.run_sync.outputs.status == 'failure'
         run: |
           echo "::error::Sync script failed with exit code ${{ steps.run_sync.outputs.exit_code }}"
           exit 1
 
-      # 触发下一个工作流
+      # 触发下一个工作流：merge-rules
       - name: Trigger merge-rules workflow
         if: success()
         env:
