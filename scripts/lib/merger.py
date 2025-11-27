@@ -9,8 +9,8 @@ import shutil
 # 配置区域
 # =========================
 CONFIG_FILE = "merge-config.yaml"
-SOURCE_DIR = "rulesets"
-DIST_DIR = "merged-rules"  # <--- 已修改为 'merged-rules'
+SOURCE_DIR = "rulesets"     # 原始下载的规则存放处
+DIST_DIR = "merged-rules"   # 最终发布的目录
 
 def load_config(path):
     if not os.path.exists(path):
@@ -36,11 +36,18 @@ def get_file_content(filepath):
         print(f"  [Warn] Cannot read {filepath}: {e}")
     return lines
 
-def write_txt(filepath, rules, description=""):
-    # 确保目录存在
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+def write_txt(rel_path, rules, description=""):
+    """
+    写入文件到 DIST_DIR 下的相对路径
+    rel_path: 例如 block/domain/common/all-ads.txt
+    """
+    # 拼接完整路径: merged-rules/block/domain/common/all-ads.txt
+    full_path = os.path.join(DIST_DIR, rel_path)
     
-    with open(filepath, 'w', encoding='utf-8') as f:
+    # 自动创建深层目录
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    
+    with open(full_path, 'w', encoding='utf-8') as f:
         if description:
              f.write(f"# {description}\n")
         f.write(f"# Total Rules: {len(rules)}\n")
@@ -49,11 +56,11 @@ def write_txt(filepath, rules, description=""):
         for rule in sorted(list(rules)):
             f.write(f"{rule}\n")
             
-    print(f"  -> Generated Merged File: {filepath} ({len(rules)} lines)")
+    print(f"  -> Generated Merged File: {full_path} ({len(rules)} lines)")
 
 def mirror_raw_files():
     """
-    镜像复制：将 rulesets 所有文件原封不动复制到 merged-rules 目录，保持结构。
+    第一步：将 rulesets 所有文件原封不动复制到 merged-rules，保持原始分类结构。
     """
     print(f">>> Mirroring raw files from {SOURCE_DIR} to {DIST_DIR}...")
     files_count = 0
@@ -63,9 +70,10 @@ def mirror_raw_files():
                 continue
             
             src_path = os.path.join(root, file)
-            # 计算相对路径，例如 block/domain/xxx.txt
+            # 计算相对路径 (e.g. block/domain/Loyalsoldier/win-spy.txt)
             rel_path = os.path.relpath(src_path, SOURCE_DIR)
-            # 目标路径: merged-rules/block/domain/xxx.txt
+            
+            # 目标路径
             dest_path = os.path.join(DIST_DIR, rel_path)
             
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -74,49 +82,57 @@ def mirror_raw_files():
     print(f"  -> Mirrored {files_count} raw files.")
 
 def process_merges(config):
-    """处理配置合并逻辑"""
+    """
+    第二步：读取 YAML 配置，生成自定义路径的合并文件
+    """
     if not config or 'merges' not in config:
         print("No 'merges' keys found in config.")
         return
 
     tasks = config['merges']
-    print(f"\n>>> Processing {len(tasks)} merge tasks...")
+    print(f"\n>>> Processing {len(tasks)} merge tasks based on config...")
 
     for task in tasks:
-        name = task.get('name')
+        # name 现在应该包含路径，例如 "block/domain/common/all-adblock.txt"
+        name_path = task.get('name') 
         inputs = task.get('inputs', [])
         desc = task.get('description', "")
         
-        if not name or not inputs: continue
+        if not name_path or not inputs:
+            continue
             
-        processed_name = f"Merged-{name}" # 为了显眼，可以选择加个前缀，或者保持原名
-        # 这里我们直接用配置里的名字放在 merge-rules 根目录下
+        print(f"Processing Task: {name_path}")
         
         merged_rules = set()
+        matched = False
+        
         for input_pattern in inputs:
             full_pattern = os.path.join(SOURCE_DIR, input_pattern)
             found_files = glob.glob(full_pattern, recursive=True)
+            
             for filepath in found_files:
                 if os.path.isfile(filepath):
                     merged_rules.update(get_file_content(filepath))
+                    matched = True
         
-        # 输出到 merged-rules/文件名
-        output_path = os.path.join(DIST_DIR, name)
-        write_txt(output_path, merged_rules, desc)
+        if matched:
+            # 直接将 name_path 传给写入函数，它会自动处理子目录
+            write_txt(name_path, merged_rules, desc)
+        else:
+            print(f"  [Warn] No input files found for {name_path}")
 
 def main():
-    # 每次运行前清理目标目录 (确保没有残留)
-    # if os.path.exists(DIST_DIR):
-    #     shutil.rmtree(DIST_DIR)
-    os.makedirs(DIST_DIR, exist_ok=True)
+    # 确保目标目录存在
+    if not os.path.exists(DIST_DIR):
+        os.makedirs(DIST_DIR)
 
     print(f">>> Loading config from {CONFIG_FILE}...")
     config = load_config(CONFIG_FILE)
 
-    # 1. 镜像原始文件 (保持格式)
+    # 1. 镜像原始文件 (保持结构)
     mirror_raw_files()
     
-    # 2. 生成合并文件
+    # 2. 生成合并文件 (结构由 yaml 的 name 字段决定)
     process_merges(config)
 
     print("\n>>> All operations complete.")
