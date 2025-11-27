@@ -1,4 +1,4 @@
-name: "3. Generate README"
+name: "4. Generate README"
 
 on:
   workflow_dispatch:
