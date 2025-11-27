@@ -4,6 +4,7 @@ import sys
 import yaml
 import ipaddress
 import time
+import shutil
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -30,7 +31,7 @@ STATS = {
 ERROR_LOGS = []
 SUMMARY_ROWS = []
 
-# 核心修改：用于记录哪些文件已经被配置任务使用了
+# 记录被配置任务使用的文件，用于自动扫描时跳过
 USED_SOURCE_FILES = set()
 
 # =========================
@@ -38,7 +39,7 @@ USED_SOURCE_FILES = set()
 # =========================
 
 def normalize_path(p):
-    """标准化路径分隔符，便于比对"""
+    """标准化路径分隔符"""
     return str(Path(p).as_posix())
 
 def detect_mode(type_str, filename):
@@ -77,13 +78,14 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     files_read_count = 0
 
     for rel_input in inputs:
-        # 记录文件已被使用 (标准化路径)
+        # 记录文件已被使用
         full_src_path = os.path.join(SOURCE_DIR, rel_input)
         rel_src_norm = normalize_path(rel_input)
         USED_SOURCE_FILES.add(rel_src_norm)
 
         if not os.path.exists(full_src_path):
-            raise FileNotFoundError(f"Source file not found: {full_src_path}")
+            # 如果文件不存在，抛出异常
+            raise FileNotFoundError(f"Source file not found: {rel_input}")
         
         with open(full_src_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -134,35 +136,27 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 def auto_discover_files():
     """扫描 rulesets 文件夹，发现未使用的文件"""
     discovered_tasks = []
-    
-    # 遍历 rulesets 目录
+    if not os.path.exists(SOURCE_DIR):
+        return []
+
     for root, dirs, files in os.walk(SOURCE_DIR):
         for file in files:
             if file.startswith('.') or not file.endswith('.txt'):
                 continue
 
-            # 获取相对于 rulesets 的路径，例如 inputs/ads/list.txt
             abs_path = os.path.join(root, file)
             rel_path = os.path.relpath(abs_path, SOURCE_DIR)
             rel_path_norm = normalize_path(rel_path)
 
-            # 核心判断：如果这个文件已经在 YAML 任务里用过了，跳过！
+            # 如果已经被 Config 使用过，跳过
             if rel_path_norm in USED_SOURCE_FILES:
                 continue
 
-            # 自动推断 Strategy/Type/Owner
-            # 假设目录结构是 rulesets/Strategy/Type/Owner/File.txt
+            # 自动推断目录结构
             parts = Path(rel_path_norm).parent.parts
-            
-            # 默认值
-            d_strat = "Auto"
-            d_type = "General"
-            d_owner = "Unknown"
-
-            if len(parts) >= 1: d_strat = parts[0]
-            if len(parts) >= 2: d_type = parts[1]
-            if len(parts) >= 3: d_owner = parts[2]
-            # 如果还有更深层级，可以拼接到 Owner 或者忽略
+            d_strat = parts[0] if len(parts) >= 1 else "Auto"
+            d_type = parts[1] if len(parts) >= 2 else "General"
+            d_owner = parts[2] if len(parts) >= 3 else "Unknown"
 
             discovered_tasks.append({
                 "strategy": d_strat,
@@ -180,9 +174,32 @@ def auto_discover_files():
 # =========================
 
 def main():
-    console.rule("[bold blue]🚀 Hybrid Merger (Config + Auto-Scan)[/bold blue]")
+    console.rule("[bold blue]🚀 Hybrid Merger (Smart Clean)[/bold blue]")
 
-    # 1. 读取配置的任务
+    # 1. 环境检查
+    if not os.path.exists(CONFIG_FILE):
+        console.print(f"[yellow]⚠️ Warning: Config '{CONFIG_FILE}' not found. Will use Auto-Mode only.[/yellow]")
+    
+    if not os.path.exists(SOURCE_DIR):
+        console.print(f"[bold red]❌ CRITICAL: Directory '{SOURCE_DIR}' not found![/bold red]")
+        sys.exit(1)
+
+    # 2. 清理输出目录内容 (保留文件夹本身)
+    if os.path.exists(OUTPUT_DIR):
+        console.print("[dim]🧹 Cleaning output directory...[/dim]")
+        for item in os.listdir(OUTPUT_DIR):
+            item_path = os.path.join(OUTPUT_DIR, item)
+            try:
+                if os.path.isfile(item_path) or os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Failed to delete {item_path}: {e}[/yellow]")
+    else:
+        os.makedirs(OUTPUT_DIR)
+
+    # 3. 读取配置的任务
     config_tasks = []
     if os.path.exists(CONFIG_FILE):
         try:
@@ -193,7 +210,7 @@ def main():
             console.print(f"[red]Config Error:[/red] {e}")
             sys.exit(1)
 
-    # 2. 统一执行流程
+    # 4. 执行统一流程
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -202,41 +219,39 @@ def main():
         console=console
     ) as progress:
         
-        # A. 执行配置任务 (优先)
-        task_main = progress.add_task("[cyan]Running Config Tasks[/cyan]", total=len(config_tasks))
-        for t in config_tasks:
-            try:
-                fname = t.get('filename', 'Unknown')
-                progress.update(task_main, description=f"Config Task: {fname}")
-                
-                # 简单校验
-                if 'inputs' not in t: raise ValueError("Missing inputs")
-                
-                res = process_task_logic(
-                    t.get('strategy', 'Default'), t.get('type', 'General'),
-                    t.get('owner', 'Unknown'), fname, t['inputs'],
-                    t.get('description', 'Configured Merge')
-                )
-                if res:
-                    STATS['success'] += 1
-                    STATS['total_rules'] += res['opt']
-                    SUMMARY_ROWS.append(res)
-                else:
-                    STATS['skipped'] += 1
-            except Exception as e:
-                STATS['failed'] += 1
-                ERROR_LOGS.append(f"Config Task '{fname}': {str(e)}")
-            progress.advance(task_main)
+        # A. Config 任务
+        if config_tasks:
+            task_main = progress.add_task("[cyan]Running Config Tasks[/cyan]", total=len(config_tasks))
+            for t in config_tasks:
+                try:
+                    fname = t.get('filename', 'Unknown')
+                    progress.update(task_main, description=f"Config Task: {fname}")
+                    
+                    if 'inputs' not in t: raise ValueError("Missing inputs")
+                    
+                    res = process_task_logic(
+                        t.get('strategy', 'Default'), t.get('type', 'General'),
+                        t.get('owner', 'Unknown'), fname, t['inputs'],
+                        t.get('description', 'Configured Merge')
+                    )
+                    if res:
+                        STATS['success'] += 1
+                        STATS['total_rules'] += res['opt']
+                        SUMMARY_ROWS.append(res)
+                    else:
+                        STATS['skipped'] += 1
+                except Exception as e:
+                    STATS['failed'] += 1
+                    ERROR_LOGS.append(f"Config Task '{fname}': {str(e)}")
+                progress.advance(task_main)
 
-        # B. 自动发现并执行 (补漏)
-        # 必须在上面的循环通过 USED_SOURCE_FILES 记录完已被占用的文件后，再扫描
+        # B. 自动发现任务
         auto_tasks = auto_discover_files()
-        
         if auto_tasks:
             task_auto = progress.add_task("[magenta]Running Auto-Discovery[/magenta]", total=len(auto_tasks))
             for t in auto_tasks:
                 try:
-                    progress.update(task_auto, description=f"Auto Task: {t['filename']}")
+                    progress.update(task_auto, description=f"Auto: {t['filename']}")
                     res = process_task_logic(
                         t['strategy'], t['type'], t['owner'], 
                         t['filename'], t['inputs'], t['description']
@@ -244,14 +259,14 @@ def main():
                     if res:
                         STATS['success'] += 1
                         STATS['total_rules'] += res['opt']
-                        res['file'] = f"(Auto) {res['file']}" # 标记一下
+                        res['file'] = f"(Auto) {res['file']}"
                         SUMMARY_ROWS.append(res)
                 except Exception as e:
                     STATS['failed'] += 1
                     ERROR_LOGS.append(f"Auto Task '{t['filename']}': {str(e)}")
                 progress.advance(task_auto)
 
-    # 3. 报告与结束
+    # 5. 报告
     table = Table(title="Execution Summary", header_style="bold magenta")
     table.add_column("File", style="cyan")
     table.add_column("Output Path", style="dim")
