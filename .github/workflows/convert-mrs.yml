@@ -1,4 +1,4 @@
-name: "4. Convert to MRS"
+name: "3. Convert to MRS"
 
 on:
   workflow_dispatch:
