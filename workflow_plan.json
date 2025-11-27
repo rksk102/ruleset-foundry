@@ -12,13 +12,19 @@
     "timeout_minutes": 10
   },
   {
-    "name": "3. Generate Docs",
+    "name": "3. convert-mrs",
+    "file": "convert-mrs.yml",
+    "description": "生成 MRS",
+    "timeout_minutes": 10
+  },
+  {
+    "name": "4. Generate Docs",
     "file": "gen-readme.yml",
     "description": "生成美化版 README",
     "timeout_minutes": 5
   },
   {
-    "name": "4. Release",
+    "name": "5. Release",
     "file": "create-release.yml", 
     "description": "发布二进制规则文件",
     "timeout_minutes": 15
