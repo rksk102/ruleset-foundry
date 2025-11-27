@@ -1,0 +1,119 @@
+::group::🔧 Initialization
+Loaded 31 sources.
+::endgroup::
+::group::🧹 Cleaning Orphan Files
+Deleting orphan: rulesets/direct/domain/DustinWin/microsoft-cn.list
+Deleting orphan: rulesets/direct/domain/Loyalsoldier/apple-cn.txt
+Deleting orphan: rulesets/direct/domain/Loyalsoldier/direct-list.txt
+Deleting orphan: rulesets/direct/domain/Loyalsoldier/private.txt
+Deleting orphan: rulesets/direct/domain/MetaCubeX/geolocation-cn.list
+Deleting orphan: rulesets/direct/ipcidr/Loyalsoldier/cncidr.txt
+Deleting orphan: rulesets/direct/ipcidr/Loyalsoldier/lancidr.txt
+Deleting orphan: rulesets/direct/ipcidr/MetaCubeX/cn.list
+Deleting orphan: rulesets/policy/domain/Loyalsoldier/gfw.txt
+Deleting orphan: rulesets/policy/domain/Loyalsoldier/proxy-list.txt
+Deleting orphan: rulesets/policy/domain/Loyalsoldier/proxy.txt
+Deleting orphan: rulesets/policy/domain/MetaCubeX/category-ai-!cn.list
+Deleting orphan: rulesets/reject/domain/DustinWin/ads.list
+Deleting orphan: rulesets/reject/domain/Loyalsoldier/reject-list.txt
+Deleting orphan: rulesets/reject/domain/Loyalsoldier/reject.txt
+Deleting orphan: rulesets/reject/domain/Loyalsoldier/win-extra.txt
+Deleting orphan: rulesets/reject/domain/Loyalsoldier/win-spy.txt
+Deleting orphan: rulesets/reject/domain/MetaCubeX/category-ads-all.list
+::endgroup::
+::group::⚙️ Processing: category-ads-all.list
+Target: block/domain/github.com/category-ads-all.txt
+Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
+SUCCESS: Saved 579 lines to block/domain/github.com/category-ads-all.txt
+::endgroup::
+::group::⚙️ Processing: ads.list
+Target: block/domain/github.com/ads.txt
+Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
+SUCCESS: Saved 96931 lines to block/domain/github.com/ads.txt
+::endgroup::
+::group::⚙️ Processing: reject-list.txt
+Target: block/domain/github/reject-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+SUCCESS: Saved 128309 lines to block/domain/github/reject-list.txt
+::endgroup::
+::group::⚙️ Processing: win-extra.txt
+Target: block/domain/github/win-extra.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
+SUCCESS: Saved 399 lines to block/domain/github/win-extra.txt
+::endgroup::
+::group::⚙️ Processing: win-spy.txt
+Target: block/domain/github/win-spy.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.txt
+SUCCESS: Saved 347 lines to block/domain/github/win-spy.txt
+::endgroup::
+::group::⚙️ Processing: reject.txt
+Target: block/domain/github/reject.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
+SUCCESS: Saved 128309 lines to block/domain/github/reject.txt
+::endgroup::
+::group::⚙️ Processing: private.txt
+Target: direct/domain/github/private.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
+SUCCESS: Saved 123 lines to direct/domain/github/private.txt
+::endgroup::
+::group::⚙️ Processing: direct-list.txt
+Target: direct/domain/github/direct-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+SUCCESS: Saved 116378 lines to direct/domain/github/direct-list.txt
+::endgroup::
+::group::⚙️ Processing: apple-cn.txt
+Target: direct/domain/github/apple-cn.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/apple-cn.txt
+SUCCESS: Saved 0 lines to direct/domain/github/apple-cn.txt
+::endgroup::
+::group::⚙️ Processing: geolocation-cn.list
+Target: direct/domain/github/geolocation-cn.txt
+Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
+SUCCESS: Saved 6032 lines to direct/domain/github/geolocation-cn.txt
+::endgroup::
+::group::⚙️ Processing: microsoft-cn.list
+Target: direct/domain/github.com/microsoft-cn.txt
+Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
+SUCCESS: Saved 168 lines to direct/domain/github.com/microsoft-cn.txt
+::endgroup::
+::group::⚙️ Processing: proxy.txt
+Target: policy/domain/github/proxy.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
+SUCCESS: Saved 26132 lines to policy/domain/github/proxy.txt
+::endgroup::
+::group::⚙️ Processing: gfw.txt
+Target: policy/domain/github/gfw.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
+SUCCESS: Saved 5956 lines to policy/domain/github/gfw.txt
+::endgroup::
+::group::⚙️ Processing: proxy-list.txt
+Target: policy/domain/github/proxy-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
+SUCCESS: Saved 25524 lines to policy/domain/github/proxy-list.txt
+::endgroup::
+::group::⚙️ Processing: gfw.txt
+Target: policy/domain/github/gfw.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+SUCCESS: Saved 5956 lines to policy/domain/github/gfw.txt
+::endgroup::
+::group::⚙️ Processing: category-ai-!cn.list
+Target: policy/domain/gh-proxy.com/category-ai-!cn.txt
+Source: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
+SUCCESS: Saved 88 lines to policy/domain/gh-proxy.com/category-ai-!cn.txt
+::endgroup::
+::group::⚙️ Processing: cncidr.txt
+Target: direct/ipcidr/github/cncidr.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
+SUCCESS: Saved 18822 lines to direct/ipcidr/github/cncidr.txt
+::endgroup::
+::group::⚙️ Processing: cn.list
+Target: direct/ipcidr/github/cn.txt
+Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+SUCCESS: Saved 18822 lines to direct/ipcidr/github/cn.txt
+::endgroup::
+::group::⚙️ Processing: lancidr.txt
+Target: direct/ipcidr/github/lancidr.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+SUCCESS: Saved 18 lines to direct/ipcidr/github/lancidr.txt
+::endgroup::
+::group::💾 Git Commit
