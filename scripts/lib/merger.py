@@ -12,6 +12,35 @@ CONFIG_FILE = "merge-config.yaml"
 SOURCE_DIR = "rulesets"     # 原始下载的规则存放处
 DIST_DIR = "merged-rules"   # 最终发布的目录
 
+def clean_dist_dir():
+    """
+    【核心修改】清空 merged-rules 文件夹内的所有内容，
+    但保留 merged-rules 文件夹本身。
+    """
+    # 如果目录不存在，直接创建并返回
+    if not os.path.exists(DIST_DIR):
+        os.makedirs(DIST_DIR)
+        print(f">>> Created directory: {DIST_DIR}")
+        return
+
+    print(f">>> Cleaning contents of: {DIST_DIR} ...")
+    
+    # 遍历目录下的所有项目
+    for item in os.listdir(DIST_DIR):
+        item_path = os.path.join(DIST_DIR, item)
+        try:
+            if os.path.isfile(item_path) or os.path.islink(item_path):
+                # 如果是文件或符号链接，直接删除
+                os.unlink(item_path)
+            elif os.path.isdir(item_path):
+                # 如果是子文件夹，递归删除该文件夹
+                shutil.rmtree(item_path)
+        except Exception as e:
+            print(f"  [Error] Failed to delete {item_path}: {e}")
+            sys.exit(1)
+    
+    print(f"  -> Directory emptied successfully.")
+
 def load_config(path):
     if not os.path.exists(path):
         print(f"Error: Config file '{path}' not found.")
@@ -37,14 +66,10 @@ def get_file_content(filepath):
     return lines
 
 def write_txt(rel_path, rules, description=""):
-    """
-    写入文件到 DIST_DIR 下的相对路径
-    rel_path: 例如 block/domain/common/all-ads.txt
-    """
-    # 拼接完整路径: merged-rules/block/domain/common/all-ads.txt
+    # 拼接完整路径
     full_path = os.path.join(DIST_DIR, rel_path)
     
-    # 自动创建深层目录
+    # 确保父级目录存在
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     
     with open(full_path, 'w', encoding='utf-8') as f:
@@ -58,84 +83,104 @@ def write_txt(rel_path, rules, description=""):
             
     print(f"  -> Generated Merged File: {full_path} ({len(rules)} lines)")
 
-def mirror_raw_files():
+def collect_used_files(config):
     """
-    第一步：将 rulesets 所有文件原封不动复制到 merged-rules，保持原始分类结构。
+    扫描配置文件，找出所有被标记为 'inputs' 的文件路径。
     """
-    print(f">>> Mirroring raw files from {SOURCE_DIR} to {DIST_DIR}...")
+    used_files = set()
+    if not config or 'merges' not in config:
+        return used_files
+    
+    for task in config['merges']:
+        inputs = task.get('inputs', [])
+        for input_pattern in inputs:
+            full_pattern = os.path.join(SOURCE_DIR, input_pattern)
+            found = glob.glob(full_pattern, recursive=True)
+            for f in found:
+                if os.path.isfile(f):
+                    used_files.add(os.path.abspath(f))
+    
+    return used_files
+
+def mirror_raw_files(exclude_files):
+    """
+    将 rulesets 下的文件复制到 merged-rules。
+    如果文件在 exclude_files 中，则跳过。
+    """
+    print(f">>> Mirroring raw files (excluding merged ones)...")
     files_count = 0
+    skipped_count = 0
+
     for root, dirs, files in os.walk(SOURCE_DIR):
         for file in files:
             if not file.endswith(('.txt', '.list', '.yaml', '.conf')):
                 continue
             
             src_path = os.path.join(root, file)
-            # 计算相对路径 (e.g. block/domain/Loyalsoldier/win-spy.txt)
+            abs_src_path = os.path.abspath(src_path)
+
+            # 如果该文件已经被合并使用，则跳过
+            if abs_src_path in exclude_files:
+                skipped_count += 1
+                continue
+
             rel_path = os.path.relpath(src_path, SOURCE_DIR)
-            
-            # 目标路径
             dest_path = os.path.join(DIST_DIR, rel_path)
             
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(src_path, dest_path)
             files_count += 1
-    print(f"  -> Mirrored {files_count} raw files.")
+
+    print(f"  -> Mirrored {files_count} remaining raw files.")
+    print(f"  -> Skipped {skipped_count} files (merged).")
 
 def process_merges(config):
-    """
-    第二步：读取 YAML 配置，生成自定义路径的合并文件
-    """
     if not config or 'merges' not in config:
         print("No 'merges' keys found in config.")
         return
 
     tasks = config['merges']
-    print(f"\n>>> Processing {len(tasks)} merge tasks based on config...")
+    print(f"\n>>> Processing {len(tasks)} merge tasks...")
 
     for task in tasks:
-        # name 现在应该包含路径，例如 "block/domain/common/all-adblock.txt"
         name_path = task.get('name') 
         inputs = task.get('inputs', [])
         desc = task.get('description', "")
         
-        if not name_path or not inputs:
-            continue
+        if not name_path or not inputs: continue
             
         print(f"Processing Task: {name_path}")
         
         merged_rules = set()
-        matched = False
-        
         for input_pattern in inputs:
             full_pattern = os.path.join(SOURCE_DIR, input_pattern)
             found_files = glob.glob(full_pattern, recursive=True)
-            
             for filepath in found_files:
                 if os.path.isfile(filepath):
                     merged_rules.update(get_file_content(filepath))
-                    matched = True
         
-        if matched:
-            # 直接将 name_path 传给写入函数，它会自动处理子目录
-            write_txt(name_path, merged_rules, desc)
-        else:
-            print(f"  [Warn] No input files found for {name_path}")
+        write_txt(name_path, merged_rules, desc)
 
 def main():
-    # 确保目标目录存在
-    if not os.path.exists(DIST_DIR):
-        os.makedirs(DIST_DIR)
+    print("=== Starting Rule Merge System (Optimize: Clean Contents Only) ===")
+
+    # 1. 清空 merged-rules 的内容 (保留文件夹本身)
+    clean_dist_dir()
 
     print(f">>> Loading config from {CONFIG_FILE}...")
     config = load_config(CONFIG_FILE)
 
-    # 1. 镜像原始文件 (保持结构)
-    mirror_raw_files()
+    # 2. 收集已使用的文件列表
+    used_files_set = collect_used_files(config)
+    print(f">>> Identified {len(used_files_set)} files involved in merging.")
+
+    # 3. 镜像剩余的 Raw 文件
+    mirror_raw_files(used_files_set)
     
-    # 2. 生成合并文件 (结构由 yaml 的 name 字段决定)
+    # 4. 生成合并文件
     process_merges(config)
 
-    print("\n>>> All operations complete.")
+    print("\n>>> All operations complete. Output is in 'merged-rules/'")
 
 if __name__ == "__main__":
     main()
