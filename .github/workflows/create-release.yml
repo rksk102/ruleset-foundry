@@ -1,15 +1,6 @@
 name: "2. Create Release (merged-rules only, with Build Date)"
 
 on:
-  # 添加定时触发：每天北京时间 05:40 自动构建
-  schedule:
-    - cron: "40 21 * * *"   # UTC 21:40 = 北京时间 05:40
-  # 保留推送触发
-  push:
-    branches: [ main ]
-    paths:
-      - "merged-rules/**"
-  # 保留手动触发
   workflow_dispatch:
     inputs:
       tag_date:
