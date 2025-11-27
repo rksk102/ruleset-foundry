@@ -1,70 +1,123 @@
-name: "1. Daily Sync and Sanitize Rules"
+name: "Manage Rules: Sync & Sanitize"
 
+# 触发模式：仅手动或API触发 (OpenRouter Mode)
 on:
   workflow_dispatch:
+    inputs:
+      strict_mode:
+        description: 'Strict Mode (Stop immediately on error)'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: sync-rules
+  cancel-in-progress: true
 
 jobs:
-  sync:
+  sync-manager:
+    name: "🛡️ Sync & Sanitize Rules"
     runs-on: ubuntu-latest
-    name: "📥 Sync & Process"
-    
     steps:
-      - name: 📥 Checkout Code
+      - name: 🏗️ Initialize Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 🐍 Setup Python 3
+      - name: 🐍 Setup Python Environment
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.x'
 
-      # 步骤 1：下载 (调用 sync.sh)
-      - name: 📡 Download Rules
-        id: download
-        env:
-          TERM: xterm-color
+      - name: 🔧 Prepare Scripts
         run: |
-          # 确保脚本有执行权限
           chmod +x scripts/sync.sh
-          # 执行脚本
-          ./scripts/sync.sh
+          chmod +x scripts/lib/processor.py
 
-      # 步骤 2：清洗与优化 (调用 processor.py)
-      - name: 🧠 Sanitize & Optimize
-        id: sanitize
+      # 核心运行步骤：包含日志分组和实时输出
+      - name: 🚀 Execute Sync & Clean
+        id: run_sync
+        shell: bash
         env:
+          STRICT_MODE: ${{ inputs.strict_mode }}
           TERM: xterm-color
         run: |
-          python3 scripts/lib/processor.py
-
-      - name: 💾 Commit Changes
-        id: commit
-        run: |
-          git config user.name 'GitHub Actions Bot'
-          git config user.email 'actions@github.com'
+          # 创建临时日志文件
+          LOG_FILE="sync_execution.log"
+          touch "$LOG_FILE"
           
-          # 添加 rulesets 目录变动
-          git add rulesets/
+          echo "::notice::Starting Sync Process... (Strict Mode: $STRICT_MODE)"
           
-          if git diff-index --quiet HEAD; then
-             echo "::notice::No updates found."
+          # 使用 pipefail 捕获管道错误
+          set -o pipefail
+          
+          # 运行脚本 | 双路输出(屏幕+文件)
+          ./scripts/sync.sh 2>&1 | tee "$LOG_FILE"
+          EXIT_CODE=$?
+          
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          
+          # 如果脚本以非0退出，在此步骤不仅记录，还会标记步骤本身失败
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+            exit 1
           else
-             CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
-             echo "::notice::$CHANGE_COUNT files updated."
-             
-             git commit -m "chore: 📥 Sync & Sanitize $CHANGE_COUNT rule files [$(date +'%Y-%m-%d')]"
-             git push
+            echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: ✨ Final Status
+      # 现代化可视化报告生成 (无论成功失败都会运行，方便查看错误源)
+      - name: 📊 Generate Dashboard Report
         if: always()
+        shell: bash
         run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "Sync workflow finished successfully."
-          else
-            echo "::error::Workflow failed. Check logs."
-          fi
+          LOG="sync_execution.log"
+          [ ! -f "$LOG" ] && exit 0
+          
+          # --- 数据提取区 ---
+          SUCCESS_COUNT=$(grep -c "SUCCESS:" "$LOG" || echo 0)
+          # 提取 Saved 后面的数字
+          TOTAL_LINES=$(grep "SUCCESS:" "$LOG" | awk -F'Saved ' '{print $2}' | awk '{s+=$1} END {print s+0}' || echo 0)
+          
+          # 提取详细错误列表
+          DL_ERRORS=$(grep "ERROR_DL:" "$LOG" | awk '{print $2}' | sort -u || true)
+          PS_ERRORS=$(grep "ERROR_PARSE:" "$LOG" | awk '{print $2}' | sort -u || true)
+          
+          COUNT_DL=$(echo "$DL_ERRORS" | grep -c "http" || echo 0)
+          COUNT_PS=$(echo "$PS_ERRORS" | grep -c "http" || echo 0)
+          TOTAL_FAIL=$((COUNT_DL + COUNT_PS))
+          
+          # --- 渲染 Markdown ---
+          {
+            echo "# 🛡️ Rules Sync Dashboard"
+            echo ""
+            echo "| 🟢 Success | 🔴 Failures | 📉 Total Rules |"
+            echo "| :---: | :---: | :---: |"
+            echo "| **$SUCCESS_COUNT** | **$TOTAL_FAIL** | **$TOTAL_LINES** |"
+            echo ""
+            
+            if [ "$TOTAL_FAIL" -gt 0 ]; then
+              echo "## 🚨 Error Diagnostics"
+              echo "> The workflow encountered errors. Please review the sources below."
+              echo ""
+              echo "| Type | Failed Source URL |"
+              echo "| :--- | :--- |"
+              
+              if [ "$COUNT_DL" -gt 0 ]; then
+                 while IFS= read -r url; do [ -z "$url" ] && continue; echo "| 📡 **Download** | \`$url\` |"; done <<< "$DL_ERRORS"
+              fi
+              if [ "$COUNT_PS" -gt 0 ]; then
+                 while IFS= read -r url; do [ -z "$url" ] && continue; echo "| 🧠 **Parse/Clean** | \`$url\` |"; done <<< "$PS_ERRORS"
+              fi
+            else
+              echo "## ✅ All Systems Operational"
+              echo "All rule sources were downloaded, sanitized, and converted to TXT successfully."
+            fi
+            
+            echo ""
+            echo "---"
+            echo "_Report generated at $(date +'%Y-%m-%d %H:%M:%S UTC')_"
+          } >> "$GITHUB_STEP_SUMMARY"
