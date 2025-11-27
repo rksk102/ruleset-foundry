@@ -16,7 +16,7 @@ jobs:
 
       # 🔥 关键步骤：下载之前步骤生成的 merged-rules 文件夹
       # 前提：你在 Step 2 (merge-rules.yml) 中必须已经 upload 了名为 'merged-rules-collection' 的 artifact
-- name: 📦 Download Rules from Merge Workflow
+      - name: 📦 Download Rules from Merge Workflow
         uses: dawidd6/action-download-artifact@v6
         with:
           # 1. 这里填你 Merge 工作流的文件名 (或者工作流 name)
