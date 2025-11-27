@@ -2,7 +2,6 @@
 import sys
 import re
 import ipaddress
-import binascii
 import base64
 
 # 配置：是否跳过本地回环和保留地址（对于公共规则集通常设为 True）
@@ -133,7 +132,8 @@ def process_ip(raw_list):
     """
     清洗 IP：标准化格式、过滤无效 IP、**合并网段 (CIDR Merge)**
     """
-    networks = []
+    ipv4_nets = []
+    ipv6_nets = []
     
     for item in raw_list:
         s = item.strip()
@@ -145,27 +145,36 @@ def process_ip(raw_list):
         try:
             # strict=False 允许 192.168.1.1/24 这种非网络号写法 (自动转为 192.168.1.0/24)
             net = ipaddress.ip_network(s, strict=False)
-            networks.append(net)
+            
+            # 分类存入 v4 或 v6 列表
+            if net.version == 4:
+                ipv4_nets.append(net)
+            else:
+                ipv6_nets.append(net)
+                
         except ValueError:
             continue
 
-    # **核心智能点：Collapse (合并重叠网段)**
-    # 例如：输入 10.0.0.1/32 和 10.0.0.0/24，输出 10.0.0.0/24
-    # 这能大幅减小 IP 规则提及，提高匹配性能
-    merged = ipaddress.collapse_addresses(networks)
+    # **核心修复：分别合并 v4 和 v6**
+    merged_v4 = list(ipaddress.collapse_addresses(ipv4_nets))
+    merged_v6 = list(ipaddress.collapse_addresses(ipv6_nets))
     
-    return [str(n) for n in merged]
+    # 合并结果返回
+    return [str(n) for n in merged_v4 + merged_v6]
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: processor.py [domain|ipcidr]")
-        sys.exit(1)
-        
-    mode = sys.argv[1] # domain 或 ipcidr
+        # 默认为 domain 模式方便调试，或者报错
+        mode = "domain"
+    else:
+        mode = sys.argv[1] # domain 或 ipcidr
     
     # 1. 读取 stdin
-    raw_content = sys.stdin.read()
-    
+    try:
+        raw_content = sys.stdin.read()
+    except Exception:
+        sys.exit(0) # 空输入
+
     # 2. 初步解析成行
     lines = parse_content(raw_content)
     
@@ -173,9 +182,6 @@ def main():
     if mode == 'ipcidr':
         result = process_ip(lines)
     else:
-        # domain 或 classical，这里暂且都把 classical 当 domain 基础处理，
-        # 实际上 classical 是混合的，但你的脚本结构是分 policy/type 存的。
-        # 如果 type 是 domain，就用 domain 清洗。
         result = process_domain(lines)
         
     # 4. 输出
