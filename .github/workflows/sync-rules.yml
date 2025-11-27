@@ -65,7 +65,7 @@ jobs:
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-      # 美化步骤：生成可视化的作业摘要报告 (已修复 grep 退出码问题)
+      # 美化步骤：生成可视化的作业摘要报告
       - name: Generate Execution Report
         if: always() # 无论成功失败都运行
         shell: bash
@@ -80,21 +80,18 @@ jobs:
           
           # --- 统计数据提取 ---
           
-          # 统计 "Saved:" 出现次数 (|| echo 0 防止 grep 找不到返回错误码)
+          # 统计 "Saved:" 出现次数
           SUCCESS_COUNT=$(grep -c "Saved:" "$LOG_FILE" || echo 0)
           
           # 统计失败次数
           FAIL_COUNT=$(grep -E -c "(::warning::Download failed|::error::)" "$LOG_FILE" || echo 0)
           
           # 统计总行数：提取 'Saved: ... 1234 lines' 中的数字
-          # 使用 awk 从倒数第二列提取数字，防止路径中有数字干扰
           TOTAL_LINES=$(grep "Saved:" "$LOG_FILE" | awk '{print $(NF-1)}' | awk '{s+=$1} END {print s+0}' || echo 0)
           
           # 提取失败 URL (仅当有失败时尝试提取，并加 || true 兜底)
           FAILED_URLS=""
           if [ "$FAIL_COUNT" -gt 0 ]; then
-             # 提取逻辑：找到 Warning 行，向上找 Source 行，提取 URL
-             # 加上 || true 确保 grep 链即使为空也不报错
              FAILED_URLS=$(grep -B 5 "::warning::Download failed" "$LOG_FILE" | grep "Source:" | awk '{print $2}' | sort | uniq || true)
           fi
           
@@ -115,7 +112,6 @@ jobs:
               echo ""
               echo "| Failed URL |"
               echo "| :--- |"
-              # 如果 FAILED_URLS 为空但 COUNT > 0 (例如解析错误而非下载错误)，显示提示
               if [ -z "$FAILED_URLS" ]; then
                  echo "| _(Unknown sources, check logs)_ |"
               else
@@ -143,13 +139,3 @@ jobs:
         run: |
           echo "::error::Sync script failed with exit code ${{ steps.run_sync.outputs.exit_code }}"
           exit 1
-
-      # 触发下一个工作流：merge-rules
-      - name: Trigger merge-rules workflow
-        if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          echo "Triggering merge-rules workflow..."
-          gh workflow run "merge-rules.yml" --ref main
