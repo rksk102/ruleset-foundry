@@ -2,91 +2,52 @@ name: "2. Merge Rules based on Config"
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 22 * * *'
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
-  merge-job:
-    # 确保上一个工作流是成功的，或者是手动触发的
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+  merge:
     runs-on: ubuntu-latest
-    name: "🧩 Merge & Organize Rules"
+    name: "🧩 Merge & Validate"
     
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          ref: main  # 确保拉取最新代码
 
-      - name: 🐍 Setup Python 3
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # cache: 'pip'  <-- 已删除此行，修复报错
+          cache: 'pip'
 
+      # 这一步必不可少
       - name: 📦 Install Dependencies
         run: |
-          pip install --upgrade pip
-          # 直接安装依赖，因为包很小，不需要缓存
-          pip install PyYAML
-          
-      - name: 🔍 Validate Config
-        id: validate
-        run: |
-          if [ ! -f "merge-config.yaml" ]; then
-            echo "::error::merge-config.yaml is missing!"
-            exit 1
-          fi
-          echo "::notice::Config file found, proceeding..."
+          pip install pyyaml
 
-      - name: 🚀 Run Merge Script
-        id: run_merger
+      - name: 🚀 Run Merger
+        id: merger
         env:
-          TERM: xterm-color # 强制开启彩色输出
+          TERM: xterm-color
         run: |
-          chmod +x scripts/merge-rules.sh
-          ./scripts/merge-rules.sh
+          # 运行刚才的脚本
+          python3 scripts/merger.py
 
-      - name: 💾 Commit Changes
-        id: commit
+      - name: 💾 Commit & Push
+        if: success()
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
           
-          # 强制添加 merged-rules 文件夹
           git add merged-rules/
           
-          # 使用 diff-index 检查变更，避免脚本报错
           if git diff-index --quiet HEAD; then
-             echo "::notice::No changes detected in rules. Skipping commit."
-             echo "changes=false" >> "$GITHUB_OUTPUT"
+             echo "::notice::No changes in rules."
           else
-             # 统计有多少文件变更
              CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
-             echo "::notice::$CHANGE_COUNT files changed. Committing..."
-             
-             git commit -m "build: 🧩 Update $CHANGE_COUNT combined rule files"
+             git commit -m "build: 🧩 Re-merge $CHANGE_COUNT files from config"
              git push
-             echo "changes=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: ✨ Final Status
-        if: always()
-        run: |
-          if [ "${{ steps.run_merger.outcome }}" == "success" ]; then
-            echo "Job completed successfully."
-          else
-            echo "::error::Job failed. Check the logs above."
-          fi
-
-      - name: 📤 Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: merged_rules_artifact  # 这个名字必须和 release.yml 里下载的名字一样
-          path: merged-rules/
-          retention-days: 1
