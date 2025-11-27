@@ -1,34 +1,25 @@
-name: "4. Generate README (Merged Rules Index)"
+name: "4. Generate README (Rules Index)"
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Links base ref (e.g. main or rules-YYYY-MM-DD). Default: main"
+        description: "Links base ref (e.g. main)"
         required: false
         type: string
       cdn:
-        description: "CDN for links: jsdelivr or raw"
+        description: "CDN (reserved, currently unused)"
         required: false
         default: "jsdelivr"
         type: choice
         options:
           - "jsdelivr"
           - "raw"
-  workflow_run:
-    workflows:
-      - "5. Merge Rule Sets (Type Check + Organize)"
-    types: [completed]
   schedule:
-    # 注意：cron 使用 UTC；03:10 UTC = 北京时间 11:10
-    - cron: "10 3 * * *"
+    - cron: "10 3 * * *"  # 可按需修改
 
 permissions:
   contents: write
-
-concurrency:
-  group: gen-readme
-  cancel-in-progress: true
 
 env:
   TZ: Asia/Shanghai
@@ -36,66 +27,31 @@ env:
 jobs:
   gen-readme:
     runs-on: ubuntu-latest
-    # 允许三种触发：merge-rules 成功后的 workflow_run、手动、以及定时
-    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'workflow_dispatch') || (github.event_name == 'schedule') }}
     steps:
-      - name: Checkout repository (full history for rebase)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Configure Git
-        shell: bash
-        run: |
-          git config user.name 'GitHub Actions Bot'
-          git config user.email 'actions@github.com'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Rebase to latest main
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="${GITHUB_REF_NAME:-main}"
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          git pull --rebase origin "$BRANCH"
-
-      - name: Make generator executable
-        shell: bash
-        run: chmod +x scripts/gen-readme.sh
-
-      - name: Generate README (merged-rules only)
-        shell: bash
+      - name: Generate README via template
         env:
           INPUT_REF: ${{ inputs.ref || 'main' }}
-          INPUT_CDN: ${{ inputs.cdn || 'jsdelivr' }}
-        run: scripts/gen-readme.sh
+        run: |
+          python3 scripts/gen_readme.py
 
       - name: Commit README changes (if any)
-        id: commit
-        shell: bash
         run: |
-          set -euo pipefail
           if git diff --quiet README.md; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No README changes."
             exit 0
           fi
+          git config user.name 'GitHub Actions Bot'
+          git config user.email 'actions@github.com'
           git add README.md
-          git commit -m "docs(readme): auto-update (merged-rules) at $(date +'%Y-%m-%d %H:%M:%S %Z')"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Push with rebase retry
-        if: steps.commit.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="${GITHUB_REF_NAME:-main}"
-          if git push origin "$BRANCH"; then
-            exit 0
-          fi
-          echo "Non-fast-forward, rebasing and retrying..."
-          git pull --rebase origin "$BRANCH"
-          git push origin "$BRANCH" || {
-            echo "::error::Failed to push after rebase retry."
-            exit 1
-          }
+          git commit -m "docs: auto-update README (rules index)"
+          git push
