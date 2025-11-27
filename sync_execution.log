@@ -1,0 +1,169 @@
+---------------------------------------------------
+Target: [block/domain] category-ads-all.list
+Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
+OK  (200): https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
+Processing mode: domain
+Success. Saved 579 lines to block/domain/github.com/category-ads-all.txt
+---------------------------------------------------
+Target: [block/domain] ads.list
+Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
+OK  (200): https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
+Processing mode: domain
+Success. Saved 96931 lines to block/domain/github.com/ads.txt
+---------------------------------------------------
+Target: [block/domain] reject-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+Processing mode: domain
+Success. Saved 128309 lines to block/domain/Loyalsoldier/reject-list.txt
+---------------------------------------------------
+Target: [block/domain] win-extra.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
+Processing mode: domain
+Success. Saved 399 lines to block/domain/Loyalsoldier/win-extra.txt
+---------------------------------------------------
+Target: [block/domain] win-spy.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.txt
+Processing mode: domain
+Success. Saved 347 lines to block/domain/Loyalsoldier/win-spy.txt
+---------------------------------------------------
+Target: [block/domain] reject.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
+Processing mode: domain
+Success. Saved 128309 lines to block/domain/Loyalsoldier/reject.txt
+---------------------------------------------------
+Target: [direct/domain] private.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
+Processing mode: domain
+Success. Saved 123 lines to direct/domain/Loyalsoldier/private.txt
+---------------------------------------------------
+Target: [direct/domain] direct-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+Processing mode: domain
+Success. Saved 116378 lines to direct/domain/Loyalsoldier/direct-list.txt
+---------------------------------------------------
+Target: [direct/domain] apple-cn.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/apple-cn.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/apple-cn.txt
+Processing mode: domain
+Success. Saved 0 lines to direct/domain/Loyalsoldier/apple-cn.txt
+---------------------------------------------------
+Target: [direct/domain] geolocation-cn.list
+Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
+OK  (200): https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
+Processing mode: domain
+Success. Saved 6032 lines to direct/domain/MetaCubeX/geolocation-cn.txt
+---------------------------------------------------
+Target: [direct/domain] microsoft-cn.list
+Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
+OK  (200): https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
+Processing mode: domain
+Success. Saved 168 lines to direct/domain/github.com/microsoft-cn.txt
+---------------------------------------------------
+Target: [proxy/domain] proxy.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
+Processing mode: domain
+Success. Saved 26132 lines to proxy/domain/Loyalsoldier/proxy.txt
+---------------------------------------------------
+Target: [proxy/domain] gfw.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
+Processing mode: domain
+Success. Saved 5956 lines to proxy/domain/Loyalsoldier/gfw.txt
+---------------------------------------------------
+Target: [proxy/domain] proxy-list.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
+Processing mode: domain
+Success. Saved 25524 lines to proxy/domain/Loyalsoldier/proxy-list.txt
+---------------------------------------------------
+Target: [proxy/domain] gfw.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+Processing mode: domain
+Success. Saved 5956 lines to proxy/domain/Loyalsoldier/gfw.txt
+---------------------------------------------------
+Target: [proxy/domain] category-ai-!cn.list
+Source: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
+OK  (200): https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
+Processing mode: domain
+Success. Saved 88 lines to proxy/domain/gh-proxy.com/category-ai-!cn.txt
+---------------------------------------------------
+Target: [direct/ipcidr] cncidr.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
+Processing mode: ipcidr
+Traceback (most recent call last):
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
+    main()
+    ~~~~^^
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
+    result = process_ip(lines)
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
+    merged = ipaddress.collapse_addresses(networks)
+  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
+    raise TypeError("%s and %s are not of the same version" % (
+                     ip, nets[-1]))
+TypeError: 2001:250::/30 and 223.255.252.0/23 are not of the same version
+::error::Processing failed for https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
+payload:
+  - '1.0.1.0/24'
+  - '1.0.2.0/23'
+  - '1.0.8.0/21'
+  - '1.0.32.0/19'
+cat: write error: Broken pipe
+---------------------------------------------------
+Target: [direct/ipcidr] cn.list
+Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+OK  (200): https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+Processing mode: ipcidr
+Traceback (most recent call last):
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
+    main()
+    ~~~~^^
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
+    result = process_ip(lines)
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
+    merged = ipaddress.collapse_addresses(networks)
+  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
+    raise TypeError("%s and %s are not of the same version" % (
+                     ip, nets[-1]))
+TypeError: 2001:250::/30 and 223.255.252.0/23 are not of the same version
+::error::Processing failed for https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+1.0.1.0/24
+1.0.2.0/23
+1.0.8.0/21
+1.0.32.0/19
+1.1.0.0/24
+cat: write error: Broken pipe
+---------------------------------------------------
+Target: [direct/ipcidr] lancidr.txt
+Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+OK  (200): https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+Processing mode: ipcidr
+Traceback (most recent call last):
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 186, in <module>
+    main()
+    ~~~~^^
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 174, in main
+    result = process_ip(lines)
+  File "/home/runner/work/rules-Repository/rules-Repository/scripts/lib/processor.py", line 155, in process_ip
+    merged = ipaddress.collapse_addresses(networks)
+  File "/opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14/ipaddress.py", line 343, in collapse_addresses
+    raise TypeError("%s and %s are not of the same version" % (
+                     ip, nets[-1]))
+TypeError: ::/127 and 224.0.0.0/3 are not of the same version
+::error::Processing failed for https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
+payload:
+  - '0.0.0.0/8'
+  - '10.0.0.0/8'
+  - '100.64.0.0/10'
+  - '127.0.0.0/8'
+::warning::Summary: 3 sources failed.
+Changes detected. Committing...
