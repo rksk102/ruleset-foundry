@@ -1,0 +1,20 @@
+[
+  {
+    "name": "1. Sync Upstream",
+    "file": "sync-rules.yml",
+    "description": "同步上游规则并清洗",
+    "timeout_minutes": 30
+  },
+  {
+    "name": "2. Merge Rules",
+    "file": "merge-rules.yml",
+    "description": "合并规则并生成 SRS",
+    "timeout_minutes": 10
+  },
+  {
+    "name": "3. Generate Docs",
+    "file": "gen-readme.yml",
+    "description": "生成美化版 README",
+    "timeout_minutes": 5
+  }
+]
