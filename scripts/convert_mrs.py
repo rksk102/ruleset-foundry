@@ -161,12 +161,17 @@ def main():
         # 转换
         cmd = [KERNEL_BIN, "convert-ruleset", rule_type, src_path, dst_path]
         try:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            # 成功不刷屏，只打印简洁信息
+            # 注意：这里去掉了 stdout=subprocess.DEVNULL，以便调试
+            p = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            
             print(f"{C.GREEN}{prefix} OK: {rel_path} -> MRS{C.END}")
             stats["success"] += 1
-        except subprocess.CalledProcessError:
-            print(f"{C.FAIL}{prefix} ERR: {rel_path}{C.END}")
+            
+        except subprocess.CalledProcessError as e:
+            # 🔥 关键修改：打印具体的错误信息 (STDERR)
+            err_msg = e.stderr.strip() if e.stderr else "Unknown Error"
+            print(f"{C.FAIL}{prefix} ERR: {rel_path}")
+            print(f"    └── Reason: {err_msg}{C.END}")
             stats["failed"] += 1
 
     log("", "endgroup")
