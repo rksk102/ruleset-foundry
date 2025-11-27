@@ -4,53 +4,119 @@ import yaml
 import glob
 import sys
 import shutil
+import time
 
 # =========================
 # 配置区域
 # =========================
 CONFIG_FILE = "merge-config.yaml"
-SOURCE_DIR = "rulesets"     # 原始下载的规则存放处
-DIST_DIR = "merged-rules"   # 最终发布的目录
+SOURCE_DIR = "rulesets"
+DIST_DIR = "merged-rules"
 
-def clean_dist_dir():
-    """
-    【核心修改】清空 merged-rules 文件夹内的所有内容，
-    但保留 merged-rules 文件夹本身。
-    """
-    # 如果目录不存在，直接创建并返回
-    if not os.path.exists(DIST_DIR):
-        os.makedirs(DIST_DIR)
-        print(f">>> Created directory: {DIST_DIR}")
+# 统计数据容器
+STATS = {
+    "mirrored": 0,
+    "skipped": 0,
+    "merged_tasks": 0,
+    "total_rules": 0,
+    "errors": []
+}
+
+# =========================
+# GitHub Actions 辅助函数
+# =========================
+def gh_group_start(title):
+    print(f"::group::🔹 {title}")
+    sys.stdout.flush()
+
+def gh_group_end():
+    print("::endgroup::")
+    sys.stdout.flush()
+
+def gh_error(message, file=None):
+    if file:
+        print(f"::error file={file}::{message}")
+    else:
+        print(f"::error::{message}")
+    STATS["errors"].append(message)
+
+def gh_warning(message):
+    print(f"::warning::{message}")
+
+def print_step(msg):
+    print(f"\033[1;34m[INFO]\033[0m {msg}")
+
+def print_success(msg):
+    print(f"\033[1;32m[OK]\033[0m   {msg}")
+
+# =========================
+# 核心逻辑
+# =========================
+
+def generate_summary():
+    """生成 GitHub Step Summary 报告"""
+    summary_file = os.getenv('GITHUB_STEP_SUMMARY')
+    if not summary_file:
         return
 
-    print(f">>> Cleaning contents of: {DIST_DIR} ...")
-    
-    # 遍历目录下的所有项目
-    for item in os.listdir(DIST_DIR):
-        item_path = os.path.join(DIST_DIR, item)
+    with open(summary_file, 'a', encoding='utf-8') as f:
+        f.write("## 🚀 Rule Merge Execution Report\n\n")
+        
+        # 状态概览
+        if STATS["errors"]:
+            f.write("### ❌ Failure Detected\n")
+            f.write("> Some errors occurred during the process.\n\n")
+        else:
+            f.write("### ✅ Merge Successful\n")
+            f.write("> All rules processed and merged cleanly.\n\n")
+        
+        # 统计表格
+        f.write("| Metric | Count | Description |\n")
+        f.write("| :--- | :---: | :--- |\n")
+        f.write(f"| 📄 **Mirrored Files** | `{STATS['mirrored']}` | Raw files copied without modification |\n")
+        f.write(f"| ⏭️ **Skipped Files** | `{STATS['skipped']}` | Files consumed by input tasks |\n")
+        f.write(f"| 🔄 **Merged Tasks** | `{STATS['merged_tasks']}` | Custom rule sets generated |\n")
+        f.write(f"| 📊 **Total Rules** | `{STATS['total_rules']}` | Specific lines valid across all outputs |\n")
+        f.write("\n")
+
+        # 错误详情
+        if STATS["errors"]:
+            f.write("### ⚠️ Error Log\n")
+            for err in STATS["errors"]:
+                f.write(f"- 🔴 {err}\n")
+
+def clean_dist_dir():
+    gh_group_start("Cleaning Output Directory")
+    if not os.path.exists(DIST_DIR):
+        os.makedirs(DIST_DIR)
+        print_step(f"Created directory: {DIST_DIR}")
+    else:
+        print_step(f"Cleaning contents of: {DIST_DIR} ...")
         try:
-            if os.path.isfile(item_path) or os.path.islink(item_path):
-                # 如果是文件或符号链接，直接删除
-                os.unlink(item_path)
-            elif os.path.isdir(item_path):
-                # 如果是子文件夹，递归删除该文件夹
-                shutil.rmtree(item_path)
+            for item in os.listdir(DIST_DIR):
+                item_path = os.path.join(DIST_DIR, item)
+                if os.path.isfile(item_path) or os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            print_success("Directory emptied successfully.")
         except Exception as e:
-            print(f"  [Error] Failed to delete {item_path}: {e}")
+            gh_error(f"Failed to clean directory: {e}")
             sys.exit(1)
-    
-    print(f"  -> Directory emptied successfully.")
+    gh_group_end()
 
 def load_config(path):
     if not os.path.exists(path):
-        print(f"Error: Config file '{path}' not found.")
+        gh_error(f"Config file not found", file=path)
         sys.exit(1)
-    with open(path, 'r', encoding='utf-8') as f:
-        try:
+    
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            # 预读取检查 YAML 语法
             return yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            print(f"Error parsing YAML: {exc}")
-            sys.exit(1)
+    except yaml.YAMLError as exc:
+        gh_error(f"YAML Syntax Error: {exc}", file=path)
+        sys.exit(1)
 
 def get_file_content(filepath):
     lines = set()
@@ -62,66 +128,52 @@ def get_file_content(filepath):
                     continue
                 lines.add(line)
     except Exception as e:
-        print(f"  [Warn] Cannot read {filepath}: {e}")
+        gh_warning(f"Cannot read {filepath}: {e}")
     return lines
 
 def write_txt(rel_path, rules, description=""):
-    # 拼接完整路径
     full_path = os.path.join(DIST_DIR, rel_path)
-    
-    # 确保父级目录存在
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     
-    with open(full_path, 'w', encoding='utf-8') as f:
-        if description:
-             f.write(f"# {description}\n")
-        f.write(f"# Total Rules: {len(rules)}\n")
-        f.write(f"# Generated by Rule-Merge-System\n")
+    try:
+        with open(full_path, 'w', encoding='utf-8') as f:
+            if description: f.write(f"# {description}\n")
+            f.write(f"# Total Rules: {len(rules)}\n")
+            f.write(f"# Generated by Rule-Merge-System at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            for rule in sorted(list(rules)):
+                f.write(f"{rule}\n")
         
-        for rule in sorted(list(rules)):
-            f.write(f"{rule}\n")
-            
-    print(f"  -> Generated Merged File: {full_path} ({len(rules)} lines)")
+        print_success(f"Generated: {rel_path} ({len(rules)} lines)")
+        STATS["total_rules"] += len(rules)
+    except Exception as e:
+        gh_error(f"Failed to write file {full_path}: {e}")
 
 def collect_used_files(config):
-    """
-    扫描配置文件，找出所有被标记为 'inputs' 的文件路径。
-    """
-    used_files = set()
-    if not config or 'merges' not in config:
-        return used_files
-    
+    used = set()
+    if not config or 'merges' not in config: return used
     for task in config['merges']:
-        inputs = task.get('inputs', [])
-        for input_pattern in inputs:
+        for idx, input_pattern in enumerate(task.get('inputs', [])):
             full_pattern = os.path.join(SOURCE_DIR, input_pattern)
             found = glob.glob(full_pattern, recursive=True)
+            if not found:
+                # 这是一个小警告，提示通配符写错了或者没下载到文件
+                print(f"\033[33m[WARN]\033[0m Input pattern matched nothing: {input_pattern}")
             for f in found:
-                if os.path.isfile(f):
-                    used_files.add(os.path.abspath(f))
-    
-    return used_files
+                if os.path.isfile(f): used.add(os.path.abspath(f))
+    return used
 
 def mirror_raw_files(exclude_files):
-    """
-    将 rulesets 下的文件复制到 merged-rules。
-    如果文件在 exclude_files 中，则跳过。
-    """
-    print(f">>> Mirroring raw files (excluding merged ones)...")
-    files_count = 0
-    skipped_count = 0
-
+    gh_group_start("Phase 1: Mirroring Raw Files")
+    print_step(f"Scanning {SOURCE_DIR} for files to mirror...")
+    
     for root, dirs, files in os.walk(SOURCE_DIR):
         for file in files:
             if not file.endswith(('.txt', '.list', '.yaml', '.conf')):
                 continue
             
             src_path = os.path.join(root, file)
-            abs_src_path = os.path.abspath(src_path)
-
-            # 如果该文件已经被合并使用，则跳过
-            if abs_src_path in exclude_files:
-                skipped_count += 1
+            if os.path.abspath(src_path) in exclude_files:
+                STATS["skipped"] += 1
                 continue
 
             rel_path = os.path.relpath(src_path, SOURCE_DIR)
@@ -129,58 +181,69 @@ def mirror_raw_files(exclude_files):
             
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(src_path, dest_path)
-            files_count += 1
+            STATS["mirrored"] += 1
+            # 仅在非常详细模式下打印每个文件，避免日志刷屏
+            # print(f"  -> Mirrored: {rel_path}")
 
-    print(f"  -> Mirrored {files_count} remaining raw files.")
-    print(f"  -> Skipped {skipped_count} files (merged).")
+    print_success(f"Mirrored {STATS['mirrored']} files. Skipped {STATS['skipped']} (merged).")
+    gh_group_end()
 
 def process_merges(config):
+    gh_group_start("Phase 2: Processing Merge Tasks")
+    
     if not config or 'merges' not in config:
-        print("No 'merges' keys found in config.")
+        print("No merge tasks defined.")
+        gh_group_end()
         return
 
     tasks = config['merges']
-    print(f"\n>>> Processing {len(tasks)} merge tasks...")
+    print_step(f"Found {len(tasks)} merge definitions.")
 
     for task in tasks:
-        name_path = task.get('name') 
+        name = task.get('name')
         inputs = task.get('inputs', [])
         desc = task.get('description', "")
         
-        if not name_path or not inputs: continue
+        if not name or not inputs:
+            gh_warning(f"Skipping invalid task config: {task}")
+            continue
             
-        print(f"Processing Task: {name_path}")
+        print(f"🔹 Processing: {name}")
+        merged = set()
+        file_count = 0
         
-        merged_rules = set()
-        for input_pattern in inputs:
-            full_pattern = os.path.join(SOURCE_DIR, input_pattern)
-            found_files = glob.glob(full_pattern, recursive=True)
-            for filepath in found_files:
-                if os.path.isfile(filepath):
-                    merged_rules.update(get_file_content(filepath))
+        for patt in inputs:
+            full_patt = os.path.join(SOURCE_DIR, patt)
+            for fp in glob.glob(full_patt, recursive=True):
+                if os.path.isfile(fp):
+                    content = get_file_content(fp)
+                    merged.update(content)
+                    file_count += 1
         
-        write_txt(name_path, merged_rules, desc)
+        if file_count == 0:
+            gh_warning(f"Zero input files found for task: {name}")
+        else:
+            write_txt(name, merged, desc)
+            STATS["merged_tasks"] += 1
+
+    gh_group_end()
 
 def main():
-    print("=== Starting Rule Merge System (Optimize: Clean Contents Only) ===")
-
-    # 1. 清空 merged-rules 的内容 (保留文件夹本身)
+    print("::notice::Starting Rule Merge System...")
+    
     clean_dist_dir()
 
-    print(f">>> Loading config from {CONFIG_FILE}...")
+    gh_group_start("Loading Configuration")
     config = load_config(CONFIG_FILE)
+    used_files = collect_used_files(config)
+    print_success(f"Configuration loaded. {len(used_files)} files targeted for merging.")
+    gh_group_end()
 
-    # 2. 收集已使用的文件列表
-    used_files_set = collect_used_files(config)
-    print(f">>> Identified {len(used_files_set)} files involved in merging.")
-
-    # 3. 镜像剩余的 Raw 文件
-    mirror_raw_files(used_files_set)
-    
-    # 4. 生成合并文件
+    mirror_raw_files(used_files)
     process_merges(config)
 
-    print("\n>>> All operations complete. Output is in 'merged-rules/'")
+    generate_summary()
+    print("::notice::Workflow Completed Successfully.")
 
 if __name__ == "__main__":
     main()
