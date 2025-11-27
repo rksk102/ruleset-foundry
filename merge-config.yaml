@@ -1,93 +1,34 @@
 # 规则集合并配置
-# name: 合并后的文件名（保存在 merged-rules/ 根目录）
-# inputs: 要合并的文件模式（相对于 rulesets/ 的路径，支持通配符）
-# description: 可选的描述信息
-
+# merged-rules/[Strategy]/[Type]/[Owner]/[Filename]
+# merged-rules/ [策略Strategy] / [类型Type] / [作者Owner] / [文件.txt]
 merges:
-  # === 按 Policy 合并 ===
-  
-  # 所有广告拦截域名
-  - name: block/domain/rksk102/all-adblock.txt
-    description: "所有广告拦截域名规则(domain)"
+  # 示例：需要合并的情况
+  - strategy: "block"
+    type: "domain"
+    owner: "rksk102"
+    filename: "all-adblock.txt"
+    description: "合并多个广告拦截列表"
     inputs:
-      - block/domain/DustinWin/ads.txt
-      - block/domain/MetaCubeX/category-ads-all.txt
-      - block/domain/Loyalsoldier/reject-list.txt
+      - "block/domain/DustinWin/ads.txt"
+      - "block/domain/MetaCubeX/category-ads-all.txt"
+      - "block/domain/Loyalsoldier/reject-list.txt"
 
-
-  - name: direct/ipcidr/rksk102/all-cnip.txt
+  - strategy: "direct"
+    type: "ipcidr"
+    owner: "rksk102"
+    filename: "all-cnip.txt"
     description: "所有直连cnipcidr"
     inputs:
-      - direct/ipcidr/Loyalsoldier/cncidr.txt
-      - direct/ipcidr/MetaCubeX/cn.txt
-  
-  # 所有代理域名
-  - name: proxy/domain/rksk102/all-proxy.txt
+      - "direct/ipcidr/Loyalsoldier/cncidr.txt"
+      - "direct/ipcidr/MetaCubeX/cn.txt"
+
+
+  # 示例：不需要合并，单文件处理 (清洗、排序、移动到规范目录)
+  - strategy: "proxy"
+    type: "domain"
+    owner: "rksk102"
+    filename: "all-proxy.txt"
     description: "代理域名规则"
     inputs:
-      - proxy/domain/Loyalsoldier/proxy.txt
-      - proxy/domain/Loyalsoldier/proxy-list.txt
-  
-  # === 按 Type 合并 ===
-  
-  # 中国IP段（通常在 direct 下）
-#  - name: china-ip.txt
-#    description: "中国大陆IP段"
-#    inputs:
-#      - direct/ipcidr/**/*.txt
-  
-  # 国外IP段（通常在 proxy 下）
-#  - name: global-ip.txt
-#    description: "国外IP段"
-#    inputs:
-#      - proxy/ipcidr/**/*.txt
-  
-  # === 综合规则集 ===
-  
-  # 超级广告拦截（域名+IP+混合）
-#  - name: ultimate-adblock.txt
-#    description: "终极广告拦截规则集"
-#    inputs:
-#      - block/domain/**/*.txt
-#      - block/ipcidr/**/*.txt
-#      - block/classical/**/*.txt
-  
-  # 中国直连完整版（域名+IP）
-#  - name: china-all.txt
-#    description: "中国大陆完整直连规则"
-#    inputs:
-#      - direct/domain/**/*.txt
-#      - direct/ipcidr/**/*.txt
-  
-  # 国外代理完整版（域名+IP）
-#  - name: global-all.txt
-#    description: "国外完整代理规则"
-#    inputs:
-#      - proxy/domain/**/*.txt
-#      - proxy/ipcidr/**/*.txt
-  
-  # === 按来源合并 ===
-  
-  # Loyalsoldier 全部规则
-#  - name: loyalsoldier-all.txt
-#    description: "Loyalsoldier 提供的所有规则"
-#    inputs:
-#      - "*/*/Loyalsoldier/*.txt"
-  
-  # === 自定义组合示例 ===
-  
-  # 流媒体相关（假设你有这些文件）
-#  - name: streaming.txt
-#    description: "流媒体服务规则"
-#    inputs:
-#      - proxy/domain/**/netflix*.txt
-#      - proxy/domain/**/youtube*.txt
-#      - proxy/domain/**/spotify*.txt
-  
-  # 社交媒体
-#  - name: social.txt
-#    description: "社交媒体规则"
-#    inputs:
-   #   - proxy/domain/**/twitter*.txt
-   #   - proxy/domain/**/facebook*.txt
-   #   - proxy/domain/**/instagram*.txt
+      - "proxy/domain/Loyalsoldier/proxy.txt"
+      - "proxy/domain/Loyalsoldier/proxy-list.txt"
