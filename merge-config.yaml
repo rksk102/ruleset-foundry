@@ -7,7 +7,7 @@ merges:
   # === 按 Policy 合并 ===
   
   # 所有广告拦截域名
-  - name: all-adblock.txt
+  - name: block/domain/rksk102/all-adblock.txt
     description: "所有广告拦截域名规则(domain)"
     inputs:
       - block/domain/github.com/ads.txt
@@ -15,14 +15,14 @@ merges:
       - block/domain/Loyalsoldier/reject-list.txt
 
 
-  - name: all-cnip.txt
+  - name: direct/ipcidr/rksk102/all-cnip.txt
     description: "所有直连cnipcidr"
     inputs:
       - direct/ipcidr/Loyalsoldier/cncidr.txt
       - direct/ipcidr/MetaCubeX/cn.txt
   
   # 所有代理域名
-  - name: all-proxy.txt
+  - name: proxy/domain/rksk102/all-proxy.txt
     description: "代理域名规则"
     inputs:
       - proxy/domain/Loyalsoldier/proxy.txt
