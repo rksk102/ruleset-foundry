@@ -23,17 +23,16 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # 这一步必不可少
       - name: 📦 Install Dependencies
         run: |
-          pip install pyyaml
+          pip install pyyaml rich
 
       - name: 🚀 Run Merger
         id: merger
         env:
           TERM: xterm-color
+          FORCE_COLOR: "1"  # 强制 Rich 输出颜色
         run: |
-          # 运行刚才的脚本
           python3 scripts/merger.py
 
       - name: 💾 Commit & Push
@@ -42,12 +41,13 @@ jobs:
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
           
+          # 添加所有变更
           git add merged-rules/
           
           if git diff-index --quiet HEAD; then
              echo "::notice::No changes in rules."
           else
              CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
-             git commit -m "build: 🧩 Re-merge $CHANGE_COUNT files from config"
+             git commit -m "build: 🧩 Optimized $CHANGE_COUNT rule files"
              git push
           fi
