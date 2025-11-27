@@ -22,7 +22,7 @@ merges:
       - "direct/ipcidr/Loyalsoldier/cncidr.txt"
       - "direct/ipcidr/MetaCubeX/cn.txt"
 
-  - strategy: "proxy"
+  - strategy: "policy"
     type: "domain"
     owner: "rksk102"
     filename: "all-proxy.txt"
