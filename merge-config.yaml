@@ -10,8 +10,8 @@ merges:
   - name: block/domain/rksk102/all-adblock.txt
     description: "所有广告拦截域名规则(domain)"
     inputs:
-      - block/domain/github.com/ads.txt
-      - block/domain/github.com/category-ads-all.txt
+      - block/domain/DustinWin/ads.txt
+      - block/domain/MetaCubeX/category-ads-all.txt
       - block/domain/Loyalsoldier/reject-list.txt
 
 
