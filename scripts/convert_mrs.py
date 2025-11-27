@@ -159,7 +159,7 @@ def main():
             continue
 
         # 转换
-        cmd = [KERNEL_BIN, "convert-ruleset", rule_type, src_path, dst_path]
+        cmd = [KERNEL_BIN, "convert-ruleset", rule_type, "text", src_path, dst_path]
         try:
             # 注意：这里去掉了 stdout=subprocess.DEVNULL，以便调试
             p = subprocess.run(cmd, check=True, capture_output=True, text=True)
