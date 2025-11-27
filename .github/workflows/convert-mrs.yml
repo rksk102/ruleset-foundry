@@ -44,3 +44,23 @@ jobs:
           name: mrs_rules_artifact
           path: merged-rules-mrs/
           retention-days: 1
+
+      # 🔥 2. 【新增】将生成的文件夹推送到仓库根目录 🔥
+      - name: 💾 Commit & Push to Repo
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          # 提交信息中加入 [skip ci] 是为了防止这次提交又触发新的 Actions，造成无限死循环
+          commit_message: "🤖 Auto-generated MRS rules [skip ci]"
+          
+          # 指定要提交的文件夹
+          file_pattern: merged-rules-mrs/
+          
+          # 你的主分支名称 (通常是 main 或 master)
+          branch: main
+          
+          # 如果文件夹没有变化，不进行提交
+          skip_dirty_check: false
+          
+          # 自动创建作者信息
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
