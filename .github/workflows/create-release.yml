@@ -1,4 +1,4 @@
-name: "4. Release SRS"
+name: "5. Release SRS"
 
 on:
   # ✅ 只接受总指挥手动触发
