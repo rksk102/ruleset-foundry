@@ -9,232 +9,243 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.traceback import install
-from rich import print as rprint
 
-# 安装 Rich 异常捕获，报错更好看
+# 美化报错堆栈
 install(show_locals=True)
-
 console = Console()
 
 # =========================
-# 配置区域
+# 配置
 # =========================
 CONFIG_FILE = "merge-config.yaml"
 SOURCE_DIR = "rulesets"
 OUTPUT_DIR = "merged-rules"
 
+# 统计与日志容器
 STATS = {
     "success": 0,
     "skipped": 0,
     "failed": 0,
     "total_rules": 0
 }
+ERROR_LOGS = []     # 收集错误信息
+SUMMARY_ROWS = []   # 收集成功信息用于报告
 
 # =========================
-# 逻辑部分
+# 功能函数
 # =========================
 
-def detect_mode_by_type(type_str, filename):
-    """
-    根据配置的 Type 或文件名智能判断模式
-    """
+def detect_mode(type_str, filename):
+    """根据类型或文件名判断处理模式"""
     check_str = (type_str + filename).lower()
     if 'ip' in check_str or 'cidr' in check_str:
         return 'IP-CIDR'
     return 'DOMAIN'
 
-def flatten_ip(cidr_set):
-    """IP CIDR 智能聚合"""
+def flatten_ip_cidr(cidr_set):
+    """IP CIDR 聚合去重"""
     try:
-        # 过滤掉空行和注释
         nets = [ipaddress.ip_network(c.strip(), strict=False) for c in cidr_set if c.strip()]
-        # 核心优化：合并重叠网段
         collapsed = ipaddress.collapse_addresses(nets)
         return [str(n) for n in collapsed]
     except ValueError as e:
-        console.print(f"[bold red]❌ IP Format Error:[/bold red] {e}")
-        # 如果解析失败，回退到普通文本排序
-        return sorted(list(cidr_set))
+        # 这是一个严重的数据错误，不应该忽略，应该抛出让 Task 失败
+        raise ValueError(f"Invalid CIDR format: {e}")
 
-def process_task(task, progress, task_id):
-    """处理单个任务"""
-    
-    # 1. 获取并校验必要字段
-    try:
-        strategy = task.get('strategy', 'Uncategorized')
-        rule_type = task.get('type', 'General')
-        owner = task.get('owner', 'Unknown')
-        filename = task.get('filename')
-        inputs = task.get('inputs', [])
-        desc = task.get('description', 'No description')
+def process_single_task(task_config):
+    """
+    处理单个具体任务
+    返回: dict 成功结果 | 抛出 Exception 失败
+    """
+    # 1. 校验必填项
+    required_fields = ['strategy', 'type', 'owner', 'filename', 'inputs']
+    for field in required_fields:
+        if field not in task_config:
+            raise ValueError(f"Config missing field: '{field}'")
 
-        if not filename or not inputs:
-            raise ValueError("Missing 'filename' or 'inputs' in config.")
-    except Exception as e:
-        console.print(f"[bold red]⚠️ Config Error:[/bold red] {e}")
-        STATS["failed"] += 1
-        return None
+    strategy = task_config['strategy']
+    rule_type = task_config['type']
+    owner = task_config['owner']
+    filename = task_config['filename']
+    inputs = task_config['inputs']
+    desc = task_config.get('description', 'No Description')
 
-    # 2. 构建标准输出路径: merged-rules/[Strategy]/[Type]/[Owner]/[File]
-    rel_path = os.path.join(strategy, rule_type, owner, filename)
-    full_output_path = os.path.join(OUTPUT_DIR, rel_path)
-    
-    progress.update(task_id, description=f"[cyan]Processing:[/cyan] {filename}")
+    # 2. 构建强制目录结构: merged-rules/Strategy/Type/Owner/File
+    # os.path.join 会处理路径分隔符
+    relative_dir = os.path.join(strategy, rule_type, owner)
+    full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
+    full_output_file = os.path.join(full_output_dir, filename)
 
-    # 3. 智能模式识别
-    mode = detect_mode_by_type(rule_type, filename)
-    
+    # 3. 读取源文件
     combined_rules = set()
-    files_read_count = 0
+    files_read = 0
 
-    # 4. 读取输入文件 (不移动源文件，只读取内容)
     for rel_input in inputs:
         src_path = os.path.join(SOURCE_DIR, rel_input)
-        
         if not os.path.exists(src_path):
-            console.print(f"  [yellow]⚠️ Source missing:[/yellow] {rel_input}")
-            continue
+            # 严重错误：配置了文件但找不到
+            raise FileNotFoundError(f"Source file not found: {src_path}")
         
-        try:
-            with open(src_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    # 忽略注释、空行
-                    if not line or line.startswith('#') or line.startswith('//') or line.startswith('!'):
-                        continue
-                    # 简单的行内注释清理 (例如: 1.1.1.1 # Cloudflare -> 1.1.1.1)
-                    if '#' in line: line = line.split('#')[0].strip()
-                    
-                    combined_rules.add(line)
-                files_read_count += 1
-        except Exception as e:
-            console.print(f"  [bold red]❌ Read Error:[/bold red] {rel_input} -> {e}")
+        with open(src_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or line.startswith('//'): 
+                    continue
+                # 简单的行内注释清理
+                if '#' in line: line = line.split('#')[0].strip()
+                combined_rules.add(line)
+            files_read += 1
 
-    if files_read_count == 0:
-        progress.update(task_id, description=f"[yellow]Skipped:[/yellow] {filename}")
-        STATS["skipped"] += 1
-        return None
+    if files_read == 0:
+        return None # 即使没有读取到文件，如果是 inputs 为空，视为空任务跳过
 
-    # 5. 数据处理 (去重、排序、聚合)
-    original_count = len(combined_rules)
+    # 4. 处理逻辑 (去重/聚合)
+    mode = detect_mode(rule_type, filename)
+    count_raw = len(combined_rules)
     
     if mode == 'IP-CIDR':
-        final_list = flatten_ip(combined_rules)
+        final_list = flatten_ip_cidr(combined_rules)
     else:
         final_list = sorted(list(combined_rules))
     
-    final_count = len(final_list)
-    STATS["total_rules"] += final_count
+    count_opt = len(final_list)
 
-    # 6. 写入文件
-    os.makedirs(os.path.dirname(full_output_path), exist_ok=True)
-    
-    with open(full_output_path, 'w', encoding='utf-8') as f:
-        # 写入漂亮的标准头
+    # 5. 写入结果
+    os.makedirs(full_output_dir, exist_ok=True)
+    with open(full_output_file, 'w', encoding='utf-8') as f:
         f.write(f"# ----------------------------------------\n")
         f.write(f"# Strategy: {strategy}\n")
         f.write(f"# Type:     {rule_type}\n")
         f.write(f"# Owner:    {owner}\n")
         f.write(f"# Date:     {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"# Count:    {final_count} (Optimized from {original_count})\n")
+        f.write(f"# Mode:     {mode}\n")
+        f.write(f"# Count:    {count_opt} (Raw: {count_raw})\n")
         f.write(f"# Desc:     {desc}\n")
         f.write(f"# ----------------------------------------\n")
         f.write("\n".join(final_list))
         f.write("\n")
 
-    STATS["success"] += 1
-    
-    # 返回元组供汇总表使用
-    return (filename, f"{strategy}/{owner}", mode, str(files_read_count), str(original_count), str(final_count))
+    return {
+        "file": filename,
+        "path": f"{strategy}/{rule_type}/{owner}",
+        "mode": mode,
+        "src_count": files_read,
+        "raw": count_raw,
+        "opt": count_opt
+    }
+
+# =========================
+# 主程序
+# =========================
 
 def main():
-    console.rule("[bold blue]🚀 Rule Merger & Optimizer[/bold blue]")
-    
+    console.rule("[bold blue]🚀 Rule Merger & Validator[/bold blue]")
+
     # 1. 环境检查
     if not os.path.exists(CONFIG_FILE):
-        console.print(f"[bold red]❌ Config file not found:[/bold red] {CONFIG_FILE}")
+        console.print(f"[bold red]❌ CRITICAL: Config '{CONFIG_FILE}' not found![/bold red]")
         sys.exit(1)
-
+    
     if not os.path.exists(SOURCE_DIR):
-        console.print(f"[bold red]❌ Source directory not found:[/bold red] {SOURCE_DIR}")
+        console.print(f"[bold red]❌ CRITICAL: Directory '{SOURCE_DIR}' not found![/bold red]")
         sys.exit(1)
 
-    # 清理重建输出目录
+    # 清理输出目录
     if os.path.exists(OUTPUT_DIR):
         import shutil
         shutil.rmtree(OUTPUT_DIR)
     os.makedirs(OUTPUT_DIR)
 
-    # 2. 加载配置
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-        tasks = config.get('merges', [])
-    
+    # 加载 YAML
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f) or {}
+            tasks = config_data.get('merges', [])
+    except Exception as e:
+        console.print(f"[bold red]❌ YAML Parsing Error:[/bold red] {e}")
+        sys.exit(1)
+
     if not tasks:
-        console.print("[yellow]⚠️ No tasks found in config.[/yellow]")
+        console.print("[yellow]⚠️ Config file is empty (no 'merges' section).[/yellow]")
         sys.exit(0)
 
-    console.print(f"[green]Found {len(tasks)} tasks to process.[/green]\n")
-
-    results = []
-
-    # 3. 执行主循环 (带进度条)
+    # 2. 执行循环
     with Progress(
         SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        TextColumn("[bold blue]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
         console=console
     ) as progress:
         
-        main_task = progress.add_task("[green]Processing...[/green]", total=len(tasks))
-        
-        for task_conf in tasks:
-            res = process_task(task_conf, progress, main_task)
-            if res:
-                results.append(res)
+        main_task = progress.add_task("[cyan]Processing Rules[/cyan]", total=len(tasks))
+
+        for t in tasks:
+            t_name = t.get('filename', 'Unknown')
+            progress.update(main_task, description=f"Processing: {t_name}")
+            
+            try:
+                result = process_single_task(t)
+                if result:
+                    STATS["success"] += 1
+                    STATS["total_rules"] += result['opt']
+                    SUMMARY_ROWS.append(result)
+                else:
+                    STATS["skipped"] += 1
+            except Exception as e:
+                STATS["failed"] += 1
+                error_msg = f"Task '{t_name}' failed: {str(e)}"
+                ERROR_LOGS.append(error_msg)
+                console.print(f"  [bold red]❌ Error:[/bold red] {error_msg}")
+            
             progress.advance(main_task)
 
-    # 4. 生成汇总表格
-    table = Table(title="🧩 Merge Result Summary", show_header=True, header_style="bold magenta")
-    table.add_column("Filename", style="cyan")
-    table.add_column("Path Context", style="dim")
-    table.add_column("Mode", justify="center")
-    table.add_column("Sources", justify="right")
-    table.add_column("Raw", justify="right", style="red")
-    table.add_column("Optimized", justify="right", style="green")
+    # 3. 终端表格报告
+    table = Table(title="Execution Result", header_style="bold magenta")
+    table.add_column("File", style="cyan")
+    table.add_column("Directory (Output)", style="dim")
+    table.add_column("Mode")
+    table.add_column("Rules", justify="right", style="green")
 
-    for row in results:
-        table.add_row(*row)
-
+    for r in SUMMARY_ROWS:
+        table.add_row(r['file'], r['path'], r['mode'], str(r['opt']))
+    
     console.print("\n")
     console.print(table)
 
-    # 5. 最终状态面板
-    summary_panel = Panel(
-        f"[green]Success: {STATS['success']}[/green] | "
-        f"[yellow]Skipped: {STATS['skipped']}[/yellow] | "
-        f"[red]Failed: {STATS['failed']}[/red]\n"
-        f"[bold]Total Rules Generated: {STATS['total_rules']}[/bold]",
-        title="Execution Finished",
-        expand=False
-    )
-    console.print(summary_panel)
-
-    # 6. 写入 GHA Summary
+    # 4. 生成 GitHub Actions Summary (Markdown)
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.getenv('GITHUB_STEP_SUMMARY'), 'a') as f:
-            f.write("## 🚀 Rule Merge Summary\n")
-            f.write(f"- **Total Files Generated:** {STATS['success']}\n")
-            f.write(f"- **Total Rules:** {STATS['total_rules']}\n\n")
-            f.write("| File | Context | Mode | Inputs | Count |\n")
-            f.write("| :--- | :--- | :---: | :---: | :---: |\n")
-            for r in results:
-                # r: filename, path, mode, sources, raw, optimized
-                f.write(f"| `{r[0]}` | `{r[1]}` | {r[2]} | {r[3]} | **{r[5]}** |\n")
+            f.write("### 🧩 Rule Processing Report\n\n")
+            
+            # 概览
+            f.write(f"- ✅ **Success**: {STATS['success']}\n")
+            f.write(f"- ⏭️ **Skipped**: {STATS['skipped']}\n")
+            f.write(f"- ❌ **Failed**: {STATS['failed']}\n")
+            f.write(f"- 📊 **Total Rules**: {STATS['total_rules']}\n\n")
 
+            # 错误部分 (高亮)
+            if ERROR_LOGS:
+                f.write("#### ❌ Failures (Action Needed)\n")
+                f.write("```diff\n")
+                for err in ERROR_LOGS:
+                    f.write(f"- {err}\n")
+                f.write("```\n\n")
+
+            # 成功明细表
+            f.write("#### 📋 Details\n")
+            f.write("| File | Output Path | Type | Raw | **Optimized** |\n")
+            f.write("| :--- | :--- | :---: | :---: | :---: |\n")
+            for r in SUMMARY_ROWS:
+                f.write(f"| `{r['file']}` | `{r['path']}` | {r['mode']} | {r['raw']} | **{r['opt']}** |\n")
+
+    # 5. 决定退出状态 (Fail Fast)
     if STATS["failed"] > 0:
-        sys.exit(1)
+        console.print(Panel(f"[bold red]Workflow Failed with {STATS['failed']} errors![/bold red]\nCheck logs above.", title="FAILURE", border_style="red"))
+        sys.exit(1) # 这会让 Github Action 变红并停止
+    else:
+        console.print(Panel(f"[bold green]All {STATS['success']} tasks completed successfully.[/bold green]", title="SUCCESS", border_style="green"))
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
