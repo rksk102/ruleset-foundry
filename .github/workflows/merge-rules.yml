@@ -3,9 +3,6 @@ name: "2. Merge Rules based on Config"
 on:
   # 1. 手动触发
   workflow_dispatch:
-  # 2. 允许其他 Repository 调用触发 (例如通过 POST 请求)
-  repository_dispatch:
-    types: [merge-rules-trigger]
 
 permissions:
   contents: write
