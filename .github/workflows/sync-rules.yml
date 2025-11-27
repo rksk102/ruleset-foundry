@@ -1,8 +1,6 @@
 name: "1. Daily Sync and Sanitize Rules"
 
 on:
-  schedule:
-    - cron: '0 20 * * *'  # UTC 20:00 = 北京时间 04:00
   workflow_dispatch:
 
 permissions:
