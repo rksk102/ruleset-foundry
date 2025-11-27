@@ -83,3 +83,10 @@ jobs:
           else
             echo "::error::Job failed. Check the logs above."
           fi
+
+      - name: 📤 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged_rules_artifact  # 这个名字必须和 release.yml 里下载的名字一样
+          path: merged-rules/
+          retention-days: 1
