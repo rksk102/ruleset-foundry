@@ -2,10 +2,8 @@ name: "2. Merge Rules based on Config"
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["1. Daily Sync and Sanitize Rules"]
-    types:
-      - completed
+  # schedule:
+  #   - cron: '0 22 * * *'
 
 permissions:
   contents: write
