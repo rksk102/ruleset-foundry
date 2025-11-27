@@ -130,7 +130,20 @@ def main():
 
     log(f"Starting Conversion Task: {SRC_ROOT} -> {DST_ROOT}", "group")
     
-    if os.path.exists(DST_ROOT): shutil.rmtree(DST_ROOT)
+# 新代码（保留文件夹，只清空内容）
+if os.path.exists(DST_ROOT):
+    # 遍历文件夹内的所有内容进行删除
+    for filename in os.listdir(DST_ROOT):
+        file_path = os.path.join(DST_ROOT, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path) # 删除文件或符号链接
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path) # 删除子文件夹
+        except Exception as e:
+            log(f"Failed to delete {file_path}. Reason: {e}", "warn")
+else:
+    # 如果文件夹本来就不存在，才创建它
     os.makedirs(DST_ROOT)
 
     if not os.path.exists(SRC_ROOT):
