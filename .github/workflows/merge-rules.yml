@@ -9,45 +9,78 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
-  merge:
-    # 仅当上一个流程成功时才运行
+  merge-job:
+    # 确保上一个工作流是成功的，或者是手动触发的
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    name: "🧩 Merge & Organize Rules"
+    
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
         with:
-          ref: main 
+          fetch-depth: 1
+          ref: main  # 确保拉取最新代码
 
-      - name: Setup Python
+      - name: 🐍 Setup Python 3
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
+          cache: 'pip' # 开启缓存，加快速度
 
-      - name: Install Dependencies
-        run: pip install PyYAML
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install PyYAML
+          
+      - name: 🔍 Validate Config
+        id: validate
+        run: |
+          if [ ! -f "merge-config.yaml" ]; then
+            echo "::error::merge-config.yaml is missing!"
+            exit 1
+          fi
+          echo "::notice::Config file found, proceeding..."
 
-      - name: Run Merge Script
+      - name: 🚀 Run Merge Script
+        id: run_merger
+        env:
+          TERM: xterm-color # 强制开启彩色输出
         run: |
           chmod +x scripts/merge-rules.sh
           ./scripts/merge-rules.sh
 
-      - name: Commit and Push
+      - name: 💾 Commit Changes
+        id: commit
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
           
-          # 【重点修改】添加 merged-rules 文件夹
+          # 强制添加 merged-rules 文件夹
           git add merged-rules/
           
-          # 检查是否有变更
+          # 使用 diff-index 检查变更，避免脚本报错
           if git diff-index --quiet HEAD; then
-            echo "No changes in merged rules."
-            exit 0
+             echo "::notice::No changes detected in rules. Skipping commit."
+             echo "changes=false" >> "$GITHUB_OUTPUT"
+          else
+             # 统计有多少文件变更
+             CHANGE_COUNT=$(git diff --name-only --cached | wc -l)
+             echo "::notice::$CHANGE_COUNT files changed. Committing..."
+             
+             git commit -m "build: 🧩 Update $CHANGE_COUNT combined rule files"
+             git push
+             echo "changes=true" >> "$GITHUB_OUTPUT"
           fi
-          
-          echo "Changes detected. Committing..."
-          git commit -m "build: Update merged rulesets in 'merged-rules/'"
-          git push
+
+      - name: ✨ Final Status
+        if: always()
+        run: |
+          if [ "${{ steps.run_merger.outcome }}" == "success" ]; then
+            echo "Job completed successfully."
+          else
+            echo "::error::Job failed. Check the logs above."
+          fi
