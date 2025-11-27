@@ -125,6 +125,12 @@ def process_domain(lines):
         # 1. 【智能】剔除白名单规则 (@@)
         # 如果这是一个拦截列表，包含白名单规则会导致逻辑错误，必须丢弃
         if s.startswith('@@'): continue
+
+    # 处理 full: domain: 等前缀，防止被后面的 split(':') 误伤
+    for prefix in ['full:', 'domain:', 'host:', 'keyword:', 'regexp:']:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
         
         # 2. 【智能】Hosts 格式清洗 (127.0.0.1 example.com)
         # 拆分空格，如果第一部分是 IP，取第二部分
