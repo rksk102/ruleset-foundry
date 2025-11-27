@@ -30,6 +30,13 @@ jobs:
           echo "- Pthon 3.11 Setup Complete" >> $GITHUB_STEP_SUMMARY
           echo "- Dependencies: PyYAML, Rich installed" >> $GITHUB_STEP_SUMMARY
 
+      # 进行调试 
+      - name: 🔍 Check File Structure (Debug)
+        run: |
+          echo "=== Listing rulesets directory ==="
+          ls -R rulesets/
+          echo "=================================="
+
       - name: 🚀 Run Merger (Strict Mode)
         id: merger
         env:
