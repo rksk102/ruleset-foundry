@@ -1,4 +1,4 @@
-name: "Manage Rules: Sync & Sanitize"
+name: "1. Manage Rules: Sync & Sanitize"
 
 # 触发模式：仅手动或API触发 (OpenRouter Mode)
 on:
