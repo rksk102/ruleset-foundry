@@ -1,4 +1,4 @@
-name: "0. 🤖 Master Orchestrator"
+name: "🤖 Master Orchestrator"
 
 on:
   # 1. 这里定义你需要运行的时间 (例如北京时间每天凌晨 4:00)
