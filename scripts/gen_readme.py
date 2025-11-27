@@ -122,78 +122,96 @@ HEADER_TEMPLATE = f"""<div align="center">
     ]
   }}
 }}
+
 </details>
-📥 规则下载 (Downloads)
-<div class="markdown-alert markdown-alert-note"> <p class="markdown-alert-title">Note</p> <p>使用 <code>Ctrl + F</code> 可快速查找规则。点击 <code>🚀 Fast Download</code> 按钮可直接复制加速链接。</p> </div>
-规则名称 (Name)	类型 (Type)	大小 (Size)	下载通道 (Download)
+
+## 📥 规则下载 (Downloads)
+
+<div class="markdown-alert markdown-alert-note"> 
+<p class="markdown-alert-title">Note</p> 
+<p>使用 <code>Ctrl + F</code> 可快速查找规则。点击 <code>🚀 Fast Download</code> 按钮可直接复制加速链接。</p> 
+</div>
+
+| 规则名称 (Name) | 类型 (Type) | 大小 (Size) | 下载通道 (Download) |
+| --- | --- | --- | --- |
 """			
+
 FOOTER_TEMPLATE = """
 
-<div align="center"> <br> <p><strong>Total Rule Sets:</strong> <code>{count}</code></p> <p><a href="#">🔼 Back to Top</a></p> <sub>Powered by <a href="https://github.com/actions">GitHub Actions</a></sub> </div> """
-=================================================
-主逻辑
-=================================================
+<div align="center"> 
+<br> 
+<p><strong>Total Rule Sets:</strong> <code>{count}</code></p> 
+<p><a href="#">🔼 Back to Top</a></p> 
+<sub>Powered by <a href="https://github.com/actions">GitHub Actions</a></sub> 
+</div> 
+"""
+
+# =================================================
+# 主逻辑
+# =================================================
 def main():
-print("::group::📝 Generating README with Python...")
+    print("::group::📝 Generating README with Python...")
 
-files = scan_rules()
-print(f"::notice::Found {len(files)} rule files.")
+    files = scan_rules()
+    print(f"::notice::Found {len(files)} rule files.")
 
-with open(README_FILE, 'w', encoding='utf-8') as f:
-    # 1. 写入头部
-    f.write(HEADER_TEMPLATE)
-    
-    # 2. 遍历并写入每一行
-    if not files:
-        f.write("| ❌ Error | No rules found | - | - |\n")
-    else:
-        for filepath in files:
-            filename = os.path.basename(filepath)
-            filesize = os.path.getsize(filepath)
-            human_size = format_size(filesize)
-            
-            # 计算相对路径: merged-rules/block/domain/Loyalsoldier/reject.txt
-            # rel path mainly used for URLs
-            rel_path = os.path.relpath(filepath, REPO_ROOT)
-            # path inside merged-rules for display
-            display_path_full = os.path.relpath(filepath, MERGED_DIR)
-            
-            # 解析路径结构：block/domain/Loyalsoldier/reject.txt
-            # parts = ['block', 'domain', 'Loyalsoldier', 'reject.txt']
-            parts = display_path_full.split(os.sep)
-            
-            if len(parts) >= 3:
-                policy = parts[0]
-                rule_type = parts[1] # domain or ipcidr
-                owner = parts[2]
-                # 目录展示: 📂 rulesets/block/domain/Loyalsoldier /
-                dir_display = f"📂 merged-rules/{os.path.dirname(display_path_full)} /"
-            else:
-                rule_type = "unknown"
-                dir_display = f"📂 {os.path.dirname(display_path_full)}"
+    with open(README_FILE, 'w', encoding='utf-8') as f:
+        # 1. 写入头部
+        f.write(HEADER_TEMPLATE)
+        
+        # 2. 遍历并写入每一行
+        if not files:
+            f.write("| ❌ Error | No rules found | - | - |\n")
+        else:
+            for filepath in files:
+                filename = os.path.basename(filepath)
+                filesize = os.path.getsize(filepath)
+                human_size = format_size(filesize)
+                
+                # 计算相对路径: merged-rules/block/domain/Loyalsoldier/reject.txt
+                # rel path mainly used for URLs
+                rel_path = os.path.relpath(filepath, REPO_ROOT)
+                # path inside merged-rules for display
+                display_path_full = os.path.relpath(filepath, MERGED_DIR)
+                
+                # 解析路径结构：block/domain/Loyalsoldier/reject.txt
+                # parts = ['block', 'domain', 'Loyalsoldier', 'reject.txt']
+                parts = display_path_full.split(os.sep)
+                
+                if len(parts) >= 3:
+                    policy = parts[0]
+                    rule_type = parts[1] # domain or ipcidr
+                    owner = parts[2]
+                    # 目录展示: 📂 rulesets/block/domain/Loyalsoldier /
+                    dir_display = f"📂 merged-rules/{os.path.dirname(display_path_full)} /"
+                else:
+                    rule_type = "unknown"
+                    owner = "unknown"
+                    dir_display = f"📂 {os.path.dirname(display_path_full)}"
 
-            # 构建链接
-            # 必须保证是正斜杠 / 即使在 Windows 上
-            url_rel_path = rel_path.replace(os.sep, '/')
-            
-            link_raw = f"{BASE_RAW}/{url_rel_path}"
-            link_ghproxy = f"{BASE_GHPROXY}/{url_rel_path}"
-            link_mirror = f"{BASE_MIRROR}/{url_rel_path}"
-            
-            # 漂亮的表格行
-            row = (
-                f"| <sub>{dir_display}</sub><br>**{filename}** | "
-                f"`{rule_type}` | "
-                f"`{human_size}` | "
-                f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_Fast_Download-GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="Fast Download"></a><br>'
-                f"[CDN Mirror]({link_mirror}) • [Raw Source]({link_raw}) |\n"
-            )
-            f.write(row)
+                # 构建链接
+                # 必须保证是正斜杠 / 即使在 Windows 上
+                url_rel_path = rel_path.replace(os.sep, '/')
+                
+                link_raw = f"{BASE_RAW}/{url_rel_path}"
+                link_ghproxy = f"{BASE_GHPROXY}/{url_rel_path}"
+                link_mirror = f"{BASE_MIRROR}/{url_rel_path}"
+                
+                # 漂亮的表格行
+                row = (
+                    f"| <sub>{dir_display}</sub><br>**{filename}** | "
+                    f"`{rule_type}` | "
+                    f"`{human_size}` | "
+                    f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_Fast_Download-GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="Fast Download"></a><br>'
+                    f"[CDN Mirror]({link_mirror}) • [Raw Source]({link_raw}) |\n"
+                )
+                f.write(row)
 
-    # 3. 写入页脚
-    f.write(FOOTER_TEMPLATE.format(count=len(files)))
+        # 3. 写入页脚
+        f.write(FOOTER_TEMPLATE.format(count=len(files)))
 
-print("::endgroup::")
-print("✅ README.md created successfully.")
-if name == "main":
-main()
+    print("::endgroup::")
+    print("✅ README.md created successfully.")
+
+if __name__ == "__main__":
+    main()
