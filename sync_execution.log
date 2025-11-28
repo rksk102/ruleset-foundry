@@ -2,7 +2,6 @@
 Loaded 30 sources.
 ::endgroup::
 ::group::🧹 Cleaning Orphan Files
-Deleting orphan: rulesets/direct/domain/Loyalsoldier/apple-cn.txt
 ::endgroup::
 ::group::⚙️ [block/domain] MetaCubeX/category-ads-all.list
 Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
