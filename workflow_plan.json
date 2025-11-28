@@ -1,32 +1,27 @@
 [
   {
-    "name": "1. Sync Upstream",
-    "file": "sync-rules.yml",
-    "description": "同步上游规则并清洗",
-    "timeout_minutes": 30
+    "name": "1. 同步上游规则并清洗",
+    "filename": "sync-rules.yml",
+    "wait": true
   },
   {
-    "name": "2. Merge Rules",
-    "file": "merge-rules.yml",
-    "description": "合并规则并生成 SRS",
-    "timeout_minutes": 10
+    "name": "2. 合并规则",
+    "filename": "merge-rules.yml",
+    "wait": true
   },
   {
-    "name": "3. convert-mrs",
-    "file": "convert-mrs.yml",
-    "description": "生成 MRS",
-    "timeout_minutes": 10
+    "name": "3. 生成 MRS",
+    "filename": "convert-mrs.yml",
+    "wait": true
   },
   {
-    "name": "4. Generate Docs",
-    "file": "gen-readme.yml",
-    "description": "生成美化版 README",
-    "timeout_minutes": 5
+    "name": "4. 生成美化版 README",
+    "filename": "gen-readme.yml",
+    "wait": true
   },
   {
-    "name": "5. Release",
-    "file": "create-release.yml", 
-    "description": "发布二进制规则文件",
-    "timeout_minutes": 15
+    "name": "5. 发布二进制规则文件",
+    "filename": "create-release.yml", 
+    "wait": true
   }
 ]
