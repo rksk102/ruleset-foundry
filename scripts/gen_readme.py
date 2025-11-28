@@ -8,7 +8,8 @@ import urllib.parse
 # 1. 配置区域
 # =================================================
 REPO_ROOT = os.getcwd()
-MERGED_DIR = os.path.join(REPO_ROOT, "merged-rules")
+DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules")      # 原有规则目录
+DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs") # 新增 MRS 规则目录
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 
 # 自动获取仓库名
@@ -25,14 +26,10 @@ SHIELDS_STYLE = "flat-square"
 
 # -------------------------------------------------
 # [核心优化] 表格列宽控制
-# GitHub Markdown 不支持 CSS width，我们使用 &nbsp; (空格) 来暴力撑开列宽
 # -------------------------------------------------
-# padding: 撑开文件名列，使其看着像主列
-HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35  
-# padding: 撑开下载列，防止两个按钮换行，保持美观
-HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25     
-# padding: 稍微撑开源站列
-HEADER_SRC  = "Source" + "&nbsp;" * 10                  
+HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35
+HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25
+HEADER_SRC  = "Source" + "&nbsp;" * 10
 
 # =================================================
 # 2. 辅助函数
@@ -55,22 +52,70 @@ def get_time_badge():
     enc_now = urllib.parse.quote(now)
     return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={SHIELDS_STYLE}&logo=github"
 
-def scan_files():
-    """扫描目录并排序"""
+def scan_files(target_dir):
+    """通用：扫描指定目录并排序"""
     files_list = []
-    if not os.path.exists(MERGED_DIR):
+    if not os.path.exists(target_dir):
         return []
-    for root, _, files in os.walk(MERGED_DIR):
+    for root, _, files in os.walk(target_dir):
         for file in files:
             if not file.startswith("."): # 忽略隐藏文件
                 files_list.append(os.path.join(root, file))
     return sorted(files_list)
 
+def generate_table_rows(files, root_dir, f_handle):
+    """通用：生成表格行数据"""
+    if not files:
+        f_handle.write("| ❌ No files found | - | - | - |\n")
+        return 0
+
+    count = 0
+    for filepath in files:
+        filename = os.path.basename(filepath)
+        filesize = format_size(os.path.getsize(filepath))
+        
+        # 路径计算 (关键：基于传入的 root_dir 计算相对路径)
+        # 例如：merged-rules/video/youtube.txt -> video/youtube.txt
+        rel_path = os.path.relpath(filepath, root_dir)
+        url_path = rel_path.replace(os.sep, '/')
+        
+        # 获取当前跟目录名称 (用于拼接 URL)
+        root_name = os.path.basename(root_dir) 
+
+        # 提取目录 (分类)
+        category = os.path.dirname(url_path)
+        if not category: category = "Root"
+        
+        # 构建 URL (注意这里路径包含了文件夹名)
+        # 例如: https://.../merged-rules/video/youtube.txt
+        full_rel_path = f"{root_name}/{url_path}"
+        
+        link_ghproxy = f"{BASE_GHPROXY}/{full_rel_path}"
+        link_jsd = f"{BASE_JSDELIVR}/{full_rel_path}"
+        link_raw = f"{BASE_RAW}/{full_rel_path}"
+        
+        # 构建行样式
+        name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
+        
+        # 区别图标：如果是 .mrs 文件，可以用个不同的颜色或图标（这里保持统一简洁，也可自定义）
+        badge_color = "009688" 
+        
+        cdn_column = (
+            f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-{badge_color}?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
+            f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
+        )
+        
+        src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
+        
+        f_handle.write(f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n")
+        count += 1
+    return count
+
 # =================================================
-# 3. 页面模板
+# 3. 页面模板片段
 # =================================================
 
-HEADER_HTML = f"""<div align="center">
+PAGE_HEADER = f"""<div align="center">
 
 <h1>📂 {REPO_NAME.split('/')[-1]}</h1>
 
@@ -99,86 +144,67 @@ HEADER_HTML = f"""<div align="center">
 <div class="markdown-alert markdown-alert-tip">
 <p class="markdown-alert-title">Tip</p>
 <p>推荐优先使用 <strong>GhProxy</strong> 通道，可显著提升国内网络环境下的下载速度。</p>
-<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/merged-rules/{{分类}}/{{文件名}}</code></p>
+<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/[文件夹]/{{分类}}/{{文件名}}</code></p>
 </div>
 
-### 📥 文件列表 (Files)
+"""
 
-<div class="markdown-alert markdown-alert-note">
-<p class="markdown-alert-title">Note</p>
-<p>点击表格中的 <img src="https://img.shields.io/badge/🚀_CDN-009688?style=flat-square" height="14"> 徽章即可快速下载。</p>
-</div>
-
-<!-- 表头使用定义好的宽表头变量 -->
+# 表格头部模板
+TABLE_HEADER = f"""
 | {HEADER_NAME} | Size | {HEADER_DL} | {HEADER_SRC} |
 | :--- | :--- | :--- | :--- |
 """
 
-FOOTER_HTML = """
+FOOTER_TEMPLATE = """
 <div align="center">
 <br>
-<p><sub><strong>Total Files:</strong> {count}</sub></p>
+<p><sub><strong>Total Files:</strong> {total_count}</sub></p>
 <p><sub>Powered by <a href="https://github.com/actions">GitHub Actions</a></sub></p>
 </div>
 """
 
 # =================================================
-# 4. 生成逻辑
+# 4. 主逻辑
 # =================================================
 
 def main():
     print("::group::✨ Generating Wide README...")
     
-    files = scan_files()
+    # 扫描两个文件夹
+    files_std = scan_files(DIR_RULES_wb)
+    files_mrs = scan_files(DIR_RULES_MRS)
+    
+    total_files = 0
     
     try:
         with open(README_FILE, 'w', encoding='utf-8') as f:
-            f.write(HEADER_HTML)
+            # 1. 写入页头
+            f.write(PAGE_HEADER)
             
-            if not files:
-                f.write("| ❌ No files found | - | - | - |\n")
-            else:
-                for filepath in files:
-                    filename = os.path.basename(filepath)
-                    filesize = format_size(os.path.getsize(filepath))
-                    
-                    # 路径计算
-                    rel_path = os.path.relpath(filepath, MERGED_DIR)
-                    url_path = rel_path.replace(os.sep, '/') 
-                    
-                    # 提取目录 (分类)
-                    category = os.path.dirname(url_path)
-                    if not category: category = "Root"
-                    
-                    # 构建 URL
-                    link_ghproxy = f"{BASE_GHPROXY}/merged-rules/{url_path}"
-                    link_jsd = f"{BASE_JSDELIVR}/merged-rules/{url_path}"
-                    link_raw = f"{BASE_RAW}/merged-rules/{url_path}"
-                    
-                    # 构建行
-                    # 使用 <br> 换行，上面是灰色小字路径，下面是加粗文件名
-                    # 增加 &nbsp; 确保即使文件名很短，内容也不会太挤
-                    name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
-                    
-                    # 两个 CDN 按钮并排
-                    cdn_column = (
-                        f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-009688?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
-                        f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
-                    )
-                    
-                    # 源码徽章
-                    src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
-                    
-                    f.write(f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n")
+            # 2. 写入基础规则列表 (Standard Rules)
+            f.write("### 📥 基础规则集合 (Standard Rules)\n")
+            f.write('<div class="markdown-alert markdown-alert-note"><p class="markdown-alert-title">Note</p><p>适用于 Clash Premium, Clash Verge, Sing-box 等通用格式。</p></div>\n\n')
+            f.write(TABLE_HEADER)
+            count_std = generate_table_rows(files_std, DIR_RULES_wb, f)
+            total_files += count_std
+            f.write("\n<br>\n\n") # 增加间距
 
-            f.write(FOOTER_HTML.format(count=len(files)))
+            # 3. 写入 MRS 规则列表 (Mihomo Rules)
+            f.write("### 🧩 Mihomo 专用集合 (Binary/MRS)\n")
+            f.write('<div class="markdown-alert markdown-alert-important"><p class="markdown-alert-title">Important</p><p>仅适用于 <strong>Mihomo (Clash.Meta)</strong> 内核，性能更好，加载更快。</p></div>\n\n')
+            f.write(TABLE_HEADER)
+            count_mrs = generate_table_rows(files_mrs, DIR_RULES_MRS, f)
+            total_files += count_mrs
+            
+            # 4. 写入页脚
+            f.write(FOOTER_TEMPLATE.format(total_count=total_files))
     
     except Exception as e:
         print(f"::error::Error: {e}")
         sys.exit(1)
         
     print("::endgroup::")
-    print("✅ README.md updated successfully.")
+    print(f"✅ README.md updated successfully. (Std: {len(files_std)}, Mrs: {len(files_mrs)})")
 
 if __name__ == "__main__":
     main()
