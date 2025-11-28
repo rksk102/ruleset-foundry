@@ -21,4 +21,4 @@ jobs:
       - name: Run Orchestrator
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python src/orchestrator.py
+        run: python scripts/orchestrator.py
