@@ -8,17 +8,9 @@ jobs:
     name: "🦄 Convert & Compile"
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Scripts
+      - name: 📥 Checkout Scripts & Rules
         uses: actions/checkout@v4
-
-      - name: 📦 Download Source (TXT)
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: merge-rules.yml
-          name: merged_rules_artifact
-          path: merged-rules
-          search_artifacts: true
-          workflow_conclusion: success
+        # 这一步会自动把你仓库里的 merged-rules 文件夹（和你删除文件后的状态）拉取下来
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -30,12 +22,11 @@ jobs:
 
       - name: 🚀 Run Conversion Script
         env:
-          # 关键：传递 Token 给脚本，用于无限流获取 Latest Release API
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 赋予脚本执行权限
           chmod +x scripts/convert_mrs.py
-          # 运行，并确保日志流实时刷新
+          # 脚本会默认在当前目录下寻找 merged-rules 文件夹
+          # 并且会自动保留子目录结构输出到 merged-rules-mrs
           python3 -u scripts/convert_mrs.py
 
       - name: 📤 Upload Result (MRS)
@@ -45,22 +36,12 @@ jobs:
           path: merged-rules-mrs/
           retention-days: 1
 
-      # 🔥 2. 【新增】将生成的文件夹推送到仓库根目录 🔥
       - name: 💾 Commit & Push to Repo
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          # 提交信息中加入 [skip ci] 是为了防止这次提交又触发新的 Actions，造成无限死循环
           commit_message: "🤖 Auto-generated MRS rules [skip ci]"
-          
-          # 指定要提交的文件夹
           file_pattern: merged-rules-mrs/
-          
-          # 你的主分支名称 (通常是 main 或 master)
           branch: main
-          
-          # 如果文件夹没有变化，不进行提交
           skip_dirty_check: false
-          
-          # 自动创建作者信息
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
