@@ -22,14 +22,6 @@ merges:
       - "direct/ipcidr/Loyalsoldier/cncidr.txt"
       - "direct/ipcidr/MetaCubeX/cn.txt"
 
-  - strategy: "direct"
-    type: "domain"
-    owner: "rksk102"
-    filename: "apple-domain.txt "
-    description: "苹果直连"
-    inputs:
-      - "direct/domain/Loyalsoldier/apple-cn.txt"
-
   - strategy: "policy"
     type: "domain"
     owner: "rksk102"
