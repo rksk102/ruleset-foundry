@@ -1,7 +1,8 @@
 ::group::🔧 Initialization
-Loaded 31 sources.
+Loaded 30 sources.
 ::endgroup::
 ::group::🧹 Cleaning Orphan Files
+Deleting orphan: rulesets/direct/domain/Loyalsoldier/apple-cn.txt
 ::endgroup::
 ::group::⚙️ [block/domain] MetaCubeX/category-ads-all.list
 Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
@@ -16,7 +17,7 @@ SUCCESS: Saved 96931 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 Target: rulesets/block/domain/Loyalsoldier/reject-list.txt
-SUCCESS: Saved 128309 lines.
+SUCCESS: Saved 128617 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/win-extra.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
@@ -31,7 +32,7 @@ SUCCESS: Saved 347 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 Target: rulesets/block/domain/Loyalsoldier/reject.txt
-SUCCESS: Saved 128309 lines.
+SUCCESS: Saved 128617 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] Loyalsoldier/private.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
@@ -43,15 +44,10 @@ Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/d
 Target: rulesets/direct/domain/Loyalsoldier/direct-list.txt
 SUCCESS: Saved 116936 lines.
 ::endgroup::
-::group::⚙️ [direct/domain] Loyalsoldier/apple-cn.txt
-Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/apple-cn.txt
-Target: rulesets/direct/domain/Loyalsoldier/apple-cn.txt
-SUCCESS: Saved 167 lines.
-::endgroup::
 ::group::⚙️ [direct/domain] MetaCubeX/geolocation-cn.list
 Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
 Target: rulesets/direct/domain/MetaCubeX/geolocation-cn.txt
-SUCCESS: Saved 6032 lines.
+SUCCESS: Saved 6033 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] DustinWin/microsoft-cn.list
 Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
@@ -61,7 +57,7 @@ SUCCESS: Saved 168 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy.txt
-SUCCESS: Saved 26132 lines.
+SUCCESS: Saved 26148 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
@@ -71,7 +67,7 @@ SUCCESS: Saved 5956 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy-list.txt
-SUCCESS: Saved 26132 lines.
+SUCCESS: Saved 26148 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
@@ -81,17 +77,17 @@ SUCCESS: Saved 5956 lines.
 ::group::⚙️ [policy/domain] MetaCubeX/category-ai-!cn.list
 Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
 Target: rulesets/policy/domain/MetaCubeX/category-ai-!cn.txt
-SUCCESS: Saved 88 lines.
+SUCCESS: Saved 92 lines.
 ::endgroup::
 ::group::⚙️ [direct/ipcidr] Loyalsoldier/cncidr.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
 Target: rulesets/direct/ipcidr/Loyalsoldier/cncidr.txt
-SUCCESS: Saved 18822 lines.
+SUCCESS: Saved 19081 lines.
 ::endgroup::
 ::group::⚙️ [direct/ipcidr] MetaCubeX/cn.list
 Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
 Target: rulesets/direct/ipcidr/MetaCubeX/cn.txt
-SUCCESS: Saved 18822 lines.
+SUCCESS: Saved 19081 lines.
 ::endgroup::
 ::group::⚙️ [direct/ipcidr] Loyalsoldier/lancidr.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
