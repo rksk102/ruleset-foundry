@@ -8,8 +8,8 @@ import urllib.parse
 # 1. 配置区域
 # =================================================
 REPO_ROOT = os.getcwd()
-DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules")      # 原有规则目录
-DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs") # 新增 MRS 规则目录
+DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules") 
+DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs") 
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 
 # 自动获取仓库名
@@ -30,10 +30,6 @@ SHIELDS_STYLE = "flat-square"
 HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35
 HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25
 HEADER_SRC  = "Source" + "&nbsp;" * 10
-
-# =================================================
-# 2. 辅助函数
-# =================================================
 
 def format_size(size_bytes):
     """格式化文件大小"""
@@ -74,8 +70,7 @@ def generate_table_rows(files, root_dir, f_handle):
         filename = os.path.basename(filepath)
         filesize = format_size(os.path.getsize(filepath))
         
-        # 路径计算 (关键：基于传入的 root_dir 计算相对路径)
-        # 例如：merged-rules/video/youtube.txt -> video/youtube.txt
+        # 路径计算
         rel_path = os.path.relpath(filepath, root_dir)
         url_path = rel_path.replace(os.sep, '/')
         
@@ -86,8 +81,7 @@ def generate_table_rows(files, root_dir, f_handle):
         category = os.path.dirname(url_path)
         if not category: category = "Root"
         
-        # 构建 URL (注意这里路径包含了文件夹名)
-        # 例如: https://.../merged-rules/video/youtube.txt
+        # 构建 URL
         full_rel_path = f"{root_name}/{url_path}"
         
         link_ghproxy = f"{BASE_GHPROXY}/{full_rel_path}"
@@ -97,7 +91,6 @@ def generate_table_rows(files, root_dir, f_handle):
         # 构建行样式
         name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
         
-        # 区别图标：如果是 .mrs 文件，可以用个不同的颜色或图标（这里保持统一简洁，也可自定义）
         badge_color = "009688" 
         
         cdn_column = (
@@ -112,7 +105,7 @@ def generate_table_rows(files, root_dir, f_handle):
     return count
 
 # =================================================
-# 3. 页面模板片段
+# 页面模板片段
 # =================================================
 
 PAGE_HEADER = f"""<div align="center">
