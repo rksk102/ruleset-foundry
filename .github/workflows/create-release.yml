@@ -10,20 +10,9 @@ jobs:
   pack-and-ship:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Scripts
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
-
-      - name: 📦 Download Rules from Merge Workflow
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: merge-rules.yml 
-          name: merged_rules_artifact
-    
-          path: merged-rules
-          
-          search_artifacts: true
-          workflow_conclusion: success
-
+      
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
