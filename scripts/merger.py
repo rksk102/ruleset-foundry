@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import sys
 import yaml
@@ -14,10 +13,6 @@ from rich.traceback import install
 
 install(show_locals=True)
 console = Console()
-
-# =========================
-# 配置区域
-# =========================
 CONFIG_FILE = "merge-config.yaml"
 SOURCE_DIR = "rulesets"
 OUTPUT_DIR = "merged-rules"
@@ -31,12 +26,7 @@ STATS = {
 ERROR_LOGS = []
 SUMMARY_ROWS = []
 
-# 记录被配置任务使用的文件，用于自动扫描时跳过
 USED_SOURCE_FILES = set()
-
-# =========================
-# 功能函数
-# =========================
 
 def normalize_path(p):
     """标准化路径分隔符"""
@@ -69,22 +59,18 @@ def flatten_ip_cidr(cidr_set):
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     """通用的任务处理核心逻辑"""
     
-    # 构建输出路径
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
-
     combined_rules = set()
     files_read_count = 0
 
     for rel_input in inputs:
-        # 记录文件已被使用
         full_src_path = os.path.join(SOURCE_DIR, rel_input)
         rel_src_norm = normalize_path(rel_input)
         USED_SOURCE_FILES.add(rel_src_norm)
 
         if not os.path.exists(full_src_path):
-            # 如果文件不存在，抛出异常
             raise FileNotFoundError(f"Source file not found: {rel_input}")
         
         with open(full_src_path, 'r', encoding='utf-8') as f:
@@ -98,7 +84,6 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     if files_read_count == 0 and inputs:
         return None
 
-    # 处理数据
     mode = detect_mode(rule_type, filename)
     raw_count = len(combined_rules)
     
@@ -109,7 +94,6 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     
     opt_count = len(final_list)
 
-    # 写入文件
     os.makedirs(full_output_dir, exist_ok=True)
     with open(full_output_file, 'w', encoding='utf-8') as f:
         f.write(f"# ----------------------------------------\n")
@@ -147,12 +131,9 @@ def auto_discover_files():
             abs_path = os.path.join(root, file)
             rel_path = os.path.relpath(abs_path, SOURCE_DIR)
             rel_path_norm = normalize_path(rel_path)
-
-            # 如果已经被 Config 使用过，跳过
             if rel_path_norm in USED_SOURCE_FILES:
                 continue
 
-            # 自动推断目录结构
             parts = Path(rel_path_norm).parent.parts
             d_strat = parts[0] if len(parts) >= 1 else "Auto"
             d_type = parts[1] if len(parts) >= 2 else "General"
@@ -169,14 +150,10 @@ def auto_discover_files():
             
     return discovered_tasks
 
-# =========================
-# 主程序
-# =========================
 
 def main():
     console.rule("[bold blue]🚀 Hybrid Merger (Smart Clean)[/bold blue]")
 
-    # 1. 环境检查
     if not os.path.exists(CONFIG_FILE):
         console.print(f"[yellow]⚠️ Warning: Config '{CONFIG_FILE}' not found. Will use Auto-Mode only.[/yellow]")
     
@@ -184,7 +161,6 @@ def main():
         console.print(f"[bold red]❌ CRITICAL: Directory '{SOURCE_DIR}' not found![/bold red]")
         sys.exit(1)
 
-    # 2. 清理输出目录内容 (保留文件夹本身)
     if os.path.exists(OUTPUT_DIR):
         console.print("[dim]🧹 Cleaning output directory...[/dim]")
         for item in os.listdir(OUTPUT_DIR):
@@ -199,7 +175,6 @@ def main():
     else:
         os.makedirs(OUTPUT_DIR)
 
-    # 3. 读取配置的任务
     config_tasks = []
     if os.path.exists(CONFIG_FILE):
         try:
@@ -209,8 +184,6 @@ def main():
         except Exception as e:
             console.print(f"[red]Config Error:[/red] {e}")
             sys.exit(1)
-
-    # 4. 执行统一流程
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -218,8 +191,7 @@ def main():
         TaskProgressColumn(),
         console=console
     ) as progress:
-        
-        # A. Config 任务
+
         if config_tasks:
             task_main = progress.add_task("[cyan]Running Config Tasks[/cyan]", total=len(config_tasks))
             for t in config_tasks:
@@ -245,7 +217,6 @@ def main():
                     ERROR_LOGS.append(f"Config Task '{fname}': {str(e)}")
                 progress.advance(task_main)
 
-        # B. 自动发现任务
         auto_tasks = auto_discover_files()
         if auto_tasks:
             task_auto = progress.add_task("[magenta]Running Auto-Discovery[/magenta]", total=len(auto_tasks))
@@ -266,7 +237,6 @@ def main():
                     ERROR_LOGS.append(f"Auto Task '{t['filename']}': {str(e)}")
                 progress.advance(task_auto)
 
-    # 5. 报告
     table = Table(title="Execution Summary", header_style="bold magenta")
     table.add_column("File", style="cyan")
     table.add_column("Output Path", style="dim")
