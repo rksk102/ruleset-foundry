@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -uo pipefail
 
 STRICT_MODE="${STRICT_MODE:-false}"
