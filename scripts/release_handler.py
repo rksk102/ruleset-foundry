@@ -6,7 +6,10 @@ import json
 import datetime
 import zipfile
 
-TARGET_DIR = "merged-rules"
+TARGET_CONFIG = {
+    "merged-rules": ".txt",
+    "merged-rules-mrs": ".mrs"
+}
 KEEP_DAYS = 3
 
 def run_gh(cmd_list):
@@ -18,21 +21,32 @@ def run_gh(cmd_list):
         print(f"⚠️ GH API Note: {e.stderr.strip()}")
         return None
 
-def zip_target_dir(tag_date):
-    """将 TARGET_DIR 压缩为 zip"""
-    if not os.path.exists(TARGET_DIR):
-        print(f"❌ Error: Directory '{TARGET_DIR}' not found. Did you download artifacts?")
-        sys.exit(1)
-
+def zip_target_files(tag_date):
+    """根据 TARGET_CONFIG 将指定文件压缩为 zip"""
     zip_name = f"merged-rules-{tag_date}.zip"
-    print(f"📦 Packaging {TARGET_DIR} into {zip_name}...")
+    print(f"📦 Packaging files into {zip_name}...")
+    
+    has_files = False
     
     with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(TARGET_DIR):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, os.path.dirname(TARGET_DIR))
-                zipf.write(file_path, arcname)
+        for folder, ext in TARGET_CONFIG.items():
+            if not os.path.exists(folder):
+                print(f"⚠️ Warning: Directory '{folder}' not found in repo root. Skipping.")
+                continue
+
+            print(f"   -> Scanning '{folder}' for *{ext} files...")
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    if file.endswith(ext):
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.join(folder, file) 
+                        zipf.write(file_path, arcname)
+                        has_files = True
+    
+    if not has_files:
+        print("❌ Error: No matching files found to pack! Please check if folders exist.")
+        sys.exit(1)
+        
     return zip_name
 
 def main():
@@ -46,7 +60,7 @@ def main():
 
     print(f"📅 Target Release Tag: {release_tag} (Time: {tag_time})")
 
-    zip_file = zip_target_dir(tag_date)
+    zip_file = zip_target_files(tag_date)
 
     if run_gh(["release", "view", release_tag]):
         print(f"🔄 Release {release_tag} exists. Deleting for update...")
@@ -55,11 +69,13 @@ def main():
 
     print(f"🚀 Uploading Release {release_tag}...")
     notes = f"""
-    自动构建完成。
+    自动发布完成。
     
     - **日期**: {tag_date}
     - **时间**: {tag_time} (北京时间)
-    - **包含内容**: `merged-rules` 完整规则集
+    - **包含内容**: 
+      - `merged-rules/*.txt`
+      - `merged-rules-mrs/*.mrs`
     """
     
     run_gh([
