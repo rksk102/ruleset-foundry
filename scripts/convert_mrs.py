@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import sys
 import shutil
@@ -196,7 +195,7 @@ def main():
 
     if stats["failed"] > 0:
         log(f"❌ Task Failed! {stats['failed']} files could not be converted.", "err")
-        sys.exit(1) # 这会让 GitHub Actions 变红，并停止后续步骤
+        sys.exit(1)
     else:
         log(f"🎉 Task Finished Successfully. ({stats['success']} converted, {stats['skipped']} skipped)", "succ")
         sys.exit(0)
