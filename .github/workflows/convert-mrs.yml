@@ -10,7 +10,6 @@ jobs:
     steps:
       - name: 📥 Checkout Scripts & Rules
         uses: actions/checkout@v4
-        # 这一步会自动把你仓库里的 merged-rules 文件夹（和你删除文件后的状态）拉取下来
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
