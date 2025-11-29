@@ -1,11 +1,10 @@
 name: "5. Release SRS"
 
 on:
-  # ✅ 只接受总指挥手动触发
   workflow_dispatch:
 
 permissions:
-  contents: write  # 必须赋予写权限才能发布 Release
+  contents: write
 
 jobs:
   pack-and-ship:
@@ -14,21 +13,14 @@ jobs:
       - name: 📥 Checkout Scripts
         uses: actions/checkout@v4
 
-      # 🔥 关键步骤：下载之前步骤生成的 merged-rules 文件夹
-      # 前提：你在 Step 2 (merge-rules.yml) 中必须已经 upload 了名为 'merged-rules-collection' 的 artifact
       - name: 📦 Download Rules from Merge Workflow
         uses: dawidd6/action-download-artifact@v6
         with:
-          # 1. 这里填你 Merge 工作流的文件名 (或者工作流 name)
           workflow: merge-rules.yml 
-          
-          # 2. 这里填你在 Merge 步骤里 upload 的名字
           name: merged_rules_artifact
-          
-          # 3. 下载到哪里
+    
           path: merged-rules
           
-          # 4. 只要最新的成功记录 (自动寻找上一步 Merge 的结果)
           search_artifacts: true
           workflow_conclusion: success
 
@@ -39,7 +31,7 @@ jobs:
 
       - name: 🚀 Run Release Script
         env:
-          GH_TOKEN: ${{ github.token }}  # 脚本内部调用 gh 命令需要 token
+          GH_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/release_handler.py
           python3 scripts/release_handler.py
