@@ -6,7 +6,7 @@ Loaded 30 sources.
 ::group::⚙️ [block/domain] MetaCubeX/category-ads-all.list
 Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
 Target: rulesets/block/domain/MetaCubeX/category-ads-all.txt
-SUCCESS: Saved 579 lines.
+SUCCESS: Saved 584 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] DustinWin/ads.list
 Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
@@ -16,7 +16,7 @@ SUCCESS: Saved 96931 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 Target: rulesets/block/domain/Loyalsoldier/reject-list.txt
-SUCCESS: Saved 128617 lines.
+SUCCESS: Saved 128885 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/win-extra.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
@@ -31,7 +31,7 @@ SUCCESS: Saved 347 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 Target: rulesets/block/domain/Loyalsoldier/reject.txt
-SUCCESS: Saved 128617 lines.
+SUCCESS: Saved 128885 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] Loyalsoldier/private.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
@@ -56,7 +56,7 @@ SUCCESS: Saved 168 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy.txt
-SUCCESS: Saved 26148 lines.
+SUCCESS: Saved 26151 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
@@ -66,7 +66,7 @@ SUCCESS: Saved 5956 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy-list.txt
-SUCCESS: Saved 26148 lines.
+SUCCESS: Saved 26151 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
