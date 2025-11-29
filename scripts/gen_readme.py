@@ -1,32 +1,19 @@
-#!/usr/bin/env python3
 import os
 import sys
 import time
 import urllib.parse
 
-# =================================================
-# 1. 配置区域
-# =================================================
 REPO_ROOT = os.getcwd()
 DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules") 
 DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs") 
 README_FILE = os.path.join(REPO_ROOT, "README.md")
-
-# 自动获取仓库名
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
-
-# URL 构建
 BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH_NAME}"
 BASE_GHPROXY = f"https://ghproxy.net/{BASE_RAW}"
 BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{BRANCH_NAME}"
-
-# 样式配置
 SHIELDS_STYLE = "flat-square"
 
-# -------------------------------------------------
-# [核心优化] 表格列宽控制
-# -------------------------------------------------
 HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35
 HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25
 HEADER_SRC  = "Source" + "&nbsp;" * 10
@@ -55,7 +42,7 @@ def scan_files(target_dir):
         return []
     for root, _, files in os.walk(target_dir):
         for file in files:
-            if not file.startswith("."): # 忽略隐藏文件
+            if not file.startswith("."):
                 files_list.append(os.path.join(root, file))
     return sorted(files_list)
 
@@ -69,44 +56,25 @@ def generate_table_rows(files, root_dir, f_handle):
     for filepath in files:
         filename = os.path.basename(filepath)
         filesize = format_size(os.path.getsize(filepath))
-        
-        # 路径计算
         rel_path = os.path.relpath(filepath, root_dir)
         url_path = rel_path.replace(os.sep, '/')
-        
-        # 获取当前跟目录名称 (用于拼接 URL)
         root_name = os.path.basename(root_dir) 
-
-        # 提取目录 (分类)
         category = os.path.dirname(url_path)
         if not category: category = "Root"
-        
-        # 构建 URL
         full_rel_path = f"{root_name}/{url_path}"
-        
         link_ghproxy = f"{BASE_GHPROXY}/{full_rel_path}"
         link_jsd = f"{BASE_JSDELIVR}/{full_rel_path}"
         link_raw = f"{BASE_RAW}/{full_rel_path}"
-        
-        # 构建行样式
         name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
-        
         badge_color = "009688" 
-        
         cdn_column = (
             f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-{badge_color}?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
             f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
         )
-        
         src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
-        
         f_handle.write(f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n")
         count += 1
     return count
-
-# =================================================
-# 页面模板片段
-# =================================================
 
 PAGE_HEADER = f"""<div align="center">
 
