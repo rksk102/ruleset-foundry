@@ -9,12 +9,10 @@ import gzip
 import json
 import time
 
-# ================= 配置区域 =================
 SRC_ROOT = "merged-rules"
 DST_ROOT = "merged-rules-mrs"
 REPO_API = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 KERNEL_BIN = "./mihomo"
-# ===========================================
 
 class C:
     HEADER = '\033[95m'
@@ -100,11 +98,9 @@ def has_valid_content(filepath):
 def write_summary(stats, total_time):
     if "GITHUB_STEP_SUMMARY" not in os.environ: return
     
-    # 根据成功/失败决定标题和图标
     is_failed = stats['failed'] > 0
     status_icon = "❌" if is_failed else "✅"
     status_text = "Failed" if is_failed else "Success"
-    
     markdown = [
         f"### 🍭 MRS Conversion Report",
         f"**Result**: {status_icon} {status_text} (Time: {total_time:.2f}s)",
@@ -141,7 +137,6 @@ def main():
             except Exception as e:
                 print(f"Failed to delete {file_path}. Reason: {e}")
     else:
-        # 必须要有这一步！否则新环境下不会创建文件夹
         os.makedirs(DST_ROOT)
 
     if not os.path.exists(SRC_ROOT):
@@ -194,14 +189,11 @@ def main():
 
     log("", "endgroup")
 
-    # === 结果结算 ===
     end_time = time.time()
     duration = end_time - start_time
-    
-    # 生成摘要
+
     write_summary(stats, duration)
 
-    # 🔥🔥🔥 核心改动：如果有失败，必须以 error exit 结束 🔥🔥🔥
     if stats["failed"] > 0:
         log(f"❌ Task Failed! {stats['failed']} files could not be converted.", "err")
         sys.exit(1) # 这会让 GitHub Actions 变红，并停止后续步骤
