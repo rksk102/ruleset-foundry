@@ -5,11 +5,9 @@ import time
 import sys
 from datetime import datetime
 
-# --- 配置区 ---
 PLAN_FILE = "workflow_plan.json"
 SUMMARY_FILE = os.getenv("GITHUB_STEP_SUMMARY")
 
-# --- 图标与样式 ---
 class Style:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -22,8 +20,6 @@ class Style:
     ICON_OK = "✅"
     ICON_FAIL = "❌"
     ICON_RUN = "🚀"
-
-# --- 核心工具函数 ---
 
 def log_group_start(title):
     print(f"::group::{Style.BOLD}{Style.CYAN}▶ {title} {Style.RESET}")
@@ -55,23 +51,20 @@ def format_time(seconds):
     if seconds < 60: return f"{int(seconds)}s"
     return f"{int(seconds // 60)}m {int(seconds % 60)}s"
 
-# --- 报告生成器 ---
-
 def generate_mermaid_chart(results):
     """生成 Mermaid 流程图代码"""
     graph = ["graph LR"]
     graph.append("    START((🚀 开始)) --> N0")
     
     for i, res in enumerate(results):
-        status_style = "stroke:#333,stroke-width:2px" # 默认灰
+        status_style = "stroke:#333,stroke-width:2px"
         if res['status'] == 'success':
-            status_style = "fill:#e6ffec,stroke:#2da44e,stroke-width:2px,color:#1a7f37" # 绿色
+            status_style = "fill:#e6ffec,stroke:#2da44e,stroke-width:2px,color:#1a7f37"
         elif res['status'] == 'failure':
-            status_style = "fill:#ffebe9,stroke:#cf222e,stroke-width:2px,color:#cf222e" # 红色
+            status_style = "fill:#ffebe9,stroke:#cf222e,stroke-width:2px,color:#cf222e"
         elif res['status'] == 'skipped':
-            status_style = "stroke-dasharray: 5 5" # 虚线
+            status_style = "stroke-dasharray: 5 5"
 
-        # 节点定义
         node_id = f"N{i}"
         safe_name = res['name'].replace(" ", "_")
         time_label = f"<br/>⏱️ {format_time(res['duration'])}" if res['duration'] > 0 else ""
@@ -79,7 +72,6 @@ def generate_mermaid_chart(results):
         graph.append(f"    {node_id}[{res['name']}{time_label}]")
         graph.append(f"    style {node_id} {status_style}")
 
-        # 连线
         if i < len(results) - 1:
             graph.append(f"    {node_id} --> N{i+1}")
     
@@ -96,26 +88,20 @@ def generate_mermaid_chart(results):
 
 def write_summary(results, total_time):
     if not SUMMARY_FILE: return
-    
-    # 状态概览
+
     success_count = sum(1 for r in results if r['status'] == 'success')
     is_all_pass = (success_count == len(results)) and len(results) > 0
-    
     md = f"# 🕹️ 自动化构建控制台\n\n"
-    
-    # 1. 顶部状态栏
+
     if is_all_pass:
         md += f"> ### ✅ 构建成功\n> **总耗时**: {format_time(total_time)} &nbsp;|&nbsp; **执行时间**: {datetime.utcnow().strftime('%H:%M UTC')}\n\n"
     else:
         md += f"> ### ❌ 构建失败\n> 请检查下方红色节点。\n\n"
 
-    # 2. 流程可视化 (Mermaid)
     md += "### 🗺️ 执行路径图\n"
     md += "```mermaid\n"
     md += generate_mermaid_chart(results)
     md += "\n```\n\n"
-
-    # 3. 详细数据表
     md += "### 📋 任务详细报告\n"
     md += "| 步骤 | 任务名 | 结果 | 耗时 | 日志链接 |\n"
     md += "| :--- | :--- | :---: | :---: | :--- |\n"
@@ -132,8 +118,6 @@ def write_summary(results, total_time):
 
     with open(SUMMARY_FILE, "w", encoding="utf-8") as f:
         f.write(md)
-
-# --- 主逻辑 ---
 
 def run():
     start_total = time.time()
@@ -160,7 +144,6 @@ def run():
             "duration": 0
         }
         
-        # 如果前面失败了，跳过后续
         if abort_flow:
             res['status'] = 'skipped'
             print(f"🚫 [跳过] {task['name']} (因上游失败)")
@@ -171,11 +154,9 @@ def run():
         print(f"📄 目标文件: {task['filename']}")
         
         try:
-            # 1. 触发任务
             print(f"{Style.ICON_RUN} 正在发送触发指令...")
             subprocess.run(["gh", "workflow", "run", task['filename']], check=True)
             
-            # 2. 获取运行实例
             print("⏳ 等待 GitHub 创建运行实例...")
             run_info = get_latest_run(task['filename'])
             
@@ -183,11 +164,9 @@ def run():
                 res['url'] = run_info['url']
                 run_id = run_info['databaseId']
                 print(f"🔗 任务已创建: {run_info['url']} (ID: {run_id})")
-                
-                # 3. 实时监控 (这是实现控制台“正在运行”效果的关键)
+
                 if task.get('wait', True):
                     print(f"\n{Style.YELLOW}>>> 进入同步监控模式 (实时日志将流式传输) <<<{Style.RESET}")
-                    # 使用 gh run watch --exit-status，这样如果子任务失败，这里会抛出异常
                     subprocess.run(["gh", "run", "watch", str(run_id), "--exit-status"], check=True)
                     print(f"\n{Style.GREEN}✅ 任务执行成功{Style.RESET}")
                     res['status'] = 'success'
@@ -201,7 +180,7 @@ def run():
         except subprocess.CalledProcessError:
             print(f"\n{Style.RED}❌ 任务执行失败！{Style.RESET}")
             res['status'] = 'failure'
-            abort_flow = True # 标记熔断
+            abort_flow = True
             print("::error::关键路径中断，停止后续任务")
 
         except Exception as e:
@@ -212,12 +191,9 @@ def run():
         res['duration'] = time.time() - job_start
         results.append(res)
         log_group_end()
-        
-        # 实时稍微等待一下，让日志好看
         if idx < len(plan) - 1 and not abort_flow:
             time.sleep(2)
 
-    # 生成最终报告
     total_time = time.time() - start_total
     write_summary(results, total_time)
     
