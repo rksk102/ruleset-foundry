@@ -1,7 +1,6 @@
 name: "2. Merge Rules based on Config"
 
 on:
-  # 1. 手动触发
   workflow_dispatch:
 
 permissions:
@@ -30,7 +29,6 @@ jobs:
           echo "- Pthon 3.11 Setup Complete" >> $GITHUB_STEP_SUMMARY
           echo "- Dependencies: PyYAML, Rich installed" >> $GITHUB_STEP_SUMMARY
 
-      # 进行调试 
       - name: 🔍 Check File Structure (Debug)
         run: |
           echo "=== Listing rulesets directory ==="
@@ -47,7 +45,7 @@ jobs:
           python3 scripts/merger.py
 
       - name: 💾 Commit & Push
-        if: success() # 只有上一步成功才执行
+        if: success()
         run: |
           git config user.name 'GitHub Actions Bot'
           git config user.email 'actions@github.com'
