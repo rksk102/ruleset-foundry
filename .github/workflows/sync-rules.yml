@@ -1,6 +1,5 @@
 name: "1. Manage Rules: Sync & Sanitize"
 
-# 触发模式：仅手动或API触发 (OpenRouter Mode)
 on:
   workflow_dispatch:
     inputs:
@@ -38,7 +37,6 @@ jobs:
           chmod +x scripts/sync.sh
           chmod +x scripts/lib/processor.py
 
-      # 核心运行步骤：包含日志分组和实时输出
       - name: 🚀 Execute Sync & Clean
         id: run_sync
         shell: bash
@@ -69,7 +67,6 @@ jobs:
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-      # 现代化可视化报告生成 (无论成功失败都会运行，方便查看错误源)
       - name: 📊 Generate Dashboard Report
         if: always()
         shell: bash
