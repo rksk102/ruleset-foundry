@@ -11,12 +11,12 @@ SUCCESS: Saved 584 lines.
 ::group::⚙️ [block/domain] DustinWin/ads.list
 Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
 Target: rulesets/block/domain/DustinWin/ads.txt
-SUCCESS: Saved 96931 lines.
+SUCCESS: Saved 97581 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/reject-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 Target: rulesets/block/domain/Loyalsoldier/reject-list.txt
-SUCCESS: Saved 128885 lines.
+SUCCESS: Saved 129141 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/win-extra.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
@@ -31,7 +31,7 @@ SUCCESS: Saved 347 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 Target: rulesets/block/domain/Loyalsoldier/reject.txt
-SUCCESS: Saved 128885 lines.
+SUCCESS: Saved 129141 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] Loyalsoldier/private.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
@@ -56,7 +56,7 @@ SUCCESS: Saved 168 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy.txt
-SUCCESS: Saved 26151 lines.
+SUCCESS: Saved 26154 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
@@ -66,7 +66,7 @@ SUCCESS: Saved 5956 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy-list.txt
-SUCCESS: Saved 26151 lines.
+SUCCESS: Saved 26154 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
