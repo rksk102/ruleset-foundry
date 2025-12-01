@@ -11,12 +11,12 @@ SUCCESS: Saved 584 lines.
 ::group::⚙️ [block/domain] DustinWin/ads.list
 Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
 Target: rulesets/block/domain/DustinWin/ads.txt
-SUCCESS: Saved 97581 lines.
+SUCCESS: Saved 97584 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/reject-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 Target: rulesets/block/domain/Loyalsoldier/reject-list.txt
-SUCCESS: Saved 129141 lines.
+SUCCESS: Saved 129463 lines.
 ::endgroup::
 ::group::⚙️ [block/domain] Loyalsoldier/win-extra.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
@@ -31,7 +31,7 @@ SUCCESS: Saved 347 lines.
 ::group::⚙️ [block/domain] Loyalsoldier/reject.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 Target: rulesets/block/domain/Loyalsoldier/reject.txt
-SUCCESS: Saved 129141 lines.
+SUCCESS: Saved 129463 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] Loyalsoldier/private.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
@@ -46,7 +46,7 @@ SUCCESS: Saved 116936 lines.
 ::group::⚙️ [direct/domain] MetaCubeX/geolocation-cn.list
 Source: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
 Target: rulesets/direct/domain/MetaCubeX/geolocation-cn.txt
-SUCCESS: Saved 6033 lines.
+SUCCESS: Saved 6036 lines.
 ::endgroup::
 ::group::⚙️ [direct/domain] DustinWin/microsoft-cn.list
 Source: https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
@@ -56,27 +56,27 @@ SUCCESS: Saved 168 lines.
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy.txt
-SUCCESS: Saved 26154 lines.
+SUCCESS: Saved 26157 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
 Target: rulesets/policy/domain/Loyalsoldier/gfw.txt
-SUCCESS: Saved 5956 lines.
+SUCCESS: Saved 5957 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/proxy-list.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 Target: rulesets/policy/domain/Loyalsoldier/proxy-list.txt
-SUCCESS: Saved 26154 lines.
+SUCCESS: Saved 26157 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] Loyalsoldier/gfw.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
 Target: rulesets/policy/domain/Loyalsoldier/gfw.txt
-SUCCESS: Saved 5956 lines.
+SUCCESS: Saved 5957 lines.
 ::endgroup::
 ::group::⚙️ [policy/domain] MetaCubeX/category-ai-!cn.list
 Source: https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
 Target: rulesets/policy/domain/MetaCubeX/category-ai-!cn.txt
-SUCCESS: Saved 92 lines.
+SUCCESS: Saved 93 lines.
 ::endgroup::
 ::group::⚙️ [direct/ipcidr] Loyalsoldier/cncidr.txt
 Source: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
