@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: sync-rules
@@ -32,89 +31,19 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 🔧 Prepare Scripts
+      - name: 📦 Install Dependencies
         run: |
-          chmod +x scripts/sync.sh
-          chmod +x scripts/lib/processor.py
+          pip install requests
+          # 或者如果你创建了 requirements.txt:
+          # pip install -r requirements.txt
 
-      - name: 🚀 Execute Sync & Clean
+      - name: 🚀 Execute Python Sync
         id: run_sync
-        shell: bash
         env:
           STRICT_MODE: ${{ inputs.strict_mode }}
           TERM: xterm-color
         run: |
-          # 创建临时日志文件
-          LOG_FILE="sync_execution.log"
-          touch "$LOG_FILE"
-          
-          echo "::notice::Starting Sync Process... (Strict Mode: $STRICT_MODE)"
-          
-          # 使用 pipefail 捕获管道错误
-          set -o pipefail
-          
-          # 运行脚本 | 双路输出(屏幕+文件)
-          ./scripts/sync.sh 2>&1 | tee "$LOG_FILE"
-          EXIT_CODE=$?
-          
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          
-          # 如果脚本以非0退出，在此步骤不仅记录，还会标记步骤本身失败
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "status=failure" >> "$GITHUB_OUTPUT"
-            exit 1
-          else
-            echo "status=success" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 📊 Generate Dashboard Report
-        if: always()
-        shell: bash
-        run: |
-          LOG="sync_execution.log"
-          [ ! -f "$LOG" ] && exit 0
-          
-          # --- 数据提取区 ---
-          SUCCESS_COUNT=$(grep -c "SUCCESS:" "$LOG" || echo 0)
-          # 提取 Saved 后面的数字
-          TOTAL_LINES=$(grep "SUCCESS:" "$LOG" | awk -F'Saved ' '{print $2}' | awk '{s+=$1} END {print s+0}' || echo 0)
-          
-          # 提取详细错误列表
-          DL_ERRORS=$(grep "ERROR_DL:" "$LOG" | awk '{print $2}' | sort -u || true)
-          PS_ERRORS=$(grep "ERROR_PARSE:" "$LOG" | awk '{print $2}' | sort -u || true)
-          
-          COUNT_DL=$(echo "$DL_ERRORS" | grep -c "http" || echo 0)
-          COUNT_PS=$(echo "$PS_ERRORS" | grep -c "http" || echo 0)
-          TOTAL_FAIL=$((COUNT_DL + COUNT_PS))
-          
-          # --- 渲染 Markdown ---
-          {
-            echo "# 🛡️ Rules Sync Dashboard"
-            echo ""
-            echo "| 🟢 Success | 🔴 Failures | 📉 Total Rules |"
-            echo "| :---: | :---: | :---: |"
-            echo "| **$SUCCESS_COUNT** | **$TOTAL_FAIL** | **$TOTAL_LINES** |"
-            echo ""
-            
-            if [ "$TOTAL_FAIL" -gt 0 ]; then
-              echo "## 🚨 Error Diagnostics"
-              echo "> The workflow encountered errors. Please review the sources below."
-              echo ""
-              echo "| Type | Failed Source URL |"
-              echo "| :--- | :--- |"
-              
-              if [ "$COUNT_DL" -gt 0 ]; then
-                 while IFS= read -r url; do [ -z "$url" ] && continue; echo "| 📡 **Download** | \`$url\` |"; done <<< "$DL_ERRORS"
-              fi
-              if [ "$COUNT_PS" -gt 0 ]; then
-                 while IFS= read -r url; do [ -z "$url" ] && continue; echo "| 🧠 **Parse/Clean** | \`$url\` |"; done <<< "$PS_ERRORS"
-              fi
-            else
-              echo "## ✅ All Systems Operational"
-              echo "All rule sources were downloaded, sanitized, and converted to TXT successfully."
-            fi
-            
-            echo ""
-            echo "---"
-            echo "_Report generated at $(date +'%Y-%m-%d %H:%M:%S UTC')_"
-          } >> "$GITHUB_STEP_SUMMARY"
+          # 假设 main.py 和 processor.py 都在根目录，或者对应 scripts 目录
+          # 这里假设你把它们放在了 scripts/ 目录下：
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/scripts
+          python scripts/main.py
