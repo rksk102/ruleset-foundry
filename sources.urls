@@ -12,7 +12,7 @@ https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 [policy:direct]
 [type:domain]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+https://github.com/Loyalsoldier/v2ray-rules-dat/releases/direct-list.txt
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
 
