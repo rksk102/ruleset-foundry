@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/github/repo-size/rksk102/mihomo-rule-library?style=flat-square&label=Size&color=orange" alt="Size">
   </a>
   <a href="#">
-    <img src="https://img.shields.io/badge/Updated-2026--06--04%2011%3A16-blue?style=flat-square&logo=github" alt="Updated">
+    <img src="https://img.shields.io/badge/Updated-2026--06--04%2020%3A55-blue?style=flat-square&logo=github" alt="Updated">
   </a>
 </p>
 
