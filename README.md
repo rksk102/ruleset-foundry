@@ -1,13 +1,13 @@
 <div align="center">
 
-<h1>Repo</h1>
+<h1>mihomo-rule-library</h1>
 
 <p>
-  <a href="https://github.com/Owner/Repo/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/Owner/Repo/pipeline.yml?style=flat-square&label=Build&color=2ea44f" alt="Build">
+  <a href="https://github.com/rksk102/mihomo-rule-library/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/rksk102/mihomo-rule-library/pipeline.yml?style=flat-square&label=Build&color=2ea44f" alt="Build">
   </a>
-  <a href="https://github.com/Owner/Repo">
-    <img src="https://img.shields.io/github/repo-size/Owner/Repo?style=flat-square&label=Size&color=orange" alt="Size">
+  <a href="https://github.com/rksk102/mihomo-rule-library">
+    <img src="https://img.shields.io/github/repo-size/rksk102/mihomo-rule-library?style=flat-square&label=Size&color=orange" alt="Size">
   </a>
   <a href="#">
     <img src="https://img.shields.io/badge/Updated-2026--06--11%2023%3A40-blue?style=flat-square&logo=github" alt="Updated">
@@ -29,7 +29,7 @@
 *适用于 Clash Premium / Clash Verge / Sing-box 等通用格式 (.txt)*
 
 <details open>
-<summary><b>13 个文件</b> | 总大小 <b>9.40 MB</b> | 点击折叠 / 展开</summary>
+<summary><b>13 个文件</b> | 总大小 <b>8.91 MB</b> | 点击折叠 / 展开</summary>
 
 | 文件名称&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 大小 | CDN 下载&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 源文件 |
 | :--- | :--- | :--- | :--- |
