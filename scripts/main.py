@@ -279,8 +279,7 @@ def main():
 
     # 并发下载
     group_start(f"🌐 并发下载 ({len(tasks)} 源)")
-    loop = asyncio.get_event_loop()
-    results = loop.run_until_complete(download_all(tasks))
+    results = asyncio.run(download_all(tasks))
     info(f"  下载完成 | ETag 命中: {len(stats.etag_hits)}")
     group_end()
 
