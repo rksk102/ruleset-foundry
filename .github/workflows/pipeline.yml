@@ -1,0 +1,155 @@
+name: "🚀 规则构建流水线"
+
+on:
+  schedule:
+    # 每天北京时间 03:00 和 16:00（UTC 19:00 / 08:00）
+    - cron: '0 19 * * *'
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      strict_mode:
+        description: '严格模式（任何源失败则终止）'
+        type: boolean
+        default: false
+      skip_release:
+        description: '跳过 Release 发布'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+# ────────────────────────────────────────────
+# 阶段① 同步清洗上游规则
+# ────────────────────────────────────────────
+jobs:
+  sync-rules:
+    name: "① 同步清洗"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      summary: ${{ steps.run.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: 🚀 运行同步
+        id: run
+        env:
+          STRICT_MODE: ${{ inputs.strict_mode || 'false' }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/main.py
+
+# ────────────────────────────────────────────
+# 阶段② 合并规则
+# ────────────────────────────────────────────
+  merge-rules:
+    name: "② 合并规则"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: sync-rules
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: 🚀 运行合并
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/merger.py
+
+      - name: 💾 提交合并结果
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(merge): 合并规则 [skip ci]"
+          file_pattern: merged-rules/
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+
+# ────────────────────────────────────────────
+# 阶段③ 转换 MRS（与 README 并行）
+# ────────────────────────────────────────────
+  convert-mrs:
+    name: "③ 转换 MRS"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: merge-rules
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: 💾 缓存 Mihomo 内核
+        uses: actions/cache@v4
+        with:
+          path: .cache/mihomo-kernel
+          key: mihomo-${{ runner.os }}-v1
+          restore-keys: mihomo-${{ runner.os }}-
+
+      - name: 🔄 转换规则集
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -u scripts/convert_mrs.py
+
+      - name: 💾 提交 MRS 文件
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 自动生成 MRS 规则 [skip ci]"
+          file_pattern: merged-rules-mrs/
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+
+# ────────────────────────────────────────────
+# 阶段④ 生成 README（与 MRS 并行）
+# ────────────────────────────────────────────
+  gen-readme:
+    name: "④ 生成 README"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    needs: merge-rules
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: 📝 生成 README
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/gen_readme.py
+
+      - name: 💾 提交 README
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: 更新 README [skip ci]"
+          file_pattern: README.md
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+
+# ────────────────────────────────────────────
+# 阶段⑤ 发布 Release（依赖 MRS + README）
+# ────────────────────────────────────────────
+  create-release:
+    name: "⑤ 发布 Release"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [convert-mrs, gen-readme]
+    if: ${{ !inputs.skip_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-python-env
+
+      - name: 🚀 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/release_handler.py

@@ -39,6 +39,15 @@ RETRIES = get("network", "max_retries", default=2)
 STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 
+def build_filepath(task):
+    """根据任务信息构建输出文件路径（相对路径 + 绝对路径 + 文件名）"""
+    owner = get_owner_from_url(task["url"])
+    filename = task["url"].split("/")[-1].split(".")[0] + ".txt"
+    rel_path = Path(task["policy"]) / task["type"] / owner / filename
+    abs_path = RULESETS_DIR / rel_path
+    return owner, filename, rel_path, abs_path
+
+
 # ---------- 统计 ----------
 class SyncStats:
     def __init__(self):
@@ -147,12 +156,7 @@ async def download_all(tasks):
 
 def process_task(task, raw_bytes, is_cached):
     """处理单个源：解码 → 解析 → 清洗 → 原子写入"""
-    url = task["url"]
-    owner = get_owner_from_url(url)
-    filename = url.split("/")[-1].split(".")[0] + ".txt"
-
-    rel_path = Path(task["policy"]) / task["type"] / owner / filename
-    abs_path = RULESETS_DIR / rel_path
+    owner, filename, rel_path, abs_path = build_filepath(task)
 
     content_str = processor.safe_decode(raw_bytes)
     lines = processor.parse_lines(content_str)
@@ -252,9 +256,9 @@ def git_push():
     def run_cmd(args):
         subprocess.run(args, check=False)
 
-    run_cmd(["git", "config", "user.name", "GitHub Actions Bot"])
-    run_cmd(["git", "config", "user.email", "[EMAIL]"])
-    run_cmd(["git", "add", "-A"])
+    run_cmd(["git", "config", "user.name", "github-actions[bot]"])
+    run_cmd(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"])
+    run_cmd(["git", "add", "rulesets/"])
 
     res = subprocess.run(["git", "diff-index", "--quiet", "HEAD"], check=False)
     if res.returncode == 0:
@@ -287,11 +291,7 @@ def main():
     expected_files = []
 
     for task, raw_bytes, is_cached in results:
-        url = task["url"]
-        owner = get_owner_from_url(url)
-        filename = url.split("/")[-1].split(".")[0] + ".txt"
-        rel_path = Path(task["policy"]) / task["type"] / owner / filename
-        abs_path = RULESETS_DIR / rel_path
+        owner, filename, rel_path, abs_path = build_filepath(task)
         expected_files.append(abs_path)
 
         label = f"[{task['policy']}/{task['type']}] {owner}/{filename}"

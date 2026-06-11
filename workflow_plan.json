@@ -1,27 +1,7 @@
 [
   {
-    "name": "1. 同步上游规则并清洗",
-    "filename": "sync-rules.yml",
-    "wait": true
-  },
-  {
-    "name": "2. 合并规则",
-    "filename": "merge-rules.yml",
-    "wait": true
-  },
-  {
-    "name": "3. 生成 MRS",
-    "filename": "convert-mrs.yml",
-    "wait": true
-  },
-  {
-    "name": "4. 生成美化版 README",
-    "filename": "gen-readme.yml",
-    "wait": true
-  },
-  {
-    "name": "5. 发布二进制规则文件",
-    "filename": "create-release.yml", 
+    "name": "1. 完整规则构建流水线",
+    "filename": "pipeline.yml",
     "wait": true
   }
 ]

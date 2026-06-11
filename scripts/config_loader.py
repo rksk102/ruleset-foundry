@@ -56,8 +56,10 @@ def load_config():
             with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
                 user_data = yaml.safe_load(f) or {}
             _merge_dict(defaults, user_data)
-        except Exception:
-            pass
+        except yaml.YAMLError as e:
+            print(f"::warning::配置文件 {_CONFIG_FILE} YAML 语法错误: {e}，使用默认值")
+        except Exception as e:
+            print(f"::warning::配置文件 {_CONFIG_FILE} 加载失败: {e}，使用默认值")
     elif _CONFIG_FILE.exists() and not _HAS_YAML:
         # 降级：无 PyYAML 时仅使用 merge-config.yaml 不存在时的默认值
         pass

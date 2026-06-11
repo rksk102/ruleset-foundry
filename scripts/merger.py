@@ -9,6 +9,7 @@
 """
 import os
 import sys
+import shutil
 import time
 from pathlib import Path
 
@@ -164,7 +165,6 @@ def main():
     # 清空输出目录
     if os.path.exists(OUTPUT_DIR):
         info("  🧹 清理输出目录...")
-        import shutil
         for item in os.listdir(OUTPUT_DIR):
             item_path = os.path.join(OUTPUT_DIR, item)
             try:

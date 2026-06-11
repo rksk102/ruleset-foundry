@@ -10,9 +10,11 @@ import sys
 import shutil
 import subprocess
 import stat
-import requests
 import gzip
 import time
+import json
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 from logger import info, success, warning, error, group_start, group_end, get_logger
@@ -38,9 +40,9 @@ def get_latest_mihomo():
         headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
 
     try:
-        resp = requests.get(REPO_API, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+        req = urllib.request.Request(REPO_API, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
@@ -67,13 +69,11 @@ def get_latest_mihomo():
         info(f"  下载内核: {download_url}")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        dl_resp = requests.get(download_url, stream=True)
-        dl_resp.raise_for_status()
-
-        # 解压
-        with gzip.GzipFile(fileobj=dl_resp.raw) as gz:
-            with open(KERNEL_BIN, "wb") as f:
-                shutil.copyfileobj(gz, f)
+        dl_req = urllib.request.Request(download_url, headers=headers)
+        with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
+            with gzip.GzipFile(fileobj=dl_resp) as gz:
+                with open(KERNEL_BIN, "wb") as f:
+                    shutil.copyfileobj(gz, f)
 
         # 可执行权限
         st = os.stat(KERNEL_BIN)
