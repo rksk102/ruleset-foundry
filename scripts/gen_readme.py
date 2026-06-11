@@ -71,7 +71,7 @@ def write_table_rows(f, files, root_dir):
         full_rel = f"{root_name}/{url_path}"
         cdn = (
             f'<a href="{BASE_GHPROXY}/{full_rel}">'
-            f'<img src="https://img.shields.io/badge/GhProxy-009688?style={STYLE}&logo=rocket" alt="GhProxy"></a><br>'
+            f'<img src="https://img.shields.io/badge/GhProxy-009688?style={STYLE}&logo=rocket" alt="GhProxy"></a> '
             f'<a href="{BASE_JSDELIVR}/{full_rel}">'
             f'<img src="https://img.shields.io/badge/jsDelivr-E34F26?style={STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
         )
@@ -86,6 +86,7 @@ def make_section(f, title, desc, files, root_dir):
     count, total_size = collect_stats(files)
 
     f.write(f"### {title}\n\n")
+    f.write(f"*{desc}*\n\n")
     f.write(
         f"<details open>\n"
         f"<summary><b>{count} 个文件</b> | "
@@ -93,9 +94,7 @@ def make_section(f, title, desc, files, root_dir):
         f"点击折叠 / 展开</summary>\n\n"
     )
 
-    f.write(f"*{desc}*\n\n")
-
-    f.write("| 文件名称 | 大小 | CDN 下载 | 源文件 |\n")
+    f.write("| 文件名称&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 大小 | CDN 下载&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 源文件 |\n")
     f.write("| :--- | :--- | :--- | :--- |\n")
     write_table_rows(f, files, root_dir)
 
