@@ -64,9 +64,9 @@ def write_table_rows(f, files, root_dir):
         category = os.path.dirname(url_path)
 
         if category:
-            name_col = f"<sub>{category}</sub><br>**{filename}**"
+            name_col = f"<sub>{category}</sub><br><b>{filename}</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
         else:
-            name_col = f"<sub>Root</sub><br>**{filename}**"
+            name_col = f"<sub>Root</sub><br><b>{filename}</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
 
         full_rel = f"{root_name}/{url_path}"
         cdn = (
@@ -94,7 +94,7 @@ def make_section(f, title, desc, files, root_dir):
         f"点击折叠 / 展开</summary>\n\n"
     )
 
-    f.write("| 文件名称&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 大小 | CDN 下载&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | 源文件 |\n")
+    f.write("| 文件名称 | 大小 | CDN 下载 | 源文件 |\n")
     f.write("| :--- | :--- | :--- | :--- |\n")
     write_table_rows(f, files, root_dir)
 
