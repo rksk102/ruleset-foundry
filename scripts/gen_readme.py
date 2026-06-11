@@ -71,7 +71,7 @@ def write_table_rows(f, files, root_dir):
         full_rel = f"{root_name}/{url_path}"
         cdn = (
             f'<a href="{BASE_GHPROXY}/{full_rel}">'
-            f'<img src="https://img.shields.io/badge/GhProxy-009688?style={STYLE}&logo=rocket" alt="GhProxy"></a> '
+            f'<img src="https://img.shields.io/badge/GhProxy-009688?style={STYLE}&logo=rocket" alt="GhProxy"></a><br>'
             f'<a href="{BASE_JSDELIVR}/{full_rel}">'
             f'<img src="https://img.shields.io/badge/jsDelivr-E34F26?style={STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
         )
@@ -134,32 +134,6 @@ def make_page_header():
 """
 
 
-def make_footer(std_count, std_size, mrs_count, mrs_size):
-    total_count = std_count + mrs_count
-    total_size = format_size(std_size + mrs_size)
-
-    return f"""<div align="center">
-<br>
-<table>
-  <tr>
-    <td align="center"><b>标准规则</b></td>
-    <td align="center"><b>MRS 规则</b></td>
-    <td align="center"><b>总计文件</b></td>
-    <td align="center"><b>总大小</b></td>
-  </tr>
-  <tr>
-    <td align="center">{std_count} 个</td>
-    <td align="center">{mrs_count} 个</td>
-    <td align="center"><b>{total_count} 个</b></td>
-    <td align="center"><b>{total_size}</b></td>
-  </tr>
-</table>
-<br>
-<p><sub>Powered by <a href="https://github.com/actions">GitHub Actions</a> &middot; 构建于 {time.strftime('%Y-%m-%d %H:%M')} (北京时间)</sub></p>
-</div>
-"""
-
-
 def main():
     group_start("生成 README")
 
@@ -186,8 +160,6 @@ def main():
                 "仅适用于 Mihomo (Clash.Meta) 内核，二进制格式 (.mrs) 性能更好、加载更快",
                 files_mrs, DIR_MRS,
             )
-
-            f.write(make_footer(count_std, size_std, count_mrs, size_mrs))
 
     except Exception as e:
         error(f"README 生成失败: {e}")
