@@ -51,15 +51,14 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
-      - name: 同步远程分支
-        run: git pull --rebase origin ${{ github.ref_name }}
-      - name: 提交合并结果
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(merge): 合并规则 [skip ci]"
-          file_pattern: merged-rules/
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+      - name: 提交并推送合并结果
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add merged-rules/
+          git commit -m "chore(merge): 合并规则 [skip ci]" || echo "nothing to commit"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
 
   convert-mrs:
     name: "3. 转换 MRS"
@@ -81,15 +80,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
-      - name: 同步远程分支
-        run: git pull --rebase origin ${{ github.ref_name }}
-      - name: 提交 MRS 文件
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore(mrs): 自动生成 MRS 规则 [skip ci]"
-          file_pattern: merged-rules-mrs/
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+      - name: 提交并推送 MRS 文件
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add merged-rules-mrs/
+          git commit -m "chore(mrs): 自动生成 MRS 规则 [skip ci]" || echo "nothing to commit"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
 
   gen-readme:
     name: "4. 生成 README"
@@ -106,15 +104,14 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
-      - name: 同步远程分支
-        run: git pull --rebase origin ${{ github.ref_name }}
-      - name: 提交 README
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "docs: 更新 README [skip ci]"
-          file_pattern: README.md
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+      - name: 提交并推送 README
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: 更新 README [skip ci]" || echo "nothing to commit"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
 
   create-release:
     name: "5. 发布 Release"
