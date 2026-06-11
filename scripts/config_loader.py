@@ -17,9 +17,6 @@ def load_config():
     if _CONFIG is not None:
         return _CONFIG
 
-    if not _CONFIG_FILE.exists():
-        _CONFIG_FILE = Path("merge-config.yaml")
-
     defaults = {
         "network": {
             "timeout_seconds": 15,

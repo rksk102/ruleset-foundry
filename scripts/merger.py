@@ -15,7 +15,6 @@ from utils import (
 logger = get_logger()
 
 CONFIG_FILE = "config.yaml"
-FALLBACK_CONFIG = "merge-config.yaml"
 SOURCE_DIR = "rulesets"
 OUTPUT_DIR = "merged-rules"
 
@@ -50,7 +49,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         USED_SOURCE_FILES.add(rel_src_norm)
 
         if not os.path.exists(full_src_path):
-            raise FileNotFoundError(f"source not found: {rel_input}")
+            raise FileNotFoundError(f"源文件未找到: {rel_input}")
 
         with open(full_src_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -72,7 +71,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         final_list, cidr_errors = flatten_ip_cidr(combined_rules)
         if cidr_errors:
             for bad_cidr, err_msg in cidr_errors[:5]:
-                warning(f"    invalid CIDR: {bad_cidr} -> {err_msg}")
+                warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")
     else:
         final_list = sorted(list(combined_rules))
 
@@ -126,30 +125,29 @@ def auto_discover_files():
                 "owner": d_owner,
                 "filename": file,
                 "inputs": [rel_path_norm],
-                "description": f"auto pass-through from {rel_path_norm}",
+                "description": f"自动透传自 {rel_path_norm}",
             })
 
     return discovered_tasks
 
 
 def main():
-    section("Rule Merger")
+    section("规则合并器")
 
-    actual_config = CONFIG_FILE if os.path.exists(CONFIG_FILE) else FALLBACK_CONFIG
-    if not os.path.exists(actual_config):
-        warning(f"config '{actual_config}' not found, auto mode only")
+    if not os.path.exists(CONFIG_FILE):
+        warning(f"配置文件 '{CONFIG_FILE}' 未找到，仅使用自动模式")
         config_tasks = []
     else:
         cfg = load_config()
         config_tasks = cfg.get("merges", [])
-        info(f"  loaded {len(config_tasks)} merge tasks from {actual_config}")
+        info(f"  从 {CONFIG_FILE} 加载 {len(config_tasks)} 个合并任务")
 
     if not os.path.exists(SOURCE_DIR):
-        error(f"source dir '{SOURCE_DIR}' not found!")
+        error(f"源目录 '{SOURCE_DIR}' 不存在！")
         sys.exit(1)
 
     if os.path.exists(OUTPUT_DIR):
-        info("  cleaning output dir...")
+        info("  清理输出目录...")
         for item in os.listdir(OUTPUT_DIR):
             item_path = os.path.join(OUTPUT_DIR, item)
             try:
@@ -158,41 +156,41 @@ def main():
                 elif os.path.isdir(item_path):
                     shutil.rmtree(item_path)
             except Exception as e:
-                warning(f"  clean failed: {item_path} -> {e}")
+                warning(f"  清理失败: {item_path} -> {e}")
     else:
         os.makedirs(OUTPUT_DIR)
 
     if config_tasks:
-        group_start(f"Config Merge Tasks ({len(config_tasks)})")
+        group_start(f"配置合并任务 ({len(config_tasks)})")
         for t in config_tasks:
             fname = t.get("filename", "Unknown")
             try:
                 if "inputs" not in t:
-                    raise ValueError("missing inputs")
+                    raise ValueError("缺少 inputs")
                 res = process_task_logic(
                     t.get("strategy", "Default"),
                     t.get("type", "General"),
                     t.get("owner", "Unknown"),
                     fname,
                     t["inputs"],
-                    t.get("description", "config merge"),
+                    t.get("description", "配置合并"),
                 )
                 if res:
                     STATS["success"] += 1
                     STATS["total_rules"] += res["opt"]
                     SUMMARY_ROWS.append(res)
-                    success(f"  {fname} -> {res['opt']} rules")
+                    success(f"  {fname} -> {res['opt']} 条规则")
                 else:
                     STATS["skipped"] += 1
             except Exception as e:
                 STATS["failed"] += 1
-                ERROR_LOGS.append(f"config task '{fname}': {str(e)}")
-                warning(f"  [FAIL] {fname}: {e}")
+                ERROR_LOGS.append(f"配置任务 '{fname}': {str(e)}")
+                warning(f"  [失败] {fname}: {e}")
         group_end()
 
     auto_tasks = auto_discover_files()
     if auto_tasks:
-        group_start(f"Auto-Discover ({len(auto_tasks)})")
+        group_start(f"自动发现透传 ({len(auto_tasks)})")
         for t in auto_tasks:
             try:
                 res = process_task_logic(
@@ -204,30 +202,30 @@ def main():
                     STATS["total_rules"] += res["opt"]
                     res["file"] = f"(Auto) {res['file']}"
                     SUMMARY_ROWS.append(res)
-                    success(f"  {t['filename']} -> {res['opt']} rules")
+                    success(f"  {t['filename']} -> {res['opt']} 条规则")
             except Exception as e:
                 STATS["failed"] += 1
-                ERROR_LOGS.append(f"auto task '{t['filename']}': {str(e)}")
-                warning(f"  [FAIL] {t['filename']}: {e}")
+                ERROR_LOGS.append(f"自动任务 '{t['filename']}': {str(e)}")
+                warning(f"  [失败] {t['filename']}: {e}")
         group_end()
 
-    section(f"Merge Report | ok:{STATS['success']} skip:{STATS['skipped']} fail:{STATS['failed']}")
+    section(f"合并报告 | 成功:{STATS['success']} 跳过:{STATS['skipped']} 失败:{STATS['failed']}")
 
     if SUMMARY_ROWS:
         for r in SUMMARY_ROWS:
-            info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} rules")
+            info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
-            f.write(f"\n### Merge Report: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
+            f.write(f"\n### 合并报告: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
             if ERROR_LOGS:
                 f.write("```diff\n" + "\n".join([f"- {e}" for e in ERROR_LOGS]) + "\n```\n")
-            f.write("| File | Output Path | Rules |\n|---|---|---|\n")
+            f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
             for r in SUMMARY_ROWS:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
 
     if STATS["failed"] > 0:
-        error("failed tasks exist, exiting")
+        error("存在失败任务，退出")
         sys.exit(1)
 
 

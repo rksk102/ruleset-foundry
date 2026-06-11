@@ -1,7 +1,0 @@
-[
-  {
-    "name": "1. 完整规则构建流水线",
-    "filename": "pipeline.yml",
-    "wait": true
-  }
-]

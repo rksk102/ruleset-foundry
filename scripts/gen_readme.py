@@ -55,7 +55,7 @@ def scan_files(target_dir):
 
 def generate_table_rows(files, root_dir, f_handle):
     if not files:
-        f_handle.write("| [No files found] | - | - | - |\n")
+        f_handle.write("| [未找到文件] | - | - | - |\n")
         return 0
 
     count = 0
@@ -103,19 +103,19 @@ PAGE_HEADER = f"""<div align="center">
 </p>
 
 <p>
-  <strong>Automated Build</strong> . <strong>Global CDN</strong> . <strong>Daily Sync</strong>
+  <strong>全自动构建</strong> · <strong>全球 CDN 加速</strong> · <strong>每日同步更新</strong>
 </p>
 
 </div>
 
 ---
 
-### Usage
+### 使用说明 (Usage)
 
 <div class="markdown-alert markdown-alert-tip">
-<p class="markdown-alert-title">Tip</p>
-<p>Use <strong>GhProxy</strong> for better download speed in mainland China.</p>
-<p><strong>Template:</strong> <code>https://ghproxy.net/{BASE_RAW}/[dir]/{{category}}/{{filename}}</code></p>
+<p class="markdown-alert-title">提示</p>
+<p>推荐优先使用 <strong>GhProxy</strong> 通道，可显著提升国内网络环境下的下载速度。</p>
+<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/[文件夹]/{{分类}}/{{文件名}}</code></p>
 </div>
 
 """
@@ -135,13 +135,13 @@ FOOTER_TEMPLATE = """
 
 
 def main():
-    group_start("Generate README")
+    group_start("生成 README")
 
     files_std = scan_files(DIR_RULES_wb)
     files_mrs = scan_files(DIR_RULES_MRS)
 
-    info(f"  standard rule files: {len(files_std)}")
-    info(f"  MRS rule files: {len(files_mrs)}")
+    info(f"  标准规则文件: {len(files_std)}")
+    info(f"  MRS 规则文件: {len(files_mrs)}")
 
     total_files = 0
 
@@ -149,22 +149,22 @@ def main():
         with open(README_FILE, "w", encoding="utf-8") as f:
             f.write(PAGE_HEADER)
 
-            f.write("### Standard Rules\n")
+            f.write("### 基础规则集合 (Standard Rules)\n")
             f.write(
                 '<div class="markdown-alert markdown-alert-note">'
-                '<p class="markdown-alert-title">Note</p>'
-                '<p>For Clash Premium, Clash Verge, Sing-box and compatible formats.</p></div>\n\n'
+                '<p class="markdown-alert-title">说明</p>'
+                '<p>适用于 Clash Premium, Clash Verge, Sing-box 等通用格式。</p></div>\n\n'
             )
             f.write(TABLE_HEADER)
             count_std = generate_table_rows(files_std, DIR_RULES_wb, f)
             total_files += count_std
             f.write("\n<br>\n\n")
 
-            f.write("### Mihomo Binary (MRS)\n")
+            f.write("### Mihomo 专用集合 (Binary/MRS)\n")
             f.write(
                 '<div class="markdown-alert markdown-alert-important">'
-                '<p class="markdown-alert-title">Important</p>'
-                '<p>For <strong>Mihomo (Clash.Meta)</strong> kernel only. Better performance, faster loading.</p></div>\n\n'
+                '<p class="markdown-alert-title">重要</p>'
+                '<p>仅适用于 <strong>Mihomo (Clash.Meta)</strong> 内核，性能更好，加载更快。</p></div>\n\n'
             )
             f.write(TABLE_HEADER)
             count_mrs = generate_table_rows(files_mrs, DIR_RULES_MRS, f)
@@ -173,20 +173,20 @@ def main():
             f.write(FOOTER_TEMPLATE.format(total_count=total_files))
 
     except Exception as e:
-        error(f"README generation failed: {e}")
+        error(f"README 生成失败: {e}")
         sys.exit(1)
 
     group_end()
-    success(f"README.md updated (Std: {count_std}, MRS: {count_mrs}, total: {total_files})")
+    success(f"README.md 已更新 (标准: {count_std}, MRS: {count_mrs}, 总计: {total_files})")
 
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
-            f.write("\n### README Report\n\n")
-            f.write(f"| Type | Files |\n| :--- | :---: |\n")
-            f.write(f"| Standard | **{count_std}** |\n")
-            f.write(f"| MRS | **{count_mrs}** |\n")
-            f.write(f"| **Total** | **{total_files}** |\n")
+            f.write("\n### README 生成报告\n\n")
+            f.write(f"| 类型 | 文件数 |\n| :--- | :---: |\n")
+            f.write(f"| 标准规则 | **{count_std}** |\n")
+            f.write(f"| MRS 规则 | **{count_mrs}** |\n")
+            f.write(f"| **总计** | **{total_files}** |\n")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
 
 
 def get_latest_mihomo():
-    group_start("Prepare Mihomo Kernel")
+    group_start("准备 Mihomo 内核")
 
     headers = {}
     if "GH_TOKEN" in os.environ:
@@ -36,12 +36,12 @@ def get_latest_mihomo():
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         tag_name = data["tag_name"]
-        info(f"  latest version: {tag_name}")
+        info(f"  最新版本: {tag_name}")
 
         if KERNEL_CACHE_DIR.exists() and VERSION_FILE.exists():
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
-                info(f"  using cached kernel ({tag_name})")
+                info(f"  使用缓存内核 ({tag_name})")
                 group_end()
                 return
 
@@ -54,9 +54,9 @@ def get_latest_mihomo():
                 break
 
         if not download_url:
-            raise Exception("no suitable linux-amd64 kernel asset found")
+            raise Exception("未找到合适的 linux-amd64 内核资源")
 
-        info(f"  downloading: {download_url}")
+        info(f"  下载内核: {download_url}")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
         dl_req = urllib.request.Request(download_url, headers=headers)
@@ -69,12 +69,12 @@ def get_latest_mihomo():
         os.chmod(KERNEL_BIN, st.st_mode | stat.S_IEXEC)
 
         ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True)
-        info(f"  kernel installed: {ver_out.strip()}")
+        info(f"  内核安装成功: {ver_out.strip()}")
 
         VERSION_FILE.write_text(tag_name)
 
     except Exception as e:
-        error(f"  kernel preparation failed: {e}")
+        error(f"  内核准备失败: {e}")
         sys.exit(1)
     finally:
         group_end()
@@ -109,23 +109,23 @@ def write_summary(stats, total_time):
         return
 
     is_failed = stats["failed"] > 0
-    status_icon = "FAIL" if is_failed else "OK"
-    status_text = "Failed" if is_failed else "Success"
+    status_icon = "失败" if is_failed else "成功"
+    status_text = "失败" if is_failed else "成功"
 
     markdown = [
-        "\n### MRS Conversion Report",
-        f"**Result**: {status_icon} {status_text} (elapsed: {total_time:.2f}s)",
+        "\n### MRS 转换报告",
+        f"**结果**: {status_icon} {status_text} (耗时: {total_time:.2f}s)",
         "",
-        "| Metric | Count |",
+        "| 指标 | 计数 |",
         "| :--- | :--- |",
-        f"| Success | {stats['success']} |",
-        f"| Failed | **{stats['failed']}** |",
-        f"| Skipped | {stats['skipped']} |",
-        f"| Total | {stats['total']} |",
+        f"| 成功 | {stats['success']} |",
+        f"| 失败 | **{stats['failed']}** |",
+        f"| 跳过 | {stats['skipped']} |",
+        f"| 总数 | {stats['total']} |",
         "",
     ]
     if is_failed:
-        markdown.append("**ERROR**: Partial conversion failure, check logs above.")
+        markdown.append("**错误**: 部分文件转换失败，请检查上方日志。")
 
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
         f.write("\n".join(markdown))
@@ -135,7 +135,7 @@ def main():
     start_time = time.time()
     get_latest_mihomo()
 
-    group_start(f"Convert: {SRC_ROOT} -> {DST_ROOT}")
+    group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
     if os.path.exists(DST_ROOT):
         for item in os.listdir(DST_ROOT):
@@ -151,7 +151,7 @@ def main():
         os.makedirs(DST_ROOT)
 
     if not os.path.exists(SRC_ROOT):
-        error(f"source dir {SRC_ROOT} not found!")
+        error(f"源目录 {SRC_ROOT} 不存在！")
         sys.exit(1)
 
     files_map = []
@@ -162,7 +162,7 @@ def main():
 
     total_files = len(files_map)
     stats = {"success": 0, "failed": 0, "skipped": 0, "total": total_files}
-    info(f"  found {total_files} text rule files")
+    info(f"  发现 {total_files} 个文本规则文件")
 
     for idx, src_path in enumerate(files_map, 1):
         rel_path = os.path.relpath(src_path, SRC_ROOT)
@@ -176,12 +176,12 @@ def main():
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
         if not rule_type:
-            warning(f"  {prefix} skip: {rel_path} (unknown type)")
+            warning(f"  {prefix} 跳过: {rel_path} (未知类型)")
             stats["skipped"] += 1
             continue
 
         if not has_valid_content(src_path):
-            warning(f"  {prefix} skip: {rel_path} (no valid rules)")
+            warning(f"  {prefix} 跳过: {rel_path} (无有效规则)")
             stats["skipped"] += 1
             continue
 
@@ -191,7 +191,7 @@ def main():
             success(f"  {prefix} {rel_path} -> MRS")
             stats["success"] += 1
         except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.strip() if e.stderr else "unknown error"
+            err_msg = e.stderr.strip() if e.stderr else "未知错误"
             error(f"  {prefix} {rel_path}")
             error(f"      L {err_msg}")
             stats["failed"] += 1
@@ -202,10 +202,10 @@ def main():
     write_summary(stats, duration)
 
     if stats["failed"] > 0:
-        error(f"conversion failed! {stats['failed']} files failed")
+        error(f"转换失败！ {stats['failed']} 个文件无法转换")
         sys.exit(1)
     else:
-        success(f"conversion done ({stats['success']} ok, {stats['skipped']} skipped)")
+        success(f"转换完成 ({stats['success']} 成功, {stats['skipped']} 跳过)")
         sys.exit(0)
 
 

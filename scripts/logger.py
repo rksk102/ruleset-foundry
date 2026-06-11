@@ -67,17 +67,17 @@ def debug(msg, *args):
 
 def warning(msg, *args):
     _init_logger()
-    _logger.warning(f"{Colors.YELLOW}[WARN] {msg}{Colors.RESET}", *args)
+    _logger.warning(f"{Colors.YELLOW}[警告] {msg}{Colors.RESET}", *args)
 
 
 def error(msg, *args):
     _init_logger()
-    _logger.error(f"{Colors.RED}[ERR] {msg}{Colors.RESET}", *args)
+    _logger.error(f"{Colors.RED}[错误] {msg}{Colors.RESET}", *args)
 
 
 def success(msg, *args):
     _init_logger()
-    _logger.info(f"{Colors.GREEN}[OK] {msg}{Colors.RESET}", *args)
+    _logger.info(f"{Colors.GREEN}[成功] {msg}{Colors.RESET}", *args)
 
 
 def group_start(title):
