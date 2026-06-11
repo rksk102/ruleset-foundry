@@ -1,0 +1,63 @@
+# ============================================================
+# mihomo-rule-library 统一配置文件
+# ============================================================
+
+# ---------- 网络 ----------
+network:
+  timeout_seconds: 15
+  max_retries: 2
+
+# ---------- 目录路径 ----------
+paths:
+  sources_file: "sources.urls"
+  rulesets_dir: "rulesets"
+  merged_output_dir: "merged-rules"
+  mrs_output_dir: "merged-rules-mrs"
+  cache_dir: ".cache"
+  log_dir: "logs"
+
+# ---------- 合并配置 ----------
+# 格式: merged-rules/[strategy]/[type]/[owner]/[filename]
+# 未在此列出的规则源将被 auto-discover 自动透传
+merges:
+  - strategy: "block"
+    type: "domain"
+    owner: "rksk102"
+    filename: "all-adblock.txt"
+    description: "合并多个广告拦截列表"
+    inputs:
+      - "block/domain/DustinWin/ads.txt"
+      - "block/domain/MetaCubeX/category-ads-all.txt"
+      - "block/domain/Loyalsoldier/reject-list.txt"
+
+  - strategy: "direct"
+    type: "ipcidr"
+    owner: "rksk102"
+    filename: "all-cnip.txt"
+    description: "所有直连cnipcidr"
+    inputs:
+      - "direct/ipcidr/Loyalsoldier/cncidr.txt"
+      - "direct/ipcidr/MetaCubeX/cn.txt"
+
+  - strategy: "policy"
+    type: "domain"
+    owner: "rksk102"
+    filename: "all-proxy.txt"
+    description: "代理域名规则"
+    inputs:
+      - "policy/domain/Loyalsoldier/proxy.txt"
+      - "policy/domain/Loyalsoldier/proxy-list.txt"
+
+# ---------- 行为开关 ----------
+behavior:
+  # strict: true 时任何源下载/解析失败则退出
+  strict_mode: false
+  # 发布前检测内容是否变化，无变化则跳过
+  release_change_detection: true
+  # 旧 Release 保留天数
+  release_keep_days: 3
+
+# ---------- Mihomo 内核 ----------
+mihomo:
+  kernel_cache_path: ".cache/mihomo-kernel"
+  repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"

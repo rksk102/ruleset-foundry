@@ -1,11 +1,22 @@
+"""
+阶段④ README 生成器 — 扫描 merged-rules + merged-rules-mrs 生成美化版 README。
+
+主要改进：
+- 统一日志模块
+"""
 import os
 import sys
 import time
 import urllib.parse
 
+from logger import info, success, error, group_start, group_end, get_logger
+from config_loader import get
+
+logger = get_logger()
+
 REPO_ROOT = os.getcwd()
-DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules") 
-DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs") 
+DIR_RULES_wb = os.path.join(REPO_ROOT, "merged-rules")
+DIR_RULES_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs")
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
@@ -15,12 +26,14 @@ BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{BRANCH_NAME}"
 SHIELDS_STYLE = "flat-square"
 
 HEADER_NAME = "File (Category / Name)" + "&nbsp;" * 35
-HEADER_DL   = "Fast Download (CDN)" + "&nbsp;" * 25
-HEADER_SRC  = "Source" + "&nbsp;" * 10
+HEADER_DL = "Fast Download (CDN)" + "&nbsp;" * 25
+HEADER_SRC = "Source" + "&nbsp;" * 10
+
 
 def format_size(size_bytes):
     """格式化文件大小"""
-    if size_bytes == 0: return "0 B"
+    if size_bytes == 0:
+        return "0 B"
     units = ("B", "KB", "MB", "GB")
     i = 0
     p = size_bytes
@@ -29,11 +42,13 @@ def format_size(size_bytes):
         i += 1
     return f"{p:.2f} {units[i]}"
 
+
 def get_time_badge():
     """生成更新时间徽章 (URL safe)"""
     now = time.strftime("%Y--%m--%d %H:%M")
     enc_now = urllib.parse.quote(now)
     return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={SHIELDS_STYLE}&logo=github"
+
 
 def scan_files(target_dir):
     """通用：扫描指定目录并排序"""
@@ -46,10 +61,11 @@ def scan_files(target_dir):
                 files_list.append(os.path.join(root, file))
     return sorted(files_list)
 
+
 def generate_table_rows(files, root_dir, f_handle):
     """通用：生成表格行数据"""
     if not files:
-        f_handle.write("| ❌ No files found | - | - | - |\n")
+        f_handle.write("| ❌ 没有找到文件 | - | - | - |\n")
         return 0
 
     count = 0
@@ -57,24 +73,28 @@ def generate_table_rows(files, root_dir, f_handle):
         filename = os.path.basename(filepath)
         filesize = format_size(os.path.getsize(filepath))
         rel_path = os.path.relpath(filepath, root_dir)
-        url_path = rel_path.replace(os.sep, '/')
-        root_name = os.path.basename(root_dir) 
+        url_path = rel_path.replace(os.sep, "/")
+        root_name = os.path.basename(root_dir)
         category = os.path.dirname(url_path)
-        if not category: category = "Root"
+        if not category:
+            category = "Root"
         full_rel_path = f"{root_name}/{url_path}"
         link_ghproxy = f"{BASE_GHPROXY}/{full_rel_path}"
         link_jsd = f"{BASE_JSDELIVR}/{full_rel_path}"
         link_raw = f"{BASE_RAW}/{full_rel_path}"
         name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
-        badge_color = "009688" 
+        badge_color = "009688"
         cdn_column = (
             f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-{badge_color}?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
             f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
         )
         src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
-        f_handle.write(f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n")
+        f_handle.write(
+            f"| {name_column} | `{filesize}` | {cdn_column} | {src_column} |\n"
+        )
         count += 1
     return count
+
 
 PAGE_HEADER = f"""<div align="center">
 
@@ -110,7 +130,6 @@ PAGE_HEADER = f"""<div align="center">
 
 """
 
-# 表格头部模板
 TABLE_HEADER = f"""
 | {HEADER_NAME} | Size | {HEADER_DL} | {HEADER_SRC} |
 | :--- | :--- | :--- | :--- |
@@ -124,48 +143,52 @@ FOOTER_TEMPLATE = """
 </div>
 """
 
-# =================================================
-# 4. 主逻辑
-# =================================================
 
 def main():
-    print("::group::✨ Generating Wide README...")
-    
-    # 扫描两个文件夹
+    group_start("✨ 生成 README")
+
     files_std = scan_files(DIR_RULES_wb)
     files_mrs = scan_files(DIR_RULES_MRS)
-    
+
+    info(f"  标准规则文件: {len(files_std)}")
+    info(f"  MRS 规则文件: {len(files_mrs)}")
+
     total_files = 0
-    
+
     try:
-        with open(README_FILE, 'w', encoding='utf-8') as f:
-            # 1. 写入页头
+        with open(README_FILE, "w", encoding="utf-8") as f:
             f.write(PAGE_HEADER)
-            
-            # 2. 写入基础规则列表 (Standard Rules)
+
             f.write("### 📥 基础规则集合 (Standard Rules)\n")
-            f.write('<div class="markdown-alert markdown-alert-note"><p class="markdown-alert-title">Note</p><p>适用于 Clash Premium, Clash Verge, Sing-box 等通用格式。</p></div>\n\n')
+            f.write(
+                '<div class="markdown-alert markdown-alert-note">'
+                '<p class="markdown-alert-title">Note</p>'
+                '<p>适用于 Clash Premium, Clash Verge, Sing-box 等通用格式。</p></div>\n\n'
+            )
             f.write(TABLE_HEADER)
             count_std = generate_table_rows(files_std, DIR_RULES_wb, f)
             total_files += count_std
-            f.write("\n<br>\n\n") # 增加间距
+            f.write("\n<br>\n\n")
 
-            # 3. 写入 MRS 规则列表 (Mihomo Rules)
             f.write("### 🧩 Mihomo 专用集合 (Binary/MRS)\n")
-            f.write('<div class="markdown-alert markdown-alert-important"><p class="markdown-alert-title">Important</p><p>仅适用于 <strong>Mihomo (Clash.Meta)</strong> 内核，性能更好，加载更快。</p></div>\n\n')
+            f.write(
+                '<div class="markdown-alert markdown-alert-important">'
+                '<p class="markdown-alert-title">Important</p>'
+                '<p>仅适用于 <strong>Mihomo (Clash.Meta)</strong> 内核，性能更好，加载更快。</p></div>\n\n'
+            )
             f.write(TABLE_HEADER)
             count_mrs = generate_table_rows(files_mrs, DIR_RULES_MRS, f)
             total_files += count_mrs
-            
-            # 4. 写入页脚
+
             f.write(FOOTER_TEMPLATE.format(total_count=total_files))
-    
+
     except Exception as e:
-        print(f"::error::Error: {e}")
+        error(f"生成 README 失败: {e}")
         sys.exit(1)
-        
-    print("::endgroup::")
-    print(f"✅ README.md updated successfully. (Std: {len(files_std)}, Mrs: {len(files_mrs)})")
+
+    group_end()
+    success(f"✅ README.md 已更新 (Std: {count_std}, MRS: {count_mrs}, 总计: {total_files})")
+
 
 if __name__ == "__main__":
     main()

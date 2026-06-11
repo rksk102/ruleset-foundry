@@ -32,18 +32,12 @@ jobs:
           python-version: '3.x'
 
       - name: 📦 Install Dependencies
-        run: |
-          pip install requests
-          # 或者如果你创建了 requirements.txt:
-          # pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: 🚀 Execute Python Sync
         id: run_sync
         env:
           STRICT_MODE: ${{ inputs.strict_mode }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TERM: xterm-color
-        run: |
-          # 假设 main.py 和 processor.py 都在根目录，或者对应 scripts 目录
-          # 这里假设你把它们放在了 scripts/ 目录下：
-          export PYTHONPATH=$PYTHONPATH:$(pwd)/scripts
-          python scripts/main.py
+        run: python scripts/main.py

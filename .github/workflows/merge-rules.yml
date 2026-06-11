@@ -23,11 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: 📦 Install Dependencies
-        run: |
-          pip install pyyaml rich
-          echo "### 📦 Environment Prepared" >> $GITHUB_STEP_SUMMARY
-          echo "- Pthon 3.11 Setup Complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Dependencies: PyYAML, Rich installed" >> $GITHUB_STEP_SUMMARY
+        run: pip install -r requirements.txt
 
       - name: 🔍 Check File Structure (Debug)
         run: |
@@ -35,14 +31,12 @@ jobs:
           ls -R rulesets/
           echo "=================================="
 
-      - name: 🚀 Run Merger (Strict Mode)
+      - name: 🚀 Run Merger
         id: merger
         env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
           TERM: xterm-color
-          FORCE_COLOR: "1"
-        run: |
-          # 运行脚本，如果脚本 exit 1，整个 Job 会立即停止
-          python3 scripts/merger.py
+        run: python scripts/merger.py
 
       - name: 💾 Commit & Push
         if: success()

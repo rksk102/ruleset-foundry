@@ -1,19 +1,30 @@
+"""
+阶段② 规则合并器 — Hybrid Clean 模式。
+
+主要改进：
+- 统一日志模块替代 rich.console / print
+- 调用 utils.flatten_ip_cidr 统一 CIDR 聚合
+- 原子写入替代直接写文件
+- 读统一配置 config.yaml（兼容 merge-config.yaml）
+"""
 import os
 import sys
-import yaml
-import ipaddress
 import time
-import shutil
 from pathlib import Path
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.traceback import install
 
-install(show_locals=True)
-console = Console()
-CONFIG_FILE = "merge-config.yaml"
+from logger import info, success, warning, error, group_start, group_end, section, get_logger
+from config_loader import load_config
+from utils import (
+    normalize_path,
+    flatten_ip_cidr,
+    atomic_write_with_header,
+)
+
+logger = get_logger()
+
+# ---------- 常量 ----------
+CONFIG_FILE = "config.yaml"
+FALLBACK_CONFIG = "merge-config.yaml"
 SOURCE_DIR = "rulesets"
 OUTPUT_DIR = "merged-rules"
 
@@ -21,44 +32,22 @@ STATS = {
     "success": 0,
     "skipped": 0,
     "failed": 0,
-    "total_rules": 0
+    "total_rules": 0,
 }
 ERROR_LOGS = []
 SUMMARY_ROWS = []
-
 USED_SOURCE_FILES = set()
 
-def normalize_path(p):
-    """标准化路径分隔符"""
-    return str(Path(p).as_posix())
 
 def detect_mode(type_str, filename):
     check_str = (str(type_str) + str(filename)).lower()
-    if 'ip' in check_str or 'cidr' in check_str:
-        return 'IP-CIDR'
-    return 'DOMAIN'
+    if "ip" in check_str or "cidr" in check_str:
+        return "IP-CIDR"
+    return "DOMAIN"
 
-def flatten_ip_cidr(cidr_set):
-    """IPv4/IPv6 分离聚合算法"""
-    ipv4_nets = []
-    ipv6_nets = []
-    for c in cidr_set:
-        c = c.strip()
-        if not c: continue
-        try:
-            net = ipaddress.ip_network(c, strict=False)
-            if net.version == 4: ipv4_nets.append(net)
-            else: ipv6_nets.append(net)
-        except ValueError as e:
-            raise ValueError(f"Invalid CIDR '{c}': {e}")
-    
-    v4_res = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
-    v6_res = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
-    return v4_res + v6_res
 
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     """通用的任务处理核心逻辑"""
-    
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
@@ -71,13 +60,15 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         USED_SOURCE_FILES.add(rel_src_norm)
 
         if not os.path.exists(full_src_path):
-            raise FileNotFoundError(f"Source file not found: {rel_input}")
-        
-        with open(full_src_path, 'r', encoding='utf-8') as f:
+            raise FileNotFoundError(f"源文件未找到: {rel_input}")
+
+        with open(full_src_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith('#') or line.startswith('//'): continue
-                if '#' in line: line = line.split('#')[0].strip()
+                if not line or line.startswith("#") or line.startswith("//"):
+                    continue
+                if "#" in line:
+                    line = line.split("#")[0].strip()
                 combined_rules.add(line)
             files_read_count += 1
 
@@ -86,27 +77,28 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     mode = detect_mode(rule_type, filename)
     raw_count = len(combined_rules)
-    
-    if mode == 'IP-CIDR':
-        final_list = flatten_ip_cidr(combined_rules)
+
+    if mode == "IP-CIDR":
+        final_list, cidr_errors = flatten_ip_cidr(combined_rules)
+        if cidr_errors:
+            for bad_cidr, err_msg in cidr_errors[:5]:
+                warning(f"    ⚠ 无效 CIDR: {bad_cidr} → {err_msg}")
     else:
         final_list = sorted(list(combined_rules))
-    
+
     opt_count = len(final_list)
 
-    os.makedirs(full_output_dir, exist_ok=True)
-    with open(full_output_file, 'w', encoding='utf-8') as f:
-        f.write(f"# ----------------------------------------\n")
-        f.write(f"# Strategy: {strategy}\n")
-        f.write(f"# Type:     {rule_type}\n")
-        f.write(f"# Owner:    {owner}\n")
-        f.write(f"# Date:     {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"# Mode:     {mode}\n")
-        f.write(f"# Count:    {opt_count} (Raw: {raw_count})\n")
-        f.write(f"# Desc:     {desc}\n")
-        f.write(f"# ----------------------------------------\n")
-        f.write("\n".join(final_list))
-        f.write("\n")
+    # 原子写入
+    metadata = {
+        "strategy": strategy,
+        "type": rule_type,
+        "owner": owner,
+        "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "count": f"{opt_count} (Raw: {raw_count})",
+        "desc": desc,
+    }
+    atomic_write_with_header(full_output_file, final_list, metadata)
 
     return {
         "file": filename,
@@ -114,18 +106,19 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         "mode": mode,
         "src_count": files_read_count,
         "raw": raw_count,
-        "opt": opt_count
+        "opt": opt_count,
     }
 
+
 def auto_discover_files():
-    """扫描 rulesets 文件夹，发现未使用的文件"""
+    """扫描 rulesets 文件夹，发现未在配置中指定的文件（自动透传）"""
     discovered_tasks = []
     if not os.path.exists(SOURCE_DIR):
         return []
 
     for root, dirs, files in os.walk(SOURCE_DIR):
         for file in files:
-            if file.startswith('.') or not file.endswith('.txt'):
+            if file.startswith(".") or not file.endswith(".txt"):
                 continue
 
             abs_path = os.path.join(root, file)
@@ -145,24 +138,33 @@ def auto_discover_files():
                 "owner": d_owner,
                 "filename": file,
                 "inputs": [rel_path_norm],
-                "description": f"Auto-detected from {rel_path_norm}"
+                "description": f"自动透传自 {rel_path_norm}",
             })
-            
+
     return discovered_tasks
 
 
 def main():
-    console.rule("[bold blue]🚀 Hybrid Merger (Smart Clean)[/bold blue]")
+    section("🚀 规则合并器")
 
-    if not os.path.exists(CONFIG_FILE):
-        console.print(f"[yellow]⚠️ Warning: Config '{CONFIG_FILE}' not found. Will use Auto-Mode only.[/yellow]")
-    
+    # 读取配置
+    actual_config = CONFIG_FILE if os.path.exists(CONFIG_FILE) else FALLBACK_CONFIG
+    if not os.path.exists(actual_config):
+        warning(f"配置文件 '{actual_config}' 未找到，仅使用自动模式")
+        config_tasks = []
+    else:
+        cfg = load_config()
+        config_tasks = cfg.get("merges", [])
+        info(f"  从 {actual_config} 加载 {len(config_tasks)} 个合并任务")
+
     if not os.path.exists(SOURCE_DIR):
-        console.print(f"[bold red]❌ CRITICAL: Directory '{SOURCE_DIR}' not found![/bold red]")
+        error(f"源目录 '{SOURCE_DIR}' 不存在！")
         sys.exit(1)
 
+    # 清空输出目录
     if os.path.exists(OUTPUT_DIR):
-        console.print("[dim]🧹 Cleaning output directory...[/dim]")
+        info("  🧹 清理输出目录...")
+        import shutil
         for item in os.listdir(OUTPUT_DIR):
             item_path = os.path.join(OUTPUT_DIR, item)
             try:
@@ -171,95 +173,82 @@ def main():
                 elif os.path.isdir(item_path):
                     shutil.rmtree(item_path)
             except Exception as e:
-                console.print(f"[yellow]Warning: Failed to delete {item_path}: {e}[/yellow]")
+                warning(f"  清理失败: {item_path} → {e}")
     else:
         os.makedirs(OUTPUT_DIR)
 
-    config_tasks = []
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                data = yaml.safe_load(f) or {}
-                config_tasks = data.get('merges', [])
-        except Exception as e:
-            console.print(f"[red]Config Error:[/red] {e}")
-            sys.exit(1)
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console
-    ) as progress:
+    # 执行配置合并任务
+    if config_tasks:
+        group_start(f"📋 配置合并任务 ({len(config_tasks)})")
+        for t in config_tasks:
+            fname = t.get("filename", "Unknown")
+            try:
+                if "inputs" not in t:
+                    raise ValueError("缺少 inputs")
+                res = process_task_logic(
+                    t.get("strategy", "Default"),
+                    t.get("type", "General"),
+                    t.get("owner", "Unknown"),
+                    fname,
+                    t["inputs"],
+                    t.get("description", "配置合并"),
+                )
+                if res:
+                    STATS["success"] += 1
+                    STATS["total_rules"] += res["opt"]
+                    SUMMARY_ROWS.append(res)
+                    success(f"  {fname} → {res['opt']} 条")
+                else:
+                    STATS["skipped"] += 1
+            except Exception as e:
+                STATS["failed"] += 1
+                ERROR_LOGS.append(f"配置任务 '{fname}': {str(e)}")
+                warning(f"  ✖ {fname}: {e}")
+        group_end()
 
-        if config_tasks:
-            task_main = progress.add_task("[cyan]Running Config Tasks[/cyan]", total=len(config_tasks))
-            for t in config_tasks:
-                try:
-                    fname = t.get('filename', 'Unknown')
-                    progress.update(task_main, description=f"Config Task: {fname}")
-                    
-                    if 'inputs' not in t: raise ValueError("Missing inputs")
-                    
-                    res = process_task_logic(
-                        t.get('strategy', 'Default'), t.get('type', 'General'),
-                        t.get('owner', 'Unknown'), fname, t['inputs'],
-                        t.get('description', 'Configured Merge')
-                    )
-                    if res:
-                        STATS['success'] += 1
-                        STATS['total_rules'] += res['opt']
-                        SUMMARY_ROWS.append(res)
-                    else:
-                        STATS['skipped'] += 1
-                except Exception as e:
-                    STATS['failed'] += 1
-                    ERROR_LOGS.append(f"Config Task '{fname}': {str(e)}")
-                progress.advance(task_main)
+    # 执行自动发现
+    auto_tasks = auto_discover_files()
+    if auto_tasks:
+        group_start(f"🔍 自动发现透传 ({len(auto_tasks)})")
+        for t in auto_tasks:
+            try:
+                res = process_task_logic(
+                    t["strategy"], t["type"], t["owner"],
+                    t["filename"], t["inputs"], t["description"],
+                )
+                if res:
+                    STATS["success"] += 1
+                    STATS["total_rules"] += res["opt"]
+                    res["file"] = f"(Auto) {res['file']}"
+                    SUMMARY_ROWS.append(res)
+                    success(f"  {t['filename']} → {res['opt']} 条")
+            except Exception as e:
+                STATS["failed"] += 1
+                ERROR_LOGS.append(f"自动任务 '{t['filename']}': {str(e)}")
+                warning(f"  ✖ {t['filename']}: {e}")
+        group_end()
 
-        auto_tasks = auto_discover_files()
-        if auto_tasks:
-            task_auto = progress.add_task("[magenta]Running Auto-Discovery[/magenta]", total=len(auto_tasks))
-            for t in auto_tasks:
-                try:
-                    progress.update(task_auto, description=f"Auto: {t['filename']}")
-                    res = process_task_logic(
-                        t['strategy'], t['type'], t['owner'], 
-                        t['filename'], t['inputs'], t['description']
-                    )
-                    if res:
-                        STATS['success'] += 1
-                        STATS['total_rules'] += res['opt']
-                        res['file'] = f"(Auto) {res['file']}"
-                        SUMMARY_ROWS.append(res)
-                except Exception as e:
-                    STATS['failed'] += 1
-                    ERROR_LOGS.append(f"Auto Task '{t['filename']}': {str(e)}")
-                progress.advance(task_auto)
+    # 汇总
+    section(f"📊 合并报告 | 成功:{STATS['success']} 跳过:{STATS['skipped']} 失败:{STATS['failed']}")
 
-    table = Table(title="Execution Summary", header_style="bold magenta")
-    table.add_column("File", style="cyan")
-    table.add_column("Output Path", style="dim")
-    table.add_column("Mode")
-    table.add_column("Rules", justify="right", style="green")
+    if SUMMARY_ROWS:
+        for r in SUMMARY_ROWS:
+            info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
-    for r in SUMMARY_ROWS:
-        table.add_row(r['file'], r['path'], r['mode'], str(r['opt']))
-    
-    console.print("\n")
-    console.print(table)
-
-    if os.getenv('GITHUB_STEP_SUMMARY'):
-        with open(os.getenv('GITHUB_STEP_SUMMARY'), 'a') as f:
-            f.write(f"### 🚀 Rule Report: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
+    # GitHub Summary
+    if os.getenv("GITHUB_STEP_SUMMARY"):
+        with open(os.getenv("GITHUB_STEP_SUMMARY"), "a") as f:
+            f.write(f"### 🚀 合并报告: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
             if ERROR_LOGS:
                 f.write("```diff\n" + "\n".join([f"- {e}" for e in ERROR_LOGS]) + "\n```\n")
-            f.write("| File | Output Path | Rules |\n|---|---|---|\n")
+            f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
             for r in SUMMARY_ROWS:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
 
     if STATS["failed"] > 0:
+        error("存在失败任务，退出")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

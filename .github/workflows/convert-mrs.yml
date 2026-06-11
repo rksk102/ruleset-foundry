@@ -17,16 +17,13 @@ jobs:
           python-version: '3.11'
 
       - name: ⬇️ Install Python Deps
-        run: pip install requests
+        run: pip install -r requirements.txt
 
       - name: 🚀 Run Conversion Script
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          chmod +x scripts/convert_mrs.py
-          # 脚本会默认在当前目录下寻找 merged-rules 文件夹
-          # 并且会自动保留子目录结构输出到 merged-rules-mrs
-          python3 -u scripts/convert_mrs.py
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -u scripts/convert_mrs.py
 
       - name: 📤 Upload Result (MRS)
         uses: actions/upload-artifact@v4
