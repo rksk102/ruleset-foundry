@@ -1,6 +1,3 @@
-"""
-公共工具模块 — CIDR 聚合、原子写入、ETag 缓存等通用能力。
-"""
 import os
 import re
 import json
@@ -11,17 +8,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
-# ---------- 路径常量 ----------
 CACHE_DIR = Path(".cache")
 ETAG_FILE = CACHE_DIR / "etag_cache.json"
 
-# ---------- CIDR 聚合 ----------
 
 def flatten_ip_cidr(cidr_strings, strict=False):
-    """
-    统一 CIDR 聚合：IPv4/IPv6 分离 → collapse_addresses → 返回排序后的字符串列表。
-    所有需要 CIDR 聚合的地方都调用此函数。
-    """
     ipv4_nets = []
     ipv6_nets = []
     errors = []
@@ -52,13 +43,7 @@ def is_valid_cidr(c):
         return False
 
 
-# ---------- 原子写入 ----------
-
 def atomic_write(filepath, content):
-    """
-    原子写入：先写入同目录下的临时文件，成功后再 rename。
-    保证文件不会处于半写状态。
-    """
     if isinstance(content, list):
         content = "\n".join(content) + "\n"
     elif isinstance(content, str) and not content.endswith("\n"):
@@ -79,11 +64,6 @@ def atomic_write(filepath, content):
 
 
 def atomic_write_with_header(filepath, rules, metadata):
-    """
-    带元数据头的原子写入。
-    metadata: dict (如 strategy, type, owner, count 等)
-    rules: list of str
-    """
     lines = ["# " + "-" * 40]
     for key, value in metadata.items():
         lines.append(f"# {key.title()}: {value}")
@@ -93,10 +73,7 @@ def atomic_write_with_header(filepath, rules, metadata):
     atomic_write(filepath, lines)
 
 
-# ---------- ETag / 增量缓存 ----------
-
 def load_etag_cache():
-    """加载 ETag 缓存"""
     CACHE_DIR.mkdir(exist_ok=True)
     if ETAG_FILE.exists():
         try:
@@ -107,13 +84,11 @@ def load_etag_cache():
 
 
 def save_etag_cache(cache):
-    """保存 ETag 缓存"""
     CACHE_DIR.mkdir(exist_ok=True)
     ETAG_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def get_cached_headers(url):
-    """获取某 URL 的缓存头，用于条件请求"""
     cache = load_etag_cache()
     entry = cache.get(url, {})
     headers = {}
@@ -125,7 +100,6 @@ def get_cached_headers(url):
 
 
 def update_etag_cache(url, response):
-    """根据响应更新 ETag 缓存"""
     cache = load_etag_cache()
     entry = cache.get(url, {})
     changed = False
@@ -145,10 +119,7 @@ def update_etag_cache(url, response):
         save_etag_cache(cache)
 
 
-# ---------- 文件哈希 ----------
-
 def file_sha256(filepath):
-    """计算文件 SHA256"""
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -157,10 +128,6 @@ def file_sha256(filepath):
 
 
 def dir_hash(dirpath, pattern="*"):
-    """
-    计算目录下所有文件的聚合哈希（用于变更检测）。
-    返回 (combined_hash, file_count)
-    """
     p = Path(dirpath)
     if not p.exists():
         return hashlib.sha256().hexdigest(), 0
@@ -176,7 +143,6 @@ def dir_hash(dirpath, pattern="*"):
 
 
 def load_last_hash(hash_file=".cache/last_release_hash.txt"):
-    """读取上次发布的哈希"""
     hp = Path(hash_file)
     if hp.exists():
         return hp.read_text(encoding="utf-8").strip()
@@ -184,12 +150,9 @@ def load_last_hash(hash_file=".cache/last_release_hash.txt"):
 
 
 def save_last_hash(hash_value, hash_file=".cache/last_release_hash.txt"):
-    """保存当前哈希"""
     CACHE_DIR.mkdir(exist_ok=True)
     Path(hash_file).write_text(hash_value, encoding="utf-8")
 
-
-# ---------- 策略/类型规范化 ----------
 
 def normalize_policy(p):
     p = p.lower()
@@ -208,7 +171,6 @@ def normalize_type(t):
 
 
 def get_owner_from_url(url):
-    """从 URL 中提取所有者"""
     parts = url.split("/")
     domain = parts[2]
 
@@ -223,14 +185,10 @@ def get_owner_from_url(url):
 
 
 def normalize_path(p):
-    """标准化路径分隔符"""
     return str(Path(p).as_posix())
 
 
-# ---------- 文件工具 ----------
-
 def clean_directory(dirpath, keep_root=True):
-    """清空目录内容但保留目录本身"""
     p = Path(dirpath)
     if not p.exists():
         if keep_root:

@@ -1,12 +1,3 @@
-"""
-阶段① 规则同步引擎 — 并发下载 + ETag 增量更新 + 部分降级模式。
-
-主要改进：
-- 使用 asyncio + aiohttp 并发下载（速度提升 5-10x）
-- ETag / Last-Modified 检测，仅在远程有更新时才下载
-- 部分降级：单个源失败不阻断整体流程
-- 统一日志模块
-"""
 import os
 import sys
 import re
@@ -31,7 +22,6 @@ from utils import (
 
 logger = get_logger()
 
-# ---------- 常量 ----------
 SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
 RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
 TIMEOUT = get("network", "timeout_seconds", default=15)
@@ -40,7 +30,6 @@ STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 
 def build_filepath(task):
-    """根据任务信息构建输出文件路径（相对路径 + 绝对路径 + 文件名）"""
     owner = get_owner_from_url(task["url"])
     filename = task["url"].split("/")[-1].split(".")[0] + ".txt"
     rel_path = Path(task["policy"]) / task["type"] / owner / filename
@@ -48,13 +37,12 @@ def build_filepath(task):
     return owner, filename, rel_path, abs_path
 
 
-# ---------- 统计 ----------
 class SyncStats:
     def __init__(self):
         self.success = 0
         self.skipped = 0
-        self.download_errors = []  # (url, reason)
-        self.parse_errors = []     # (url, reason)
+        self.download_errors = []
+        self.parse_errors = []
         self.total_lines = 0
         self.start_time = time.time()
         self.etag_hits = []
@@ -66,16 +54,13 @@ class SyncStats:
 stats = SyncStats()
 
 
-# ---------- 解析 sources.urls ----------
-
 def parse_sources():
-    """解析 sources.urls 文件，返回任务列表"""
     tasks = []
     current_policy = "policy"
     current_type = "domain"
 
     if not os.path.exists(SOURCES_FILE):
-        gh_error(f"文件 {SOURCES_FILE} 未找到！")
+        gh_error(f"file {SOURCES_FILE} not found!")
         sys.exit(1)
 
     with open(SOURCES_FILE, "r", encoding="utf-8") as f:
@@ -107,10 +92,7 @@ def parse_sources():
     return tasks
 
 
-# ---------- 并发下载器 ----------
-
 async def download_one(session, task):
-    """下载单个源（带 ETag 检测 + 重试）"""
     url = task["url"]
     cached_headers = get_cached_headers(url)
 
@@ -121,7 +103,7 @@ async def download_one(session, task):
                 headers=cached_headers,
             ) as resp:
                 if resp.status == 304:
-                    debug(f"  ETag 命中(未变化): {url}")
+                    debug(f"  ETag hit(unchanged): {url}")
                     stats.etag_hits.append(url)
                     return (task, None, True)
 
@@ -136,7 +118,7 @@ async def download_one(session, task):
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if attempt == RETRIES:
-                warning(f"  下载失败 [{attempt+1}/{RETRIES+1}]: {url} → {e}")
+                warning(f"  download failed [{attempt+1}/{RETRIES+1}]: {url} -> {e}")
                 return (task, None, False)
             await asyncio.sleep(2 * (attempt + 1))
 
@@ -144,7 +126,6 @@ async def download_one(session, task):
 
 
 async def download_all(tasks):
-    """并发下载所有源"""
     connector = aiohttp.TCPConnector(limit=10)
     async with aiohttp.ClientSession(connector=connector) as session:
         coros = [download_one(session, t) for t in tasks]
@@ -152,10 +133,7 @@ async def download_all(tasks):
     return results
 
 
-# ---------- 处理单个任务 ----------
-
 def process_task(task, raw_bytes, is_cached):
-    """处理单个源：解码 → 解析 → 清洗 → 原子写入"""
     owner, filename, rel_path, abs_path = build_filepath(task)
 
     content_str = processor.safe_decode(raw_bytes)
@@ -172,11 +150,8 @@ def process_task(task, raw_bytes, is_cached):
     return len(result), str(abs_path)
 
 
-# ---------- 清理孤儿文件 ----------
-
 def clean_orphans(expected_files):
-    """清理不再需要的文件"""
-    group_start("🧹 清理孤儿文件")
+    group_start("Clean orphan files")
     if not RULESETS_DIR.exists():
         group_end()
         return
@@ -188,73 +163,67 @@ def clean_orphans(expected_files):
     for f in actual_files:
         if f not in expected_set:
             os.remove(f)
-            debug(f"  已删除: {f}")
+            debug(f"  deleted: {f}")
             removed += 1
 
     for dirpath, _, _ in os.walk(RULESETS_DIR, topdown=False):
         if not os.listdir(dirpath):
             os.rmdir(dirpath)
 
-    info(f"  共清理 {removed} 个孤儿文件")
+    info(f"  cleaned {removed} orphan files")
     group_end()
 
 
-# ---------- Summary 生成 ----------
-
 def generate_summary():
-    """生成 GitHub Actions Summary"""
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     dl_fail = len(stats.download_errors)
     parse_fail = len(stats.parse_errors)
     total_fail = dl_fail + parse_fail
 
-    section(f"📊 同步报告 | 成功:{stats.success} 缓存:{stats.skipped} 失败:{total_fail} | 耗时:{stats.elapsed()}")
+    section(f"Sync Report | success:{stats.success} cache:{stats.skipped} fail:{total_fail} | elapsed:{stats.elapsed()}")
 
     if stats.download_errors:
-        warning(f"  ⚠ 下载失败 ({dl_fail}):")
+        warning(f"  download failures ({dl_fail}):")
         for url, reason in stats.download_errors:
-            warning(f"    └ {url} | {reason}")
+            warning(f"    L {url} | {reason}")
 
     if stats.parse_errors:
-        warning(f"  ⚠ 解析失败 ({parse_fail}):")
+        warning(f"  parse failures ({parse_fail}):")
         for url, reason in stats.parse_errors:
-            warning(f"    └ {url} | {reason}")
+            warning(f"    L {url} | {reason}")
 
     if not summary_path:
         return
 
     with open(summary_path, "a", encoding="utf-8") as f:
-        f.write("# 🛡️ 规则同步仪表盘\n\n")
-        f.write("| 🟢 成功 | 🟡 缓存命中 | 🔴 失败 | 📉 总规则数 |\n")
+        f.write("# Sync Dashboard\n\n")
+        f.write("| success | cache hit | fail | total rules |\n")
         f.write("| :---: | :---: | :---: | :---: |\n")
         f.write(f"| **{stats.success}** | **{stats.skipped}** | **{total_fail}** | **{stats.total_lines}** |\n\n")
 
         if dl_fail > 0:
-            f.write("### 📡 下载失败详情\n\n| URL | 原因 |\n| :--- | :--- |\n")
+            f.write("### Download Failures\n\n| URL | Reason |\n| :--- | :--- |\n")
             for url, reason in stats.download_errors:
                 f.write(f"| `{url}` | {reason} |\n")
             f.write("\n")
 
         if parse_fail > 0:
-            f.write("### 🧠 解析失败详情\n\n| URL | 原因 |\n| :--- | :--- |\n")
+            f.write("### Parse Failures\n\n| URL | Reason |\n| :--- | :--- |\n")
             for url, reason in stats.parse_errors:
                 f.write(f"| `{url}` | {reason} |\n")
             f.write("\n")
 
         if total_fail == 0:
-            f.write("### ✅ 全部源同步正常\n\n")
+            f.write("### All sources synced successfully\n\n")
 
-        f.write(f"\n_生成时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}_\n")
+        f.write(f"\n_Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}_\n")
 
-
-# ---------- Git 提交 ----------
 
 def git_push():
-    """执行 Git 提交"""
-    group_start("💾 Git 提交")
+    group_start("Git Commit")
 
     def run_cmd(args):
-        subprocess.run(args, check=False)
+        return subprocess.run(args, check=False)
 
     run_cmd(["git", "config", "user.name", "github-actions[bot]"])
     run_cmd(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"])
@@ -262,32 +231,35 @@ def git_push():
 
     res = subprocess.run(["git", "diff-index", "--quiet", "HEAD"], check=False)
     if res.returncode == 0:
-        info("  无变更，跳过提交")
+        info("  no changes, skip commit")
     else:
-        info("  推送变更中...")
+        info("  pushing changes...")
         msg = f"chore(sync): Rules update {datetime.now().strftime('%Y-%m-%d')}"
         run_cmd(["git", "commit", "-m", msg])
-        run_cmd(["git", "push"])
+        push_res = run_cmd(["git", "push"])
+        if push_res.returncode != 0:
+            error("  git push failed, trying pull --rebase...")
+            run_cmd(["git", "pull", "--rebase"])
+            push_res2 = run_cmd(["git", "push"])
+            if push_res2.returncode != 0:
+                error("  git push retry failed")
+                sys.exit(1)
 
     group_end()
 
-
-# ---------- 主入口 ----------
 
 def main():
-    group_start("🔧 初始化")
-    info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
+    group_start("Init")
+    info(f"  timeout:{TIMEOUT}s | retries:{RETRIES} | strict:{'ON' if STRICT_MODE else 'OFF'}")
     tasks = parse_sources()
-    info(f"  加载 {len(tasks)} 个上游源")
+    info(f"  loaded {len(tasks)} sources")
     group_end()
 
-    # 并发下载
-    group_start(f"🌐 并发下载 ({len(tasks)} 源)")
+    group_start(f"Download ({len(tasks)} sources)")
     results = asyncio.run(download_all(tasks))
-    info(f"  下载完成 | ETag 命中: {len(stats.etag_hits)}")
+    info(f"  done | ETag hits: {len(stats.etag_hits)}")
     group_end()
 
-    # 逐个处理
     expected_files = []
 
     for task, raw_bytes, is_cached in results:
@@ -296,41 +268,34 @@ def main():
 
         label = f"[{task['policy']}/{task['type']}] {owner}/{filename}"
 
-        # ETag 命中 → 跳过
         if is_cached:
             stats.skipped += 1
-            debug(f"  ⏭ 跳过(未变化): {label}")
+            debug(f"  skip(unchanged): {label}")
             continue
 
-        # 下载失败 → 记录但不阻断
         if raw_bytes is None:
-            stats.download_errors.append((url, "下载失败"))
-            warning(f"  ⚠ 下载失败: {label}")
+            stats.download_errors.append((task["url"], "download failed"))
+            warning(f"  download failed: {label}")
             continue
 
-        # 解析 & 清洗
         try:
             count, path = process_task(task, raw_bytes, is_cached)
             stats.success += 1
             stats.total_lines += count
-            success(f"  {label} → {count} 条规则")
+            success(f"  {label} -> {count} rules")
         except Exception as e:
-            stats.parse_errors.append((url, str(e)))
-            warning(f"  ⚠ 解析失败: {label} | {e}")
+            stats.parse_errors.append((task["url"], str(e)))
+            warning(f"  parse failed: {label} | {e}")
 
-    # 清理孤儿文件
     clean_orphans(expected_files)
-
-    # 生成报告
     generate_summary()
 
-    # 退出判断（降级模式）
     if STRICT_MODE and (stats.download_errors or stats.parse_errors):
-        gh_error("严格模式下存在失败源，退出")
+        gh_error("strict mode: abort on failures")
         sys.exit(1)
 
-    info(f"\n🎯 同步完成: {stats.success} 成功, {stats.skipped} 缓存命中, "
-         f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败")
+    info(f"\nsync done: {stats.success} ok, {stats.skipped} cached, "
+         f"{len(stats.download_errors)} dl-fail, {len(stats.parse_errors)} parse-fail")
 
     git_push()
 

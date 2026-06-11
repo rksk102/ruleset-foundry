@@ -1,9 +1,3 @@
-"""
-阶段④ README 生成器 — 扫描 merged-rules + merged-rules-mrs 生成美化版 README。
-
-主要改进：
-- 统一日志模块
-"""
 import os
 import sys
 import time
@@ -31,7 +25,6 @@ HEADER_SRC = "Source" + "&nbsp;" * 10
 
 
 def format_size(size_bytes):
-    """格式化文件大小"""
     if size_bytes == 0:
         return "0 B"
     units = ("B", "KB", "MB", "GB")
@@ -44,14 +37,12 @@ def format_size(size_bytes):
 
 
 def get_time_badge():
-    """生成更新时间徽章 (URL safe)"""
     now = time.strftime("%Y--%m--%d %H:%M")
     enc_now = urllib.parse.quote(now)
     return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={SHIELDS_STYLE}&logo=github"
 
 
 def scan_files(target_dir):
-    """通用：扫描指定目录并排序"""
     files_list = []
     if not os.path.exists(target_dir):
         return []
@@ -63,9 +54,8 @@ def scan_files(target_dir):
 
 
 def generate_table_rows(files, root_dir, f_handle):
-    """通用：生成表格行数据"""
     if not files:
-        f_handle.write("| ❌ 没有找到文件 | - | - | - |\n")
+        f_handle.write("| [No files found] | - | - | - |\n")
         return 0
 
     count = 0
@@ -82,11 +72,11 @@ def generate_table_rows(files, root_dir, f_handle):
         link_ghproxy = f"{BASE_GHPROXY}/{full_rel_path}"
         link_jsd = f"{BASE_JSDELIVR}/{full_rel_path}"
         link_raw = f"{BASE_RAW}/{full_rel_path}"
-        name_column = f"<sub>📂 {category}</sub><br>**{filename}**"
+        name_column = f"<sub>{category}</sub><br>**{filename}**"
         badge_color = "009688"
         cdn_column = (
-            f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/🚀_GhProxy-{badge_color}?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
-            f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/⚡_jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
+            f'<a href="{link_ghproxy}"><img src="https://img.shields.io/badge/GhProxy-{badge_color}?style={SHIELDS_STYLE}&logo=rocket" alt="GhProxy"></a> '
+            f'<a href="{link_jsd}"><img src="https://img.shields.io/badge/jsDelivr-E34F26?style={SHIELDS_STYLE}&logo=jsdelivr" alt="jsDelivr"></a>'
         )
         src_column = f'<a href="{link_raw}"><img src="https://img.shields.io/badge/Raw_Source-181717?style={SHIELDS_STYLE}&logo=github" alt="GitHub Raw"></a>'
         f_handle.write(
@@ -98,11 +88,11 @@ def generate_table_rows(files, root_dir, f_handle):
 
 PAGE_HEADER = f"""<div align="center">
 
-<h1>📂 {REPO_NAME.split('/')[-1]}</h1>
+<h1>{REPO_NAME.split('/')[-1]}</h1>
 
 <p>
   <a href="https://github.com/{REPO_NAME}/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/{REPO_NAME}/sync-rules.yml?style={SHIELDS_STYLE}&label=Build&color=2ea44f" alt="Build">
+    <img src="https://img.shields.io/github/actions/workflow/status/{REPO_NAME}/pipeline.yml?style={SHIELDS_STYLE}&label=Build&color=2ea44f" alt="Build">
   </a>
   <a href="https://github.com/{REPO_NAME}">
     <img src="https://img.shields.io/github/repo-size/{REPO_NAME}?style={SHIELDS_STYLE}&label=Size&color=orange" alt="Size">
@@ -113,19 +103,19 @@ PAGE_HEADER = f"""<div align="center">
 </p>
 
 <p>
-  <strong>🚀 全自动构建</strong> · <strong>🌍 全球 CDN 加速</strong> · <strong>📦 每日同步更新</strong>
+  <strong>Automated Build</strong> . <strong>Global CDN</strong> . <strong>Daily Sync</strong>
 </p>
 
 </div>
 
 ---
 
-### 📖 使用说明 (Usage)
+### Usage
 
 <div class="markdown-alert markdown-alert-tip">
 <p class="markdown-alert-title">Tip</p>
-<p>推荐优先使用 <strong>GhProxy</strong> 通道，可显著提升国内网络环境下的下载速度。</p>
-<p><strong>通用引用链接模板：</strong> <code>https://ghproxy.net/{BASE_RAW}/[文件夹]/{{分类}}/{{文件名}}</code></p>
+<p>Use <strong>GhProxy</strong> for better download speed in mainland China.</p>
+<p><strong>Template:</strong> <code>https://ghproxy.net/{BASE_RAW}/[dir]/{{category}}/{{filename}}</code></p>
 </div>
 
 """
@@ -145,13 +135,13 @@ FOOTER_TEMPLATE = """
 
 
 def main():
-    group_start("✨ 生成 README")
+    group_start("Generate README")
 
     files_std = scan_files(DIR_RULES_wb)
     files_mrs = scan_files(DIR_RULES_MRS)
 
-    info(f"  标准规则文件: {len(files_std)}")
-    info(f"  MRS 规则文件: {len(files_mrs)}")
+    info(f"  standard rule files: {len(files_std)}")
+    info(f"  MRS rule files: {len(files_mrs)}")
 
     total_files = 0
 
@@ -159,22 +149,22 @@ def main():
         with open(README_FILE, "w", encoding="utf-8") as f:
             f.write(PAGE_HEADER)
 
-            f.write("### 📥 基础规则集合 (Standard Rules)\n")
+            f.write("### Standard Rules\n")
             f.write(
                 '<div class="markdown-alert markdown-alert-note">'
                 '<p class="markdown-alert-title">Note</p>'
-                '<p>适用于 Clash Premium, Clash Verge, Sing-box 等通用格式。</p></div>\n\n'
+                '<p>For Clash Premium, Clash Verge, Sing-box and compatible formats.</p></div>\n\n'
             )
             f.write(TABLE_HEADER)
             count_std = generate_table_rows(files_std, DIR_RULES_wb, f)
             total_files += count_std
             f.write("\n<br>\n\n")
 
-            f.write("### 🧩 Mihomo 专用集合 (Binary/MRS)\n")
+            f.write("### Mihomo Binary (MRS)\n")
             f.write(
                 '<div class="markdown-alert markdown-alert-important">'
                 '<p class="markdown-alert-title">Important</p>'
-                '<p>仅适用于 <strong>Mihomo (Clash.Meta)</strong> 内核，性能更好，加载更快。</p></div>\n\n'
+                '<p>For <strong>Mihomo (Clash.Meta)</strong> kernel only. Better performance, faster loading.</p></div>\n\n'
             )
             f.write(TABLE_HEADER)
             count_mrs = generate_table_rows(files_mrs, DIR_RULES_MRS, f)
@@ -183,11 +173,20 @@ def main():
             f.write(FOOTER_TEMPLATE.format(total_count=total_files))
 
     except Exception as e:
-        error(f"生成 README 失败: {e}")
+        error(f"README generation failed: {e}")
         sys.exit(1)
 
     group_end()
-    success(f"✅ README.md 已更新 (Std: {count_std}, MRS: {count_mrs}, 总计: {total_files})")
+    success(f"README.md updated (Std: {count_std}, MRS: {count_mrs}, total: {total_files})")
+
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write("\n### README Report\n\n")
+            f.write(f"| Type | Files |\n| :--- | :---: |\n")
+            f.write(f"| Standard | **{count_std}** |\n")
+            f.write(f"| MRS | **{count_mrs}** |\n")
+            f.write(f"| **Total** | **{total_files}** |\n")
 
 
 if __name__ == "__main__":

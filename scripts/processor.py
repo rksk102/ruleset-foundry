@@ -5,7 +5,6 @@ import base64
 import binascii
 
 def safe_decode(binary_data):
-    """智能解码：尝试 UTF-8，失败则回退"""
     for codec in ['utf-8', 'gb18030', 'latin1']:
         try:
             return binary_data.decode(codec).strip()
@@ -14,7 +13,6 @@ def safe_decode(binary_data):
     return ""
 
 def is_text_data(text):
-    """判断是否为有效文本（防止Base64解出二进制乱码）"""
     if '\0' in text: return False
     non_printable = sum(1 for c in text if not c.isprintable() and c not in '\r\n\t')
     if len(text) > 0 and (non_printable / len(text)) > 0.3:
@@ -22,9 +20,8 @@ def is_text_data(text):
     return True
 
 def explicit_base64_decode(text):
-    """深度 Base64 清洗"""
     s = text.replace('\n', '').replace('\r', '').strip()
-    if ' ' in s or len(s) < 20: return text 
+    if ' ' in s or len(s) < 20: return text
     
     try:
         decoded_bytes = base64.b64decode(s, validate=True)
@@ -36,7 +33,6 @@ def explicit_base64_decode(text):
     return text
 
 def parse_lines(raw_content):
-    """全能解析器：处理 YAML, Hosts, List, Base64"""
     content = explicit_base64_decode(raw_content)
     lines = []
     
@@ -78,9 +74,6 @@ def parse_lines(raw_content):
     return lines
 
 def process_domain(lines):
-    """
-    智能域名清洗 (已修复 full: 等前缀问题)
-    """
     valid_domains = set()
     ip_check = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
     
@@ -121,7 +114,6 @@ def process_domain(lines):
     return sorted(list(valid_domains))
 
 def process_ip(lines):
-    """智能 IP 清洗"""
     v4_nets = []
     v6_nets = []
     regex_ip = re.compile(r'([0-9a-fA-F:.]+(?:/[0-9]+)?)')

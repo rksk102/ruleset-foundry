@@ -1,5 +1,2 @@
-# mihomo-rule-library Python 依赖
-# 安装: pip install -r requirements.txt
-
 aiohttp>=3.8.0
 PyYAML>=6.0
