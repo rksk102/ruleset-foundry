@@ -30,6 +30,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: 缓存 ETag
+        uses: actions/cache@v4
+        with:
+          path: .cache/etag_cache.json
+          key: etag-${{ github.run_id }}
+          restore-keys: etag-
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 运行同步

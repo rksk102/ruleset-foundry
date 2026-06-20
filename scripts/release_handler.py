@@ -11,6 +11,7 @@ from utils import dir_hash, load_last_hash, save_last_hash
 
 logger = get_logger()
 
+REPO_ROOT = os.getcwd()
 TARGET_CONFIG = {
     "merged-rules": ".txt",
     "merged-rules-mrs": ".mrs",
