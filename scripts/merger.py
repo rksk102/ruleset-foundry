@@ -1,22 +1,23 @@
 import os
 import sys
-import shutil
 import time
 from pathlib import Path
 
 from logger import info, success, warning, error, group_start, group_end, section, get_logger
-from config_loader import load_config
+from config_loader import load_config, get
 from utils import (
     normalize_path,
     flatten_ip_cidr,
+    dedup_domain_suffix,
     atomic_write_with_header,
+    clean_directory,
 )
 
 logger = get_logger()
 
 CONFIG_FILE = "config.yaml"
-SOURCE_DIR = "rulesets"
-OUTPUT_DIR = "merged-rules"
+SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
+OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
 
 STATS = {
     "success": 0,
@@ -72,10 +73,15 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         if cidr_errors:
             for bad_cidr, err_msg in cidr_errors[:5]:
                 warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")
+        dedup_removed = 0
     else:
-        final_list = sorted(list(combined_rules))
+        final_list, dedup_removed = dedup_domain_suffix(combined_rules)
 
     opt_count = len(final_list)
+
+    count_desc = f"{opt_count} (Raw: {raw_count})"
+    if dedup_removed > 0:
+        count_desc += f" | Dedup: -{dedup_removed}"
 
     metadata = {
         "strategy": strategy,
@@ -83,7 +89,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         "owner": owner,
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
-        "count": f"{opt_count} (Raw: {raw_count})",
+        "count": count_desc,
         "desc": desc,
     }
     atomic_write_with_header(full_output_file, final_list, metadata)
@@ -131,6 +137,111 @@ def auto_discover_files():
     return discovered_tasks
 
 
+def load_domains_from_file(filepath):
+    """从规则文件中加载域名集合（跳过注释和空行）。"""
+    domains = set()
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            domains.add(line.lower())
+    return domains
+
+
+def _build_domain_trie(domains):
+    """构建倒序标签 Trie，用于高效检测父子域名关系。"""
+    trie = {}
+    for domain in domains:
+        parts = domain.split(".")
+        parts.reverse()
+        node = trie
+        for part in parts:
+            if part not in node:
+                node[part] = {}
+            node = node[part]
+        node["_mark"] = True
+    return trie
+
+
+def _find_covering_parent(domain, trie):
+    """在 Trie 中查找 domain 的已标记祖先域名，返回 (祖先域名, 是否找到)。
+
+    沿 domain 的标签路径搜索，若遇到已标记节点则返回该祖先的域名。
+    """
+    parts = domain.split(".")
+    parts.reverse()
+    node = trie
+    matched_parts = []
+    for part in parts:
+        if part not in node:
+            break
+        node = node[part]
+        matched_parts.append(part)
+        if node.get("_mark") and len(matched_parts) < len(parts):
+            # 找到祖先（不能是自身，必须是严格祖先）
+            ancestor = ".".join(reversed(matched_parts))
+            return ancestor, True
+    return None, False
+
+
+def detect_cross_policy_conflicts(merged_dir):
+    """检测跨策略的域名冲突，包括显式冲突和隐式冲突。
+
+    显式冲突：同一域名同时出现在多个策略中。
+    隐式冲突：一个策略中的父域名覆盖另一个策略中的子域名
+    （如 google.com 在 policy 中，adservice.google.com 在 block 中，
+    suffix 匹配下 google.com 会覆盖 adservice.google.com）。
+    """
+    policy_domains = {}
+
+    if not os.path.exists(merged_dir):
+        return {}, {}
+
+    for strategy_dir in Path(merged_dir).iterdir():
+        if not strategy_dir.is_dir():
+            continue
+        domains = set()
+        for txt_file in strategy_dir.rglob("*.txt"):
+            domains.update(load_domains_from_file(str(txt_file)))
+        if domains:
+            policy_domains[strategy_dir.name] = domains
+
+    if len(policy_domains) < 2:
+        return {}, {}
+
+    # 显式冲突：同一域名出现在多个策略中
+    strategies = sorted(policy_domains.keys())
+    explicit_conflicts = {}
+    for i, s1 in enumerate(strategies):
+        for s2 in strategies[i + 1:]:
+            overlap = policy_domains[s1] & policy_domains[s2]
+            if overlap:
+                explicit_conflicts[f"{s1} ↔ {s2}"] = sorted(overlap)
+
+    # 隐式冲突：一个策略的父域名覆盖另一个策略的子域名
+    # 为每个策略构建 Trie
+    tries = {s: _build_domain_trie(d) for s, d in policy_domains.items()}
+
+    # 定义需要检测的覆盖方向（父域策略 → 子域策略）
+    # block 子域被其他策略父域覆盖是最危险的
+    implicit_conflicts = {}
+    for parent_strategy, parent_trie in tries.items():
+        for child_strategy, child_domains in policy_domains.items():
+            if parent_strategy == child_strategy:
+                continue
+            key = f"{parent_strategy}(父) → {child_strategy}(子)"
+            items = []
+            for domain in sorted(child_domains):
+                ancestor, found = _find_covering_parent(domain, parent_trie)
+                if found:
+                    items.append((domain, ancestor))
+            if items:
+                implicit_conflicts[key] = items
+
+    return explicit_conflicts, implicit_conflicts
+
+
 def main():
     section("规则合并器")
 
@@ -148,15 +259,7 @@ def main():
 
     if os.path.exists(OUTPUT_DIR):
         info("  清理输出目录...")
-        for item in os.listdir(OUTPUT_DIR):
-            item_path = os.path.join(OUTPUT_DIR, item)
-            try:
-                if os.path.isfile(item_path) or os.path.islink(item_path):
-                    os.unlink(item_path)
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-            except Exception as e:
-                warning(f"  清理失败: {item_path} -> {e}")
+        clean_directory(OUTPUT_DIR)
     else:
         os.makedirs(OUTPUT_DIR)
 
@@ -215,6 +318,31 @@ def main():
         for r in SUMMARY_ROWS:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
+    # 跨策略冲突检测
+    explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
+
+    if explicit_conflicts:
+        group_start("显式冲突（同一域名出现在多个策略中）")
+        total_explicit = sum(len(v) for v in explicit_conflicts.values())
+        warning(f"  发现 {total_explicit} 个显式冲突域名")
+        for pair, domains in explicit_conflicts.items():
+            warning(f"  {pair}: {len(domains)} 个冲突")
+            for d in domains[:10]:
+                warning(f"    - {d}")
+            if len(domains) > 10:
+                warning(f"    ... 及其他 {len(domains) - 10} 个")
+        group_end()
+
+    if implicit_conflicts:
+        group_start("隐式冲突（父域名覆盖其他策略的子域名）")
+        for pair, items in implicit_conflicts.items():
+            warning(f"  {pair}: {len(items)} 个子域被覆盖")
+            for child, parent in items[:10]:
+                warning(f"    - {child} 被 {parent} 覆盖")
+            if len(items) > 10:
+                warning(f"    ... 及其他 {len(items) - 10} 个")
+        group_end()
+
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
             f.write(f"\n### 合并报告: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
@@ -223,6 +351,31 @@ def main():
             f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
             for r in SUMMARY_ROWS:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
+
+            if explicit_conflicts:
+                f.write("\n### 显式冲突检测\n\n")
+                f.write("> 以下域名同时出现在不同策略中，请确保 rules 顺序为 block > direct > policy\n\n")
+                for pair, domains in explicit_conflicts.items():
+                    f.write(f"**{pair}** ({len(domains)} 个冲突)\n\n")
+                    sample = domains[:20]
+                    for d in sample:
+                        f.write(f"- `{d}`\n")
+                    if len(domains) > 20:
+                        f.write(f"- ... 及其他 {len(domains) - 20} 个\n")
+                    f.write("\n")
+
+            if implicit_conflicts:
+                f.write("\n### 隐式冲突检测\n\n")
+                f.write("> 以下子域名虽在低优先级策略中，但其父域名在高优先级策略中，")
+                f.write("suffix 匹配下父域名会覆盖子域名。请确保 rules 顺序为 block > direct > policy\n\n")
+                for pair, items in implicit_conflicts.items():
+                    f.write(f"**{pair}** ({len(items)} 个子域被覆盖)\n\n")
+                    sample = items[:20]
+                    for child, parent in sample:
+                        f.write(f"- `{child}` 被 `{parent}` 覆盖\n")
+                    if len(items) > 20:
+                        f.write(f"- ... 及其他 {len(items) - 20} 个\n")
+                    f.write("\n")
 
     if STATS["failed"] > 0:
         error("存在失败任务，退出")

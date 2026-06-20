@@ -12,6 +12,7 @@ from pathlib import Path
 
 from logger import info, success, warning, error, group_start, group_end, get_logger
 from config_loader import get
+from utils import clean_directory
 
 logger = get_logger()
 
@@ -24,6 +25,54 @@ KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
 VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
 
 
+def _fetch_latest_release_info(headers, max_retries=3):
+    """获取最新 release 信息，带重试。"""
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(REPO_API, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                warning(f"  获取 release 信息失败 [{attempt + 1}/{max_retries}]: {e}，重试中...")
+                time.sleep(2 * (attempt + 1))
+    raise last_err
+
+
+def _download_kernel(download_url, headers, max_retries=3):
+    """下载内核到 KERNEL_BIN（覆盖旧文件），带重试。失败时清理残留。"""
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            dl_req = urllib.request.Request(download_url, headers=headers)
+            with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
+                with gzip.GzipFile(fileobj=dl_resp) as gz:
+                    with open(KERNEL_BIN, "wb") as f:
+                        shutil.copyfileobj(gz, f)
+            st = os.stat(KERNEL_BIN)
+            os.chmod(KERNEL_BIN, st.st_mode | stat.S_IEXEC)
+            return
+        except Exception as e:
+            last_err = e
+            if os.path.exists(KERNEL_BIN):
+                os.unlink(KERNEL_BIN)
+            if attempt < max_retries - 1:
+                warning(f"  下载内核失败 [{attempt + 1}/{max_retries}]: {e}，重试中...")
+                time.sleep(2 * (attempt + 1))
+    raise last_err
+
+
+def _verify_kernel():
+    """验证内核可运行，返回版本输出字符串；不可用返回 None。"""
+    try:
+        ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True, timeout=10)
+        return ver_out.strip()
+    except Exception:
+        return None
+
+
 def get_latest_mihomo():
     group_start("准备 Mihomo 内核")
 
@@ -32,19 +81,21 @@ def get_latest_mihomo():
         headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
 
     try:
-        req = urllib.request.Request(REPO_API, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        data = _fetch_latest_release_info(headers)
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
-        if KERNEL_CACHE_DIR.exists() and VERSION_FILE.exists():
+        # 版本一致且缓存内核可用，直接用缓存
+        if VERSION_FILE.exists():
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
-                info(f"  使用缓存内核 ({tag_name})")
-                group_end()
-                return
+                ver_out = _verify_kernel()
+                if ver_out:
+                    info(f"  使用缓存内核 ({tag_name}): {ver_out}")
+                    group_end()
+                    return
 
+        # 查找 linux-amd64 资源
         download_url = None
         for asset in data["assets"]:
             if ("linux-amd64" in asset["name"]
@@ -58,23 +109,26 @@ def get_latest_mihomo():
 
         info(f"  下载内核: {download_url}")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _download_kernel(download_url, headers)
 
-        dl_req = urllib.request.Request(download_url, headers=headers)
-        with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
-            with gzip.GzipFile(fileobj=dl_resp) as gz:
-                with open(KERNEL_BIN, "wb") as f:
-                    shutil.copyfileobj(gz, f)
+        ver_out = _verify_kernel()
+        if not ver_out:
+            raise Exception("内核下载后验证失败（mihomo -v 不可用）")
 
-        st = os.stat(KERNEL_BIN)
-        os.chmod(KERNEL_BIN, st.st_mode | stat.S_IEXEC)
-
-        ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True)
-        info(f"  内核安装成功: {ver_out.strip()}")
-
+        info(f"  内核安装成功: {ver_out}")
         VERSION_FILE.write_text(tag_name)
 
     except Exception as e:
         error(f"  内核准备失败: {e}")
+        # 降级：尝试使用已缓存的内核
+        if os.path.exists(KERNEL_BIN):
+            warning("  尝试降级使用已缓存的内核...")
+            ver_out = _verify_kernel()
+            if ver_out:
+                warning(f"  使用缓存内核（版本可能非最新）: {ver_out}")
+                group_end()
+                return
+            error("  缓存内核也无法运行")
         sys.exit(1)
     finally:
         group_end()
@@ -109,12 +163,11 @@ def write_summary(stats, total_time):
         return
 
     is_failed = stats["failed"] > 0
-    status_icon = "失败" if is_failed else "成功"
     status_text = "失败" if is_failed else "成功"
 
     markdown = [
         "\n### MRS 转换报告",
-        f"**结果**: {status_icon} {status_text} (耗时: {total_time:.2f}s)",
+        f"**结果**: {status_text} (耗时: {total_time:.2f}s)",
         "",
         "| 指标 | 计数 |",
         "| :--- | :--- |",
@@ -137,18 +190,7 @@ def main():
 
     group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
-    if os.path.exists(DST_ROOT):
-        for item in os.listdir(DST_ROOT):
-            item_path = os.path.join(DST_ROOT, item)
-            try:
-                if os.path.isfile(item_path) or os.path.islink(item_path):
-                    os.unlink(item_path)
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-            except Exception:
-                pass
-    else:
-        os.makedirs(DST_ROOT)
+    clean_directory(DST_ROOT)
 
     if not os.path.exists(SRC_ROOT):
         error(f"源目录 {SRC_ROOT} 不存在！")

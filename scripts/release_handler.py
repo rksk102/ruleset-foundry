@@ -48,9 +48,9 @@ def zip_target_files(tag_date):
                 for file in files:
                     if file.endswith(ext):
                         file_path = os.path.join(root, file)
-                        arcname = os.path.join(folder, file)
+                        arcname = os.path.relpath(file_path, REPO_ROOT)
                         zipf.write(file_path, arcname)
-                        file_manifest[folder].append(file)
+                        file_manifest[folder].append(arcname)
                         total_files += 1
 
     if total_files == 0:
@@ -145,12 +145,17 @@ def main():
     notes = generate_release_notes(tag_date, tag_time, manifest)
 
     info(f"上传 Release {release_tag}...")
-    run_gh([
+    create_result = run_gh([
         "release", "create", release_tag, zip_file,
         "--title", f"Merged Rules - {tag_date}",
         "--notes", notes,
         "--latest",
     ])
+    if create_result is None:
+        error("  Release 创建失败，不保存哈希，下次运行将重试")
+        if os.path.exists(zip_file):
+            os.unlink(zip_file)
+        sys.exit(1)
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)

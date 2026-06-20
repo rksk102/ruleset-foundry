@@ -17,18 +17,58 @@ class Colors:
     BLUE = "\033[94m"
     MAGENTA = "\033[95m"
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-LOG_FILE = LOG_DIR / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+# 保留最近 N 个日志文件，避免无限增长
+LOG_KEEP_COUNT = 20
 
 _logger = None
 _log_file_handle = None
+_LOG_FILE = None
+
+
+def _resolve_log_file():
+    """延迟解析日志目录与文件路径，避免模块导入时即创建目录。
+
+    优先从 config_loader 读取 paths.log_dir，缺失时回退到 "logs"。
+    """
+    global _LOG_FILE
+    if _LOG_FILE is not None:
+        return _LOG_FILE
+
+    log_dir_name = "logs"
+    try:
+        from config_loader import get
+        log_dir_name = get("paths", "log_dir", default="logs") or "logs"
+    except Exception:
+        pass
+
+    log_dir = Path(log_dir_name)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _LOG_FILE = log_dir / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+    return _LOG_FILE
+
+
+def _cleanup_old_logs():
+    """保留最近 LOG_KEEP_COUNT 个日志文件，删除更早的。"""
+    try:
+        log_file = _resolve_log_file()
+        log_dir = log_file.parent
+        logs = sorted(
+            log_dir.glob("run-*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old in logs[LOG_KEEP_COUNT:]:
+            old.unlink()
+    except Exception:
+        pass
 
 
 def _init_logger():
     global _logger, _log_file_handle
     if _logger is not None:
         return
+
+    log_file = _resolve_log_file()
 
     _logger = logging.getLogger("mihomo-rules")
     _logger.setLevel(logging.DEBUG)
@@ -39,7 +79,7 @@ def _init_logger():
     console.setFormatter(logging.Formatter("%(message)s"))
     _logger.addHandler(console)
 
-    _log_file_handle = logging.FileHandler(str(LOG_FILE), encoding="utf-8")
+    _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
     _log_file_handle.setLevel(logging.DEBUG)
     _log_file_handle.setFormatter(
         logging.Formatter(
@@ -48,6 +88,8 @@ def _init_logger():
         )
     )
     _logger.addHandler(_log_file_handle)
+
+    _cleanup_old_logs()
 
 
 def get_logger():

@@ -3,7 +3,6 @@ import sys
 import re
 import asyncio
 import aiohttp
-import subprocess
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from utils import (
     get_owner_from_url,
     get_cached_headers,
     update_etag_cache,
+    flush_etag_cache,
     atomic_write,
 )
 
@@ -31,7 +31,9 @@ STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 def build_filepath(task):
     owner = get_owner_from_url(task["url"])
-    filename = task["url"].split("/")[-1].split(".")[0] + ".txt"
+    # 剥离 query string 和 fragment，再取最后一段路径
+    last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
+    filename = last_segment.split(".")[0] + ".txt"
     rel_path = Path(task["policy"]) / task["type"] / owner / filename
     abs_path = RULESETS_DIR / rel_path
     return owner, filename, rel_path, abs_path
@@ -81,7 +83,7 @@ def parse_sources():
             current_type = normalize_type(m_type.group(1))
             continue
 
-        url_match = re.search(r"https?://\S+", line)
+        url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
             tasks.append({
                 "policy": current_policy,
@@ -105,24 +107,29 @@ async def download_one(session, task):
                 if resp.status == 304:
                     debug(f"  ETag 命中(未变化): {url}")
                     stats.etag_hits.append(url)
-                    return (task, None, True)
+                    return (task, None, True, None)
 
                 if resp.status == 200:
                     content = await resp.read()
                     update_etag_cache(url, resp)
-                    return (task, content, False)
+                    return (task, content, False, None)
+
+                # 4xx 客户端错误（除 429 限流）为永久错误，不重试
+                if 400 <= resp.status < 500 and resp.status != 429:
+                    warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
+                    return (task, None, False, f"HTTP {resp.status}")
 
                 if attempt == RETRIES:
-                    return (task, None, False)
+                    return (task, None, False, f"HTTP {resp.status}")
                 await asyncio.sleep(1 * (attempt + 1))
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if attempt == RETRIES:
                 warning(f"  下载失败 [{attempt+1}/{RETRIES+1}]: {url} -> {e}")
-                return (task, None, False)
+                return (task, None, False, f"{type(e).__name__}: {e}")
             await asyncio.sleep(2 * (attempt + 1))
 
-    return (task, None, False)
+    return (task, None, False, "未知错误")
 
 
 async def download_all(tasks):
@@ -133,7 +140,7 @@ async def download_all(tasks):
     return results
 
 
-def process_task(task, raw_bytes, is_cached):
+def process_task(task, raw_bytes):
     owner, filename, rel_path, abs_path = build_filepath(task)
 
     content_str = processor.safe_decode(raw_bytes)
@@ -219,35 +226,6 @@ def generate_summary():
         f.write(f"\n_生成时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}_\n")
 
 
-def git_push():
-    group_start("Git 提交")
-
-    def run_cmd(args):
-        return subprocess.run(args, check=False)
-
-    run_cmd(["git", "config", "user.name", "github-actions[bot]"])
-    run_cmd(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"])
-    run_cmd(["git", "add", "rulesets/"])
-
-    res = subprocess.run(["git", "diff-index", "--quiet", "HEAD"], check=False)
-    if res.returncode == 0:
-        info("  无变更，跳过提交")
-    else:
-        info("  推送变更中...")
-        msg = f"chore(sync): Rules update {datetime.now().strftime('%Y-%m-%d')}"
-        run_cmd(["git", "commit", "-m", msg])
-        push_res = run_cmd(["git", "push"])
-        if push_res.returncode != 0:
-            error("  git push 失败，尝试 pull --rebase 后重试...")
-            run_cmd(["git", "pull", "--rebase"])
-            push_res2 = run_cmd(["git", "push"])
-            if push_res2.returncode != 0:
-                error("  git push 重试仍然失败")
-                sys.exit(1)
-
-    group_end()
-
-
 def main():
     group_start("初始化")
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
@@ -257,12 +235,13 @@ def main():
 
     group_start(f"并发下载 ({len(tasks)} 源)")
     results = asyncio.run(download_all(tasks))
+    flush_etag_cache()
     info(f"  下载完成 | ETag 命中: {len(stats.etag_hits)}")
     group_end()
 
     expected_files = []
 
-    for task, raw_bytes, is_cached in results:
+    for task, raw_bytes, is_cached, error_msg in results:
         owner, filename, rel_path, abs_path = build_filepath(task)
         expected_files.append(abs_path)
 
@@ -274,12 +253,12 @@ def main():
             continue
 
         if raw_bytes is None:
-            stats.download_errors.append((task["url"], "下载失败"))
-            warning(f"  下载失败: {label}")
+            stats.download_errors.append((task["url"], error_msg or "下载失败"))
+            warning(f"  下载失败: {label} | {error_msg}")
             continue
 
         try:
-            count, path = process_task(task, raw_bytes, is_cached)
+            count, path = process_task(task, raw_bytes)
             stats.success += 1
             stats.total_lines += count
             success(f"  {label} -> {count} 条规则")
@@ -296,8 +275,6 @@ def main():
 
     info(f"\n同步完成: {stats.success} 成功, {stats.skipped} 缓存命中, "
          f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败")
-
-    git_push()
 
 
 if __name__ == "__main__":

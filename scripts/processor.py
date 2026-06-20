@@ -76,18 +76,22 @@ def parse_lines(raw_content):
 def process_domain(lines):
     valid_domains = set()
     ip_check = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
-    
+
     prefixes = [
-        'full:', 'domain:', 'host:', 'keyword:', 'regexp:', 
-        'domain-suffix:', 'domain-keyword:', '+.'
+        'full:', 'domain:', 'host:',
+        'domain-suffix:', '+.'
     ]
-    
+
     for item in lines:
         s = item.lower().strip()
         if not s: continue
-        
+
         if s.startswith('@@'): continue
-        
+
+        # 关键字/正则规则不当作域名处理
+        if s.startswith(('keyword:', 'domain-keyword:', 'regexp:')):
+            continue
+
         for prefix in prefixes:
             if s.startswith(prefix):
                 s = s[len(prefix):]

@@ -52,7 +52,7 @@ def load_config():
         except Exception as e:
             print(f"::warning::配置文件 {_CONFIG_FILE} 加载失败: {e}，使用默认值")
     elif _CONFIG_FILE.exists() and not _HAS_YAML:
-        pass
+        print("::warning::检测到 config.yaml 但 PyYAML 未安装，配置将被忽略，请运行 pip install -r requirements.txt")
 
     if os.getenv("STRICT_MODE"):
         defaults["behavior"]["strict_mode"] = os.getenv("STRICT_MODE", "").lower() == "true"

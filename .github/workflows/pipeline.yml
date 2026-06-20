@@ -37,6 +37,12 @@ jobs:
           STRICT_MODE: ${{ inputs.strict_mode || 'false' }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/main.py
+      - name: 上传 rulesets 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: rulesets
+          path: rulesets/
+          retention-days: 1
 
   merge-rules:
     name: "2. 合并规则"
@@ -47,18 +53,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 下载 rulesets 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: rulesets
+          path: rulesets/
       - name: 运行合并
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
-      - name: 提交并推送合并结果
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add merged-rules/
-          git commit -m "chore(merge): 合并规则 [skip ci]" || echo "nothing to commit"
-          git pull --rebase origin ${{ github.ref_name }}
-          git push
+      - name: 上传 merged-rules 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-rules
+          path: merged-rules/
+          retention-days: 1
 
   convert-mrs:
     name: "3. 转换 MRS"
@@ -69,6 +78,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 下载 merged-rules 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: merged-rules
+          path: merged-rules/
       - name: 缓存 Mihomo 内核
         uses: actions/cache@v4
         with:
@@ -80,19 +94,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
-      - name: 提交并推送 MRS 文件
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add merged-rules-mrs/
-          git commit -m "chore(mrs): 自动生成 MRS 规则 [skip ci]" || echo "nothing to commit"
-          git pull --rebase origin ${{ github.ref_name }}
-          git push
+      - name: 上传 merged-rules-mrs 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-rules-mrs
+          path: merged-rules-mrs/
+          retention-days: 1
 
-  gen-readme:
-    name: "4. 生成 README"
+  publish:
+    name: "4. 发布"
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     needs: convert-mrs
     steps:
       - uses: actions/checkout@v4
@@ -100,30 +112,30 @@ jobs:
           fetch-depth: 0
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 下载 merged-rules 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: merged-rules
+          path: merged-rules/
+      - name: 下载 merged-rules-mrs 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: merged-rules-mrs
+          path: merged-rules-mrs/
       - name: 生成 README
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
-      - name: 提交并推送 README
+      - name: 提交并推送所有产物
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "docs: 更新 README [skip ci]" || echo "nothing to commit"
+          git add merged-rules/ merged-rules-mrs/ README.md
+          git commit -m "chore: 自动更新规则与 README [skip ci]" || echo "nothing to commit"
           git pull --rebase origin ${{ github.ref_name }}
           git push
-
-  create-release:
-    name: "5. 发布 Release"
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: gen-readme
-    if: ${{ inputs.skip_release != true }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: 安装 Python 环境
-        uses: ./.github/actions/setup-python-env
       - name: 发布 Release
+        if: ${{ inputs.skip_release != true }}
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
