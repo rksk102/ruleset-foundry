@@ -14,9 +14,6 @@ from utils import (
     normalize_policy,
     normalize_type,
     get_owner_from_url,
-    get_cached_headers,
-    update_etag_cache,
-    flush_etag_cache,
     atomic_write,
 )
 
@@ -41,12 +38,10 @@ def build_filepath(task):
 class SyncStats:
     def __init__(self):
         self.success = 0
-        self.skipped = 0
         self.download_errors = []
         self.parse_errors = []
         self.total_lines = 0
         self.start_time = time.time()
-        self.etag_hits = []
 
     def elapsed(self):
         return f"{time.time() - self.start_time:.1f}s"
@@ -95,39 +90,31 @@ def parse_sources():
 
 async def download_one(session, task):
     url = task["url"]
-    cached_headers = get_cached_headers(url)
 
     for attempt in range(RETRIES + 1):
         try:
             async with session.get(
                 url, timeout=aiohttp.ClientTimeout(total=TIMEOUT),
-                headers=cached_headers,
             ) as resp:
-                if resp.status == 304:
-                    debug(f"  ETag 命中(未变化): {url}")
-                    stats.etag_hits.append(url)
-                    return (task, None, True, None)
-
                 if resp.status == 200:
                     content = await resp.read()
-                    update_etag_cache(url, resp)
-                    return (task, content, False, None)
+                    return (task, content, None)
 
                 if 400 <= resp.status < 500 and resp.status != 429:
                     warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
-                    return (task, None, False, f"HTTP {resp.status}")
+                    return (task, None, f"HTTP {resp.status}")
 
                 if attempt == RETRIES:
-                    return (task, None, False, f"HTTP {resp.status}")
+                    return (task, None, f"HTTP {resp.status}")
                 await asyncio.sleep(1 * (attempt + 1))
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if attempt == RETRIES:
                 warning(f"  下载失败 [{attempt+1}/{RETRIES+1}]: {url} -> {e}")
-                return (task, None, False, f"{type(e).__name__}: {e}")
+                return (task, None, f"{type(e).__name__}: {e}")
             await asyncio.sleep(2 * (attempt + 1))
 
-    return (task, None, False, "未知错误")
+    return (task, None, "未知错误")
 
 
 async def download_all(tasks):
@@ -185,7 +172,7 @@ def generate_summary():
     parse_fail = len(stats.parse_errors)
     total_fail = dl_fail + parse_fail
 
-    section(f"同步报告 | 成功:{stats.success} 缓存:{stats.skipped} 失败:{total_fail} | 耗时:{stats.elapsed()}")
+    section(f"同步报告 | 成功:{stats.success} 失败:{total_fail} | 耗时:{stats.elapsed()}")
 
     if stats.download_errors:
         warning(f"  下载失败 ({dl_fail}):")
@@ -202,9 +189,9 @@ def generate_summary():
 
     with open(summary_path, "a", encoding="utf-8") as f:
         f.write("# 规则同步仪表盘\n\n")
-        f.write("| 成功 | 缓存命中 | 失败 | 总规则数 |\n")
-        f.write("| :---: | :---: | :---: | :---: |\n")
-        f.write(f"| **{stats.success}** | **{stats.skipped}** | **{total_fail}** | **{stats.total_lines}** |\n\n")
+        f.write("| 成功 | 失败 | 总规则数 |\n")
+        f.write("| :---: | :---: | :---: |\n")
+        f.write(f"| **{stats.success}** | **{total_fail}** | **{stats.total_lines}** |\n\n")
 
         if dl_fail > 0:
             f.write("### 下载失败详情\n\n| URL | 原因 |\n| :--- | :--- |\n")
@@ -234,22 +221,16 @@ def main():
 
     group_start(f"并发下载 ({len(tasks)} 源)")
     results = asyncio.run(download_all(tasks))
-    flush_etag_cache()
-    info(f"  下载完成 | ETag 命中: {len(stats.etag_hits)}")
+    info(f"  下载完成")
     group_end()
 
     expected_files = []
 
-    for task, raw_bytes, is_cached, error_msg in results:
+    for task, raw_bytes, error_msg in results:
         owner, filename, rel_path, abs_path = build_filepath(task)
         expected_files.append(abs_path)
 
         label = f"[{task['policy']}/{task['type']}] {owner}/{filename}"
-
-        if is_cached:
-            stats.skipped += 1
-            debug(f"  跳过(未变化): {label}")
-            continue
 
         if raw_bytes is None:
             stats.download_errors.append((task["url"], error_msg or "下载失败"))
@@ -265,13 +246,15 @@ def main():
             stats.parse_errors.append((task["url"], str(e)))
             warning(f"  解析失败: {label} | {e}")
 
-    if stats.success == 0 and stats.download_errors == 0:
-        info("  所有源均未变化（ETag 缓存命中），无新内容写入")
+    if stats.success == 0:
+        reason = "（全部源下载失败）" if stats.download_errors else ""
+        info(f"  无新规则写入{reason}")
         summary_file = RULESETS_DIR / "sync-summary.txt"
         summary_file.write_text(
             "# 同步摘要\n"
             f"# 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"# 所有 {len(tasks)} 个源均未变化（ETag 缓存命中），无新内容同步\n",
+            f"# 成功: {stats.success} 失败: {len(stats.download_errors)}\n"
+            f"# 无新规则内容同步\n",
             encoding="utf-8",
         )
         expected_files.append(summary_file)
@@ -283,7 +266,7 @@ def main():
         gh_error("严格模式下存在失败源，退出")
         sys.exit(1)
 
-    info(f"\n同步完成: {stats.success} 成功, {stats.skipped} 缓存命中, "
+    info(f"\n同步完成: {stats.success} 成功, "
          f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败")
 
 

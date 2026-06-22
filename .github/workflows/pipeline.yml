@@ -30,12 +30,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - name: 缓存 ETag
-        uses: actions/cache@v5
-        with:
-          path: .cache/etag_cache.json
-          key: etag-${{ github.run_id }}
-          restore-keys: etag-
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
@@ -60,15 +54,19 @@ jobs:
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 rulesets 产物
+        id: dl-rulesets
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: rulesets
           path: rulesets/
       - name: 运行合并
+        if: steps.dl-rulesets.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
+        if: steps.dl-rulesets.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: merged-rules
@@ -85,22 +83,27 @@ jobs:
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 merged-rules 产物
+        id: dl-merged
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
       - name: 缓存 Mihomo 内核
+        if: steps.dl-merged.outcome == 'success'
         uses: actions/cache@v5
         with:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-v1
           restore-keys: mihomo-${{ runner.os }}-
       - name: 转换规则集
+        if: steps.dl-merged.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
       - name: 上传 merged-rules-mrs 产物
+        if: steps.dl-merged.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: merged-rules-mrs
@@ -119,20 +122,26 @@ jobs:
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 merged-rules 产物
+        id: dl-merged
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
       - name: 下载 merged-rules-mrs 产物
+        id: dl-mrs
         uses: actions/download-artifact@v7
+        continue-on-error: true
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
       - name: 生成 README
+        if: steps.dl-merged.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
       - name: 提交并推送所有产物
+        if: steps.dl-merged.outcome == 'success' || steps.dl-mrs.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
