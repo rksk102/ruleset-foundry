@@ -29,9 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 缓存 ETag
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/etag_cache.json
           key: etag-${{ github.run_id }}
@@ -44,7 +44,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/main.py
       - name: 上传 rulesets 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rulesets
           path: rulesets/
@@ -56,11 +56,11 @@ jobs:
     timeout-minutes: 5
     needs: sync-rules
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 rulesets 产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: rulesets
           path: rulesets/
@@ -69,7 +69,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: merged-rules
           path: merged-rules/
@@ -81,16 +81,16 @@ jobs:
     timeout-minutes: 10
     needs: merge-rules
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 merged-rules 产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: merged-rules
           path: merged-rules/
       - name: 缓存 Mihomo 内核
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-v1
@@ -101,7 +101,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
       - name: 上传 merged-rules-mrs 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
@@ -113,18 +113,18 @@ jobs:
     timeout-minutes: 8
     needs: convert-mrs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 merged-rules 产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: merged-rules
           path: merged-rules/
       - name: 下载 merged-rules-mrs 产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
