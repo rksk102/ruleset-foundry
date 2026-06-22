@@ -12,14 +12,13 @@ venv/
 logs/
 *.zip
 
-# 中间产物（改由 CI artifact 传递，不再入库）
+# 中间产物
 rulesets/
 
 # Mihomo 内核
 mihomo
 
 # IDE
-.vscode/settings.json
 .idea/
 
 # OS

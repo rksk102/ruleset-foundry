@@ -226,6 +226,7 @@ def generate_summary():
 
 def main():
     group_start("初始化")
+    RULESETS_DIR.mkdir(parents=True, exist_ok=True)
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
     tasks = parse_sources()
     info(f"  加载 {len(tasks)} 个上游源")
@@ -263,6 +264,17 @@ def main():
         except Exception as e:
             stats.parse_errors.append((task["url"], str(e)))
             warning(f"  解析失败: {label} | {e}")
+
+    if stats.success == 0 and stats.download_errors == 0:
+        info("  所有源均未变化（ETag 缓存命中），无新内容写入")
+        summary_file = RULESETS_DIR / "sync-summary.txt"
+        summary_file.write_text(
+            "# 同步摘要\n"
+            f"# 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"# 所有 {len(tasks)} 个源均未变化（ETag 缓存命中），无新内容同步\n",
+            encoding="utf-8",
+        )
+        expected_files.append(summary_file)
 
     clean_orphans(expected_files)
     generate_summary()
