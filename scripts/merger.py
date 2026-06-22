@@ -44,13 +44,16 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     combined_rules = set()
     files_read_count = 0
 
+    missing_files = []
+
     for rel_input in inputs:
         full_src_path = os.path.join(SOURCE_DIR, rel_input)
         rel_src_norm = normalize_path(rel_input)
         USED_SOURCE_FILES.add(rel_src_norm)
 
         if not os.path.exists(full_src_path):
-            raise FileNotFoundError(f"源文件未找到: {rel_input}")
+            missing_files.append(rel_input)
+            continue
 
         with open(full_src_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -62,7 +65,11 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
                 combined_rules.add(line)
             files_read_count += 1
 
+    if missing_files:
+        for mf in missing_files:
+            warning(f"    源文件缺失(跳过): {mf}")
     if files_read_count == 0 and inputs:
+        warning(f"    所有源文件均缺失，跳过任务: {filename}")
         return None
 
     mode = detect_mode(rule_type, filename)

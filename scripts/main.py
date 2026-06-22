@@ -31,7 +31,6 @@ STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 def build_filepath(task):
     owner = get_owner_from_url(task["url"])
-    # 剥离 query string 和 fragment，再取最后一段路径
     last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
     filename = last_segment.split(".")[0] + ".txt"
     rel_path = Path(task["policy"]) / task["type"] / owner / filename
@@ -114,7 +113,6 @@ async def download_one(session, task):
                     update_etag_cache(url, resp)
                     return (task, content, False, None)
 
-                # 4xx 客户端错误（除 429 限流）为永久错误，不重试
                 if 400 <= resp.status < 500 and resp.status != 429:
                     warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
                     return (task, None, False, f"HTTP {resp.status}")
@@ -133,7 +131,7 @@ async def download_one(session, task):
 
 
 async def download_all(tasks):
-    connector = aiohttp.TCPConnector(limit=10)
+    connector = aiohttp.TCPConnector(limit=3)
     async with aiohttp.ClientSession(connector=connector) as session:
         coros = [download_one(session, t) for t in tasks]
         results = await asyncio.gather(*coros)
