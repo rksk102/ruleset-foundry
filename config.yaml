@@ -40,10 +40,20 @@ merges:
       - "policy/domain/Loyalsoldier/proxy-list.txt"
 
 behavior:
+  # 仅控制任一源失败时是否让同步步骤退出，与域名去重无关
   strict_mode: false
   release_change_detection: true
   release_keep_days: 3
+  # 跨策略冲突处理: ignore(不检查) | warn(仅告警) | fail(中断)
+  # 注意：当前隐式冲突基线噪声较大，启用 fail 前请先人工核对检测结果。
+  conflict_policy: "warn"
 
 mihomo:
   kernel_cache_path: ".cache/mihomo-kernel"
   repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+  # 钉扎版本；留空才跟随 latest（不推荐）。安全更新需手动 bump 并重填 asset_name/kernel_sha256。
+  pinned_version: "v1.19.30"
+  # 精确资产名，消除"按 API 顺序取第一个"的不确定性
+  asset_name: "mihomo-linux-amd64-v1.19.30.gz"
+  # 解压后二进制的 sha256（用 `python scripts/convert_mrs.py --print-kernel-hash` 生成）
+  kernel_sha256: "3e92df24f5e80e86b9cf9183ceb7bb575f0bd132a9dc4081dae42e80f21076ae"

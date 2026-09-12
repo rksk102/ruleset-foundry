@@ -1,16 +1,16 @@
 import os
 import sys
-import time
 from pathlib import Path
 
-from logger import info, success, warning, error, group_start, group_end, section, get_logger
-from config_loader import load_config, get
+from config_loader import get, load_config
+from logger import error, get_logger, group_end, group_start, info, section, success, warning
 from utils import (
-    normalize_path,
-    flatten_ip_cidr,
-    dedup_domain_suffix,
     atomic_write_with_header,
+    beijing_timestamp,
     clean_directory,
+    dedup_domain_suffix,
+    flatten_ip_cidr,
+    normalize_path,
 )
 
 logger = get_logger()
@@ -27,14 +27,10 @@ STATS = {
 }
 ERROR_LOGS = []
 SUMMARY_ROWS = []
-USED_SOURCE_FILES = set()
 
 
-def detect_mode(type_str, filename):
-    check_str = (str(type_str) + str(filename)).lower()
-    if "ip" in check_str or "cidr" in check_str:
-        return "IP-CIDR"
-    return "DOMAIN"
+def detect_mode(type_str):
+    return "IP-CIDR" if "ipcidr" in str(type_str).lower() else "DOMAIN"
 
 
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
@@ -48,9 +44,6 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     for rel_input in inputs:
         full_src_path = os.path.join(SOURCE_DIR, rel_input)
-        rel_src_norm = normalize_path(rel_input)
-        USED_SOURCE_FILES.add(rel_src_norm)
-
         if not os.path.exists(full_src_path):
             missing_files.append(rel_input)
             continue
@@ -66,13 +59,12 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
             files_read_count += 1
 
     if missing_files:
-        for mf in missing_files:
-            warning(f"    源文件缺失(跳过): {mf}")
+        raise FileNotFoundError(f"合并输入缺失: {', '.join(missing_files)}")
     if files_read_count == 0 and inputs:
-        warning(f"    所有源文件均缺失，跳过任务: {filename}")
+        warning(f"    无可用输入文件，跳过任务: {filename}")
         return None
 
-    mode = detect_mode(rule_type, filename)
+    mode = detect_mode(rule_type)
     raw_count = len(combined_rules)
 
     if mode == "IP-CIDR":
@@ -86,6 +78,10 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     opt_count = len(final_list)
 
+    if mode == "IP-CIDR" and not final_list:
+        warning(f"    未解析出任何 CIDR，跳过任务: {filename}")
+        return None
+
     count_desc = f"{opt_count} (Raw: {raw_count})"
     if dedup_removed > 0:
         count_desc += f" | Dedup: -{dedup_removed}"
@@ -94,7 +90,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         "strategy": strategy,
         "type": rule_type,
         "owner": owner,
-        "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": beijing_timestamp(),
         "mode": mode,
         "count": count_desc,
         "desc": desc,
@@ -111,31 +107,30 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     }
 
 
-def auto_discover_files():
+def auto_discover_files(source_dir=None):
     discovered_tasks = []
-    if not os.path.exists(SOURCE_DIR):
+    root_dir = source_dir or SOURCE_DIR
+    if not os.path.exists(root_dir):
         return []
 
-    for root, dirs, files in os.walk(SOURCE_DIR):
+    for root, dirs, files in os.walk(root_dir):
         for file in files:
             if file.startswith(".") or not file.endswith(".txt"):
                 continue
 
             abs_path = os.path.join(root, file)
-            rel_path = os.path.relpath(abs_path, SOURCE_DIR)
+            rel_path = os.path.relpath(abs_path, root_dir)
             rel_path_norm = normalize_path(rel_path)
-            if rel_path_norm in USED_SOURCE_FILES:
+
+            # 只透传 strategy/type/owner/file.txt 三级结构，跳过浅层控制文件（如 sync-summary.txt）
+            parts = Path(rel_path_norm).parent.parts
+            if len(parts) < 3:
                 continue
 
-            parts = Path(rel_path_norm).parent.parts
-            d_strat = parts[0] if len(parts) >= 1 else "Auto"
-            d_type = parts[1] if len(parts) >= 2 else "General"
-            d_owner = parts[2] if len(parts) >= 3 else "Unknown"
-
             discovered_tasks.append({
-                "strategy": d_strat,
-                "type": d_type,
-                "owner": d_owner,
+                "strategy": parts[0],
+                "type": parts[1],
+                "owner": parts[2],
                 "filename": file,
                 "inputs": [rel_path_norm],
                 "description": f"自动透传自 {rel_path_norm}",
@@ -156,6 +151,9 @@ def load_domains_from_file(filepath):
     return domains
 
 
+_MARK = object()
+
+
 def _build_domain_trie(domains):
     """构建倒序标签 Trie，用于高效检测父子域名关系。"""
     trie = {}
@@ -167,7 +165,7 @@ def _build_domain_trie(domains):
             if part not in node:
                 node[part] = {}
             node = node[part]
-        node["_mark"] = True
+        node[_MARK] = True
     return trie
 
 
@@ -185,11 +183,24 @@ def _find_covering_parent(domain, trie):
             break
         node = node[part]
         matched_parts.append(part)
-        if node.get("_mark") and len(matched_parts) < len(parts):
+        if node.get(_MARK) and len(matched_parts) < len(parts):
             # 找到祖先（不能是自身，必须是严格祖先）
             ancestor = ".".join(reversed(matched_parts))
             return ancestor, True
     return None, False
+
+
+VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
+
+
+def resolve_conflict_action(conflict_policy, has_conflicts):
+    """把配置的冲突策略解析为实际动作：none/ignore/warn/fail。"""
+    policy = (conflict_policy or "warn").lower()
+    if policy not in VALID_CONFLICT_POLICIES:
+        raise ValueError(f"behavior.conflict_policy 取值非法: {conflict_policy!r}")
+    if not has_conflicts:
+        return "none"
+    return policy
 
 
 def detect_cross_policy_conflicts(merged_dir):
@@ -210,6 +221,9 @@ def detect_cross_policy_conflicts(merged_dir):
             continue
         domains = set()
         for txt_file in strategy_dir.rglob("*.txt"):
+            if "ipcidr" in txt_file.parts:
+                # CIDR 不是域名，不应进入域名 Trie（否则产生大量伪冲突）。
+                continue
             domains.update(load_domains_from_file(str(txt_file)))
         if domains:
             policy_domains[strategy_dir.name] = domains
@@ -257,7 +271,7 @@ def main():
         config_tasks = []
     else:
         cfg = load_config()
-        config_tasks = cfg.get("merges", [])
+        config_tasks = cfg.get("merges") or []
         info(f"  从 {CONFIG_FILE} 加载 {len(config_tasks)} 个合并任务")
 
     if not os.path.exists(SOURCE_DIR):
@@ -313,11 +327,21 @@ def main():
                     res["file"] = f"(Auto) {res['file']}"
                     SUMMARY_ROWS.append(res)
                     success(f"  {t['filename']} -> {res['opt']} 条规则")
+                else:
+                    STATS["skipped"] += 1
             except Exception as e:
                 STATS["failed"] += 1
                 ERROR_LOGS.append(f"自动任务 '{t['filename']}': {str(e)}")
                 warning(f"  [失败] {t['filename']}: {e}")
         group_end()
+
+    # 产出数量硬校验：任何任务静默消失（成功+跳过 != 期望）都必须失败
+    if STATS["failed"] == 0:
+        expected_tasks = len(config_tasks) + len(auto_tasks)
+        if STATS["success"] + STATS["skipped"] != expected_tasks:
+            error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
+                  f"成功 {STATS['success']} + 跳过 {STATS['skipped']}")
+            sys.exit(1)
 
     section(f"合并报告 | 成功:{STATS['success']} 跳过:{STATS['skipped']} 失败:{STATS['failed']}")
 
@@ -383,6 +407,17 @@ def main():
                     if len(items) > 20:
                         f.write(f"- ... 及其他 {len(items) - 20} 个\n")
                     f.write("\n")
+
+    conflict_policy = get("behavior", "conflict_policy", default="warn")
+    has_conflicts = bool(explicit_conflicts or implicit_conflicts)
+    try:
+        action = resolve_conflict_action(conflict_policy, has_conflicts)
+    except ValueError as e:
+        error(str(e))
+        sys.exit(1)
+    if action == "fail":
+        error("检测到跨策略冲突，按配置终止合并")
+        sys.exit(1)
 
     if STATS["failed"] > 0:
         error("存在失败任务，退出")
