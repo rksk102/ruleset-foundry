@@ -1,0 +1,14 @@
+# 显式固定规则集，避免依赖各版本默认值导致门禁漂移。
+target-version = "py311"
+line-length = 120
+
+[lint]
+# 只选稳定、低噪声且与本仓库风格兼容的规则；
+# 不选 E7（本仓库 processor.py 大量使用单行 if: continue 紧凑风格，是有意为之）。
+select = ["E4", "E9", "F", "W", "I"]
+ignore = [
+    "E501",   # 长行由 line-length=120 与人工 review 控制
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["E402"]   # conftest 需在 sys.path 注入后导入
