@@ -221,8 +221,7 @@ def detect_cross_policy_conflicts(merged_dir):
             continue
         domains = set()
         for txt_file in strategy_dir.rglob("*.txt"):
-            if "ipcidr" in txt_file.parts:
-                # CIDR 不是域名，不应进入域名 Trie（否则产生大量伪冲突）。
+            if any("ipcidr" in part.lower() for part in txt_file.parts):
                 continue
             domains.update(load_domains_from_file(str(txt_file)))
         if domains:
@@ -352,7 +351,17 @@ def main():
     # 跨策略冲突检测
     explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
 
-    if explicit_conflicts:
+    conflict_policy = get("behavior", "conflict_policy", default="warn")
+    has_conflicts = bool(explicit_conflicts or implicit_conflicts)
+    try:
+        action = resolve_conflict_action(conflict_policy, has_conflicts)
+    except ValueError as e:
+        error(str(e))
+        sys.exit(1)
+
+    show_conflicts = action != "ignore"
+
+    if show_conflicts and explicit_conflicts:
         group_start("显式冲突（同一域名出现在多个策略中）")
         total_explicit = sum(len(v) for v in explicit_conflicts.values())
         warning(f"  发现 {total_explicit} 个显式冲突域名")
@@ -364,7 +373,7 @@ def main():
                 warning(f"    ... 及其他 {len(domains) - 10} 个")
         group_end()
 
-    if implicit_conflicts:
+    if show_conflicts and implicit_conflicts:
         group_start("隐式冲突（父域名覆盖其他策略的子域名）")
         for pair, items in implicit_conflicts.items():
             warning(f"  {pair}: {len(items)} 个子域被覆盖")
@@ -383,7 +392,7 @@ def main():
             for r in SUMMARY_ROWS:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
 
-            if explicit_conflicts:
+            if show_conflicts and explicit_conflicts:
                 f.write("\n### 显式冲突检测\n\n")
                 f.write("> 以下域名同时出现在不同策略中，请确保 rules 顺序为 block > direct > policy\n\n")
                 for pair, domains in explicit_conflicts.items():
@@ -395,7 +404,7 @@ def main():
                         f.write(f"- ... 及其他 {len(domains) - 20} 个\n")
                     f.write("\n")
 
-            if implicit_conflicts:
+            if show_conflicts and implicit_conflicts:
                 f.write("\n### 隐式冲突检测\n\n")
                 f.write("> 以下子域名虽在低优先级策略中，但其父域名在高优先级策略中，")
                 f.write("suffix 匹配下父域名会覆盖子域名。请确保 rules 顺序为 block > direct > policy\n\n")
@@ -408,13 +417,6 @@ def main():
                         f.write(f"- ... 及其他 {len(items) - 20} 个\n")
                     f.write("\n")
 
-    conflict_policy = get("behavior", "conflict_policy", default="warn")
-    has_conflicts = bool(explicit_conflicts or implicit_conflicts)
-    try:
-        action = resolve_conflict_action(conflict_policy, has_conflicts)
-    except ValueError as e:
-        error(str(e))
-        sys.exit(1)
     if action == "fail":
         error("检测到跨策略冲突，按配置终止合并")
         sys.exit(1)

@@ -142,6 +142,8 @@ def main():
 
         if c1 != c2:
             error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
+            group_end()
+            sys.exit(1)
 
         publish, why = should_publish(combined_hash, load_last_hash(), True)
         info(f"  {why} ({c1 + c2} 个文件)")

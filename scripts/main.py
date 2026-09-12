@@ -96,6 +96,11 @@ def process_group(group, raw_by_index):
             if special.get(key):
                 warning(f"    {label}: {special[key]} 行")
 
+    if not result:
+        for _idx, task in group["members"]:
+            errors["parse"].append((task["url"], "未解析出有效规则"))
+        return None, errors
+
     atomic_write(group["path"], result)
     return len(result), errors
 

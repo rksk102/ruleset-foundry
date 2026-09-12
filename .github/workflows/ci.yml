@@ -16,6 +16,7 @@ on:
       - 'config.yaml'
       - 'requirements*.txt'
       - '.ruff.toml'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/pipeline.yml'
       - '.github/actions/**'
 
