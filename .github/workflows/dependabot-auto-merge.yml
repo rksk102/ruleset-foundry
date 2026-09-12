@@ -1,8 +1,5 @@
 name: "Dependabot 自动合并"
 
-# Dependabot 触发的 pull_request 工作流只能拿到只读 GITHUB_TOKEN，无法自行合并。
-# 这里监听 CI 工作流完成事件（workflow_run），它在默认分支上下文运行、可拿到写权限，
-# 且不检出 PR 代码，因此不存在执行不可信代码的风险。CI 成功即合并该 Dependabot PR。
 on:
   workflow_run:
     workflows: ["CI"]
