@@ -1,17 +1,17 @@
-import os
-import sys
-import shutil
-import subprocess
-import stat
 import gzip
-import time
+import hashlib
 import json
-import urllib.request
+import os
+import stat
+import subprocess
+import sys
+import time
 import urllib.error
+import urllib.request
 from pathlib import Path
 
-from logger import info, success, warning, error, group_start, group_end, get_logger
 from config_loader import get
+from logger import error, get_logger, group_end, group_start, info, success, warning
 from utils import clean_directory
 
 logger = get_logger()
@@ -20,17 +20,86 @@ SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
 REPO_API = get("mihomo", "repo_api",
                default="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest")
+PINNED_VERSION = (get("mihomo", "pinned_version", default="") or "").strip()
+ASSET_NAME = (get("mihomo", "asset_name", default="") or "").strip()
+EXPECTED_SHA = (get("mihomo", "kernel_sha256", default="") or "").strip().lower()
 KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
 KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
 VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
+MAX_KERNEL_BYTES = 100 * 1024 * 1024
+
+
+def release_api_url(pinned_version, repo_api=None):
+    """由 repo_api 派生 release 查询地址；pinned_version 为空时跟随 latest。"""
+    root = (repo_api or REPO_API).rstrip("/")
+    if root.endswith("/latest"):
+        root = root[: -len("/latest")]
+    if pinned_version:
+        return f"{root}/tags/{pinned_version}"
+    return f"{root}/latest"
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def select_kernel_asset(assets, asset_name, pinned_version):
+    """确定性地选择 linux-amd64 内核资产。
+
+    1) asset_name 非空：精确匹配；
+    2) 否则在候选 .gz 中排除 go1xx / v1 / v2 / v3 / compatible 变体；
+    3) 再优先文件名形如 mihomo-linux-amd64-<tag>.gz 的默认构建。
+    返回 browser_download_url，找不到返回 None。
+    """
+    gz = [a for a in assets if "linux-amd64" in a["name"] and a["name"].endswith(".gz")]
+    if asset_name:
+        for a in gz:
+            if a["name"] == asset_name:
+                return a["browser_download_url"]
+        return None
+
+    def is_variant(name):
+        base = name[:-3]  # 去 .gz
+        return (
+            any(k in base for k in ("-go1", "-go2", "compatible"))
+            or "-v1-" in base or "-v2-" in base or "-v3-" in base
+            or base.endswith("-v1") or base.endswith("-v2") or base.endswith("-v3")
+        )
+
+    stable = [a for a in gz if not is_variant(a["name"])]
+    if pinned_version:
+        exact = f"mihomo-linux-amd64-{pinned_version}.gz"
+        for a in stable:
+            if a["name"] == exact:
+                return a["browser_download_url"]
+    if stable:
+        return sorted(stable, key=lambda a: a["name"])[0]["browser_download_url"]
+    return None
+
+
+def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF"):
+    """校验内核结构，并在提供 expected_sha 时强制比对解压后二进制哈希。"""
+    with open(path, "rb") as f:
+        magic = f.read(len(expected_magic))
+    if magic != expected_magic:
+        raise ValueError(f"内核不是有效 ELF 文件（magic={magic!r}）")
+
+    actual = sha256_file(path)
+    if expected_sha and actual != expected_sha:
+        raise ValueError(f"内核哈希不匹配：期望 {expected_sha}，实际 {actual}")
+    return actual
 
 
 def _fetch_latest_release_info(headers, max_retries=3):
-    """获取最新 release 信息，带重试。"""
+    """获取 release 信息，带重试。"""
     last_err = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(REPO_API, headers=headers)
+            req = urllib.request.Request(release_api_url(PINNED_VERSION, REPO_API), headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
@@ -49,8 +118,18 @@ def _download_kernel(download_url, headers, max_retries=3):
             dl_req = urllib.request.Request(download_url, headers=headers)
             with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
                 with gzip.GzipFile(fileobj=dl_resp) as gz:
+                    written = 0
                     with open(KERNEL_BIN, "wb") as f:
-                        shutil.copyfileobj(gz, f)
+                        while True:
+                            chunk = gz.read(65536)
+                            if not chunk:
+                                break
+                            written += len(chunk)
+                            if written > MAX_KERNEL_BYTES:
+                                raise ValueError(
+                                    f"内核解压后超过上限 {MAX_KERNEL_BYTES} 字节，已中止"
+                                )
+                            f.write(chunk)
             st = os.stat(KERNEL_BIN)
             os.chmod(KERNEL_BIN, st.st_mode | stat.S_IEXEC)
             return
@@ -73,51 +152,65 @@ def _verify_kernel():
         return None
 
 
-def get_latest_mihomo():
+def get_latest_mihomo(skip_hash_check=False):
     group_start("准备 Mihomo 内核")
 
-    headers = {}
-    if "GH_TOKEN" in os.environ:
-        headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
-
     try:
+        headers = {}
+        if "GH_TOKEN" in os.environ:
+            headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
+
         data = _fetch_latest_release_info(headers)
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
-        # 版本一致且缓存内核可用，直接用缓存
+        expected_sha = "" if skip_hash_check else EXPECTED_SHA
+
+        # 版本一致且缓存内核可用（结构+哈希均通过）时直接复用
         if VERSION_FILE.exists():
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
-                ver_out = _verify_kernel()
-                if ver_out:
-                    info(f"  使用缓存内核 ({tag_name}): {ver_out}")
-                    group_end()
-                    return
+                try:
+                    verify_kernel_file(KERNEL_BIN, expected_sha)
+                except ValueError as e:
+                    warning(f"  缓存内核校验失败，将重新下载: {e}")
+                    try:
+                        os.unlink(KERNEL_BIN)
+                    except OSError:
+                        pass
+                else:
+                    ver_out = _verify_kernel()
+                    if ver_out and "Mihomo" in ver_out:
+                        info(f"  使用缓存内核 ({tag_name}): {ver_out}")
+                        return
+                    warning("  缓存内核不可运行，将重新下载")
 
-        # 查找 linux-amd64 资源
-        download_url = None
-        for asset in data["assets"]:
-            if ("linux-amd64" in asset["name"]
-                    and "compatible" not in asset["name"]
-                    and asset["name"].endswith(".gz")):
-                download_url = asset["browser_download_url"]
-                break
-
+        download_url = select_kernel_asset(data["assets"], ASSET_NAME, PINNED_VERSION)
         if not download_url:
-            raise Exception("未找到合适的 linux-amd64 内核资源")
+            raise Exception(f"未找到合适的 linux-amd64 内核资源（asset_name={ASSET_NAME!r}）")
 
         info(f"  下载内核: {download_url}")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         _download_kernel(download_url, headers)
 
+        try:
+            actual_sha = verify_kernel_file(KERNEL_BIN, expected_sha)
+        except ValueError as e:
+            # 安全场景 fail-fast：不得降级复用旧内核
+            error(f"  内核完整性校验失败: {e}")
+            sys.exit(1)
+        if not expected_sha:
+            warning(f"  未配置 kernel_sha256，本次实际哈希: {actual_sha}")
+
         ver_out = _verify_kernel()
-        if not ver_out:
-            raise Exception("内核下载后验证失败（mihomo -v 不可用）")
+        if not ver_out or "Mihomo" not in ver_out:
+            raise Exception("内核下载后验证失败（mihomo -v 输出异常）")
 
         info(f"  内核安装成功: {ver_out}")
         VERSION_FILE.write_text(tag_name)
 
+    except SystemExit:
+        raise
     except Exception as e:
         error(f"  内核准备失败: {e}")
         # 降级：尝试使用已缓存的内核
@@ -126,7 +219,6 @@ def get_latest_mihomo():
             ver_out = _verify_kernel()
             if ver_out:
                 warning(f"  使用缓存内核（版本可能非最新）: {ver_out}")
-                group_end()
                 return
             error("  缓存内核也无法运行")
         sys.exit(1)
@@ -185,6 +277,12 @@ def write_summary(stats, total_time):
 
 
 def main():
+    if "--print-kernel-hash" in sys.argv:
+        # 跳过哈希强校验，否则旧哈希未清时打印不出新值
+        get_latest_mihomo(skip_hash_check=True)
+        print(sha256_file(KERNEL_BIN))
+        return
+
     start_time = time.time()
     get_latest_mihomo()
 

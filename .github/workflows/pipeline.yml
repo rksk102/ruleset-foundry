@@ -16,8 +16,7 @@ on:
         default: false
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 concurrency:
   group: pipeline-${{ github.ref }}
@@ -29,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
@@ -38,7 +37,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/main.py
       - name: 上传 rulesets 产物
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rulesets
           path: rulesets/
@@ -50,12 +49,12 @@ jobs:
     timeout-minutes: 5
     needs: sync-rules
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 rulesets 产物
         id: dl-rulesets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
           name: rulesets
@@ -67,7 +66,7 @@ jobs:
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
         if: steps.dl-rulesets.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: merged-rules
           path: merged-rules/
@@ -79,32 +78,44 @@ jobs:
     timeout-minutes: 10
     needs: merge-rules
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 清空旧产物
+        run: rm -rf merged-rules merged-rules-mrs
       - name: 下载 merged-rules 产物
         id: dl-merged
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
-      - name: 缓存 Mihomo 内核
+      - name: 缓存 Mihomo 内核（恢复）
         if: steps.dl-merged.outcome == 'success'
-        uses: actions/cache@v5
+        id: kernel-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .cache/mihomo-kernel
-          key: mihomo-${{ runner.os }}-v1
-          restore-keys: mihomo-${{ runner.os }}-
+          key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
+          restore-keys: |
+            mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}-
+            mihomo-${{ runner.os }}-
       - name: 转换规则集
         if: steps.dl-merged.outcome == 'success'
+        id: convert
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
+      - name: 缓存 Mihomo 内核（保存）
+        if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success' && steps.kernel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .cache/mihomo-kernel
+          key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
       - name: 上传 merged-rules-mrs 产物
         if: steps.dl-merged.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
@@ -115,22 +126,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     needs: convert-mrs
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 清空旧产物
+        run: rm -rf merged-rules merged-rules-mrs
       - name: 下载 merged-rules 产物
         id: dl-merged
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
       - name: 下载 merged-rules-mrs 产物
         id: dl-mrs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
           name: merged-rules-mrs
@@ -150,8 +165,21 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git push
       - name: 发布 Release
-        if: ${{ inputs.skip_release != true }}
+        if: ${{ inputs.skip_release != true && steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/release_handler.py
+      - name: 提交发布状态
+        if: ${{ inputs.skip_release != true && steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success' }}
+        run: |
+          git add state/release.sha256
+          if git diff --cached --quiet; then
+            echo "发布状态无变化"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: 更新发布哈希 [skip ci]"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push
+          fi

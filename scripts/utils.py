@@ -1,17 +1,20 @@
-import os
-import json
 import hashlib
 import ipaddress
+import os
 import shutil
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone
 
-CACHE_DIR = Path(".cache")
-ETAG_FILE = CACHE_DIR / "etag_cache.json"
+BEIJING_TZ = timezone(timedelta(hours=8))
 
-_etag_cache = None
-_etag_dirty = False
+
+def beijing_now():
+    return datetime.now(BEIJING_TZ)
+
+
+def beijing_timestamp():
+    return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def flatten_ip_cidr(cidr_strings, strict=False):
@@ -35,14 +38,6 @@ def flatten_ip_cidr(cidr_strings, strict=False):
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
     return sorted(v4_result) + sorted(v6_result), errors
-
-
-def is_valid_cidr(c):
-    try:
-        ipaddress.ip_network(c.strip(), strict=False)
-        return True
-    except ValueError:
-        return False
 
 
 def atomic_write(filepath, content):
@@ -75,65 +70,6 @@ def atomic_write_with_header(filepath, rules, metadata):
     atomic_write(filepath, lines)
 
 
-def load_etag_cache():
-    """加载 ETag 缓存到内存，仅首次访问时读文件，后续返回内存副本。"""
-    global _etag_cache
-    if _etag_cache is not None:
-        return _etag_cache
-    _etag_cache = {}
-    if ETAG_FILE.exists():
-        try:
-            _etag_cache = json.loads(ETAG_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, FileNotFoundError):
-            _etag_cache = {}
-    return _etag_cache
-
-
-def save_etag_cache(cache):
-    CACHE_DIR.mkdir(exist_ok=True)
-    ETAG_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def flush_etag_cache():
-    """若内存缓存有变更，则一次性落盘。"""
-    global _etag_dirty
-    if _etag_dirty and _etag_cache is not None:
-        save_etag_cache(_etag_cache)
-        _etag_dirty = False
-
-
-def get_cached_headers(url):
-    cache = load_etag_cache()
-    entry = cache.get(url, {})
-    headers = {}
-    if "etag" in entry:
-        headers["If-None-Match"] = entry["etag"]
-    if "last_modified" in entry:
-        headers["If-Modified-Since"] = entry["last_modified"]
-    return headers
-
-
-def update_etag_cache(url, response):
-    global _etag_dirty
-    cache = load_etag_cache()
-    entry = cache.get(url, {})
-    changed = False
-
-    etag = response.headers.get("ETag")
-    last_mod = response.headers.get("Last-Modified")
-    if etag:
-        entry["etag"] = etag
-        changed = True
-    if last_mod:
-        entry["last_modified"] = last_mod
-        changed = True
-
-    if changed:
-        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
-        cache[url] = entry
-        _etag_dirty = True
-
-
 def file_sha256(filepath):
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
@@ -142,11 +78,25 @@ def file_sha256(filepath):
     return h.hexdigest()
 
 
-def dir_hash(dirpath, pattern="*"):
+def _hash_file_body(path):
+    """只哈希规则正文（跳过空行与 # 注释/元数据行），使时间戳不影响聚合哈希。"""
+    h = hashlib.sha256()
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            h.update(s.encode("utf-8") + b"\n")
+    return h.hexdigest()
+
+
+def dir_hash(dirpath, pattern="*", skip_comments=False):
     """计算目录下所有文件的聚合 SHA256。
 
     返回 (hash_hex, file_count)。空目录或不存在时返回 ("", 0)，
     以便调用方据此跳过 Release（避免对空内容发布"无变化"误判）。
+
+    skip_comments=True 时按规则正文哈希（忽略 # Date: 等易变元数据行）。
     """
     p = Path(dirpath)
     if not p.exists():
@@ -157,7 +107,8 @@ def dir_hash(dirpath, pattern="*"):
     count = 0
     for f in files:
         if f.is_file() and not f.name.startswith("."):
-            h_all.update(file_sha256(str(f)).encode())
+            digest = _hash_file_body(str(f)) if skip_comments else file_sha256(str(f))
+            h_all.update(digest.encode())
             count += 1
 
     if count == 0:
@@ -165,16 +116,17 @@ def dir_hash(dirpath, pattern="*"):
     return h_all.hexdigest(), count
 
 
-def load_last_hash(hash_file=".cache/last_release_hash.txt"):
+def load_last_hash(hash_file="state/release.sha256"):
     hp = Path(hash_file)
     if hp.exists():
         return hp.read_text(encoding="utf-8").strip()
     return None
 
 
-def save_last_hash(hash_value, hash_file=".cache/last_release_hash.txt"):
-    CACHE_DIR.mkdir(exist_ok=True)
-    Path(hash_file).write_text(hash_value, encoding="utf-8")
+def save_last_hash(hash_value, hash_file="state/release.sha256"):
+    hp = Path(hash_file)
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    hp.write_text(hash_value, encoding="utf-8")
 
 
 def normalize_policy(p):
@@ -219,7 +171,7 @@ def normalize_path(p):
 
 
 def dedup_domain_suffix(domains):
-    """同策略内父子域名去重（严格模式）。
+    """同策略内父子域名去重（无条件执行）。
 
     在 mihomo behavior:domain 语义下，每条规则等同于 DOMAIN-SUFFIX 匹配，
     父域名已覆盖所有子域名，因此子域名规则是冗余的，可安全移除。

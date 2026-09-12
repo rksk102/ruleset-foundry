@@ -35,10 +35,14 @@ def load_config():
             "strict_mode": False,
             "release_change_detection": True,
             "release_keep_days": 3,
+            "conflict_policy": "warn",
         },
         "mihomo": {
             "kernel_cache_path": ".cache/mihomo-kernel",
             "repo_api": "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
+            "pinned_version": "",
+            "asset_name": "",
+            "kernel_sha256": "",
         },
     }
 

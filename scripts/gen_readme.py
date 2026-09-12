@@ -1,10 +1,9 @@
 import os
 import sys
-import time
 import urllib.parse
 
-from logger import info, success, error, group_start, group_end, get_logger
-from config_loader import get
+from logger import error, get_logger, group_end, group_start, info, success
+from utils import beijing_now
 
 logger = get_logger()
 
@@ -33,7 +32,7 @@ def format_size(size_bytes):
 
 
 def get_time_badge():
-    now = time.strftime("%Y--%m--%d %H:%M")
+    now = beijing_now().strftime("%Y--%m--%d %H:%M")
     enc_now = urllib.parse.quote(now)
     return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={STYLE}&logo=github"
 
@@ -133,6 +132,38 @@ def make_page_header():
 """
 
 
+def make_static_sections():
+    """生成与产物无关的静态运维说明。
+
+    必须由生成器输出：README.md 每次都被整体重写，手写追加的尾部会被覆盖。
+    """
+    return """
+## 内核版本升级流程（维护者）
+
+1. 运行 `python scripts/convert_mrs.py --print-kernel-hash`（会下载并打印解压后二进制 sha256）。
+2. 在 mihomo 官方 Release 页面核对 `pinned_version` 与资产名。
+3. 更新 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段。
+4. 提 PR，由 CI（pytest + ruff）验证后合并。
+
+## 规则优先级与消费方式
+
+策略优先级固定为 `block > direct > policy`；在代理客户端中按此顺序引用 rule-provider。
+仓库提供 `.txt`（通用）与 `.mrs`（Mihomo 专用）两种格式，路径一一对应。
+
+## 发布去重语义
+
+仅当规则**正文**（忽略 `# Date:` 等元数据）发生变化时才会新建 Release；
+内容未变化时跳过发布，但产物与 README 仍会提交更新。
+
+## 跨策略冲突处理（conflict_policy）
+
+`behavior.conflict_policy` 支持 `ignore | warn | fail`，默认 `warn`。
+`fail` 仅作为"新增源时的临时验收开关"：当前隐式冲突基线噪声较大（约 1.2 万条），
+直接启用 `fail` 会中断发布；启用前请先人工核对冲突检测结果。
+
+"""
+
+
 def main():
     group_start("生成 README")
 
@@ -160,6 +191,8 @@ def main():
                 files_mrs, DIR_MRS,
             )
 
+            f.write(make_static_sections())
+
     except Exception as e:
         error(f"README 生成失败: {e}")
         sys.exit(1)
@@ -171,7 +204,7 @@ def main():
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write("\n### README 生成报告\n\n")
-            f.write(f"| 类型 | 文件数 | 大小 |\n| :--- | :---: | :---: |\n")
+            f.write("| 类型 | 文件数 | 大小 |\n| :--- | :---: | :---: |\n")
             f.write(f"| 标准规则 | **{count_std}** | {format_size(size_std)} |\n")
             f.write(f"| MRS 规则 | **{count_mrs}** | {format_size(size_mrs)} |\n")
             f.write(f"| **总计** | **{count_std + count_mrs}** | **{format_size(size_std + size_mrs)}** |\n")
