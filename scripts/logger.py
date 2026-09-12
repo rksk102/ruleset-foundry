@@ -1,9 +1,9 @@
-import os
-import sys
 import logging
 import logging.handlers
-from datetime import datetime
+import sys
 from pathlib import Path
+
+from utils import beijing_now
 
 
 class Colors:
@@ -25,6 +25,14 @@ _log_file_handle = None
 _LOG_FILE = None
 
 
+class _BeijingFormatter(logging.Formatter):
+    """以北京时间渲染 asctime，避免与产物/README 时间戳语义不一致。"""
+
+    def formatTime(self, record, datefmt=None):
+        dt = beijing_now()
+        return dt.strftime(datefmt) if datefmt else dt.isoformat()
+
+
 def _resolve_log_file():
     """延迟解析日志目录与文件路径，避免模块导入时即创建目录。
 
@@ -43,7 +51,7 @@ def _resolve_log_file():
 
     log_dir = Path(log_dir_name)
     log_dir.mkdir(parents=True, exist_ok=True)
-    _LOG_FILE = log_dir / f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+    _LOG_FILE = log_dir / f"run-{beijing_now().strftime('%Y%m%d-%H%M%S')}.log"
     return _LOG_FILE
 
 
@@ -81,12 +89,10 @@ def _init_logger():
 
     _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
     _log_file_handle.setLevel(logging.DEBUG)
-    _log_file_handle.setFormatter(
-        logging.Formatter(
-            "[%(asctime)s] %(levelname)-8s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
+    _log_file_handle.setFormatter(_BeijingFormatter(
+        "[%(asctime)s] %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
     _logger.addHandler(_log_file_handle)
 
     _cleanup_old_logs()
@@ -137,19 +143,8 @@ def group_end():
     _logger.debug("[GROUP END]")
 
 
-def banner(text):
-    _init_logger()
-    print(f"\n{Colors.BOLD}{Colors.GREEN}{'=' * 60}")
-    print(f" {text}")
-    print(f"{'=' * 60}{Colors.RESET}\n")
-
-
 def gh_error(msg):
     print(f"::error::{msg}")
-
-
-def gh_warning(msg):
-    print(f"::warning::{msg}")
 
 
 def section(msg):

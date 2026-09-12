@@ -1,13 +1,13 @@
-import os
-import sys
-import json
-import subprocess
 import datetime
+import json
+import os
+import subprocess
+import sys
 import zipfile
 
-from logger import info, success, warning, error, group_start, group_end, section, get_logger
 from config_loader import get
-from utils import dir_hash, load_last_hash, save_last_hash
+from logger import error, get_logger, group_end, group_start, info, section, success, warning
+from utils import beijing_now, dir_hash, load_last_hash, save_last_hash
 
 logger = get_logger()
 
@@ -20,13 +20,27 @@ KEEP_DAYS = get("behavior", "release_keep_days", default=3)
 CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
 
 
-def run_gh(cmd_list):
+def run_gh(cmd_list, fail_fast=False):
     try:
         result = subprocess.run(["gh"] + cmd_list, capture_output=True, text=True, check=True)
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
+        if fail_fast:
+            # 删除失败却继续重建会造成 Release 与 tag 不一致，必须显式失败
+            error(f"  GH CLI 失败: {e.stderr.strip()}")
+            sys.exit(1)
         warning(f"  GH CLI 警告: {e.stderr.strip()}")
         return None
+
+
+def should_publish(current_hash, last_hash, enabled):
+    if not enabled:
+        return True, "变更检测已关闭"
+    if not last_hash:
+        return True, "首次发布"
+    if last_hash != current_hash:
+        return True, "检测到变化"
+    return False, "内容无变化"
 
 
 def zip_target_files(tag_date):
@@ -84,7 +98,7 @@ def generate_release_notes(tag_date, tag_time, manifest):
     notes = f"""
 ## 规则集合自动构建 (Auto Build)
 
-> **更新时间**: `{tag_date} {tag_time}` (北京时间)  
+> **更新时间**: `{tag_date} {tag_time}` (北京时间)<br>
 > **触发提交**: `{commit_sha}`
 
 ### 概览统计
@@ -112,35 +126,35 @@ def main():
     group_start("处理发布")
 
     utc_now = datetime.datetime.now(datetime.timezone.utc)
-    beijing_now = utc_now + datetime.timedelta(hours=8)
-    tag_date = beijing_now.strftime("%Y-%m-%d")
-    tag_time = beijing_now.strftime("%H:%M:%S")
+    now_bj = beijing_now()
+    tag_date = now_bj.strftime("%Y-%m-%d")
+    tag_time = now_bj.strftime("%H:%M:%S")
     release_tag = f"rules-{tag_date}"
 
     info(f"目标发布标签: {release_tag}")
 
     if CHANGE_DETECTION:
         section("内容变更检测")
-        h1, c1 = dir_hash("merged-rules", "*.txt")
+        # .txt 按正文哈希（忽略 # Date: 等元数据）；.mrs 由正文派生，整文件哈希
+        h1, c1 = dir_hash("merged-rules", "*.txt", skip_comments=True)
         h2, c2 = dir_hash("merged-rules-mrs", "*.mrs")
         combined_hash = f"{h1}|{h2}|{c1}|{c2}"
 
-        last_hash = load_last_hash()
-        if last_hash and last_hash == combined_hash:
-            info("  规则内容无变化，跳过发布")
+        if c1 != c2:
+            error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
+
+        publish, why = should_publish(combined_hash, load_last_hash(), True)
+        info(f"  {why} ({c1 + c2} 个文件)")
+        if not publish:
             group_end()
             return
-        elif last_hash and last_hash != combined_hash:
-            info(f"  检测到变化 ({c1 + c2} 个文件)，继续发布...")
-        else:
-            info(f"  首次发布 ({c1 + c2} 个文件)")
 
     zip_file, manifest = zip_target_files(tag_date)
 
     if run_gh(["release", "view", release_tag]):
         info(f"已存在 Release {release_tag}，删除以更新...")
-        run_gh(["release", "delete", release_tag, "--yes"])
-        run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{release_tag}"])
+        run_gh(["release", "delete", release_tag, "--yes"], fail_fast=True)
+        run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{release_tag}"], fail_fast=True)
 
     info("生成发布说明...")
     notes = generate_release_notes(tag_date, tag_time, manifest)
@@ -177,8 +191,8 @@ def main():
             tag = rel["tagName"]
             if created_at < cutoff_time and tag != release_tag:
                 info(f"  删除旧 Release: {tag}")
-                run_gh(["release", "delete", tag, "--yes"])
-                run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"])
+                run_gh(["release", "delete", tag, "--yes"], fail_fast=True)
+                run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"], fail_fast=True)
                 cleaned += 1
         if cleaned == 0:
             info("  无需清理")
@@ -193,7 +207,7 @@ def main():
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write("\n### 发布报告\n\n")
-            f.write(f"| 项目 | 值 |\n| :--- | :--- |\n")
+            f.write("| 项目 | 值 |\n| :--- | :--- |\n")
             f.write(f"| 发布标签 | `{release_tag}` |\n")
             f.write(f"| 文本规则 | **{len(manifest.get('merged-rules', []))}** |\n")
             f.write(f"| MRS 规则 | **{len(manifest.get('merged-rules-mrs', []))}** |\n")
