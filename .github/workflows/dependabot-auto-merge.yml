@@ -1,0 +1,29 @@
+name: "Dependabot 自动合并"
+
+# Dependabot 触发的 pull_request 工作流只能拿到只读 GITHUB_TOKEN，
+# 无法启用自动合并；pull_request_target 在默认分支上下文中运行，
+# 因此可以使用写权限令牌。此工作流不检出 PR 代码，仅调用 gh 合并，无代码执行风险。
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'rksk102/mihomo-rule-library'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 读取 Dependabot 元数据
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: 启用自动合并（CI 全绿后由 GitHub 合并）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL"

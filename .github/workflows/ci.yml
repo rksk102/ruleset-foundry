@@ -7,8 +7,7 @@ on:
       - 'config.yaml'
       - 'requirements*.txt'
       - '.ruff.toml'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/pipeline.yml'
+      - '.github/workflows/**'
       - '.github/actions/**'
   pull_request:
     paths:
@@ -16,8 +15,7 @@ on:
       - 'config.yaml'
       - 'requirements*.txt'
       - '.ruff.toml'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/pipeline.yml'
+      - '.github/workflows/**'
       - '.github/actions/**'
 
 permissions:
