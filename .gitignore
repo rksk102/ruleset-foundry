@@ -25,3 +25,12 @@ mihomo
 .DS_Store
 Thumbs.db
 debug.log
+
+# 本机工具状态
+.mimosa/
+.ruff_cache/
+.pytest_cache/
+
+# 不纳入版本控制的开发资料
+docs/
+tests/
