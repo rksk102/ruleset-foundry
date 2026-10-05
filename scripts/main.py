@@ -595,8 +595,7 @@ def main():
         success(f"  {label} -> {count} 条规则")
 
     produced = manifest.collect_files(RULESETS_DIR)
-    manifest.save_manifest(MANIFEST_FILE, produced)
-    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
+    info(f"  本轮产出 {len(produced)} 项（清单将在通过门禁后写入）")
 
     degraded = stats.success == 0
     if not degraded and groups:
@@ -640,6 +639,9 @@ def main():
                 "behavior.min_source_success_ratio）"
             )
         sys.exit(1)
+
+    manifest.save_manifest(MANIFEST_FILE, produced)
+    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
 
     clean_orphans(expected_files)
     generate_summary(stats)

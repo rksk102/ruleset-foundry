@@ -305,7 +305,8 @@ def main():
                     warning(f"  删除 Release 失败，跳过: {tag}")
                     continue
                 if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
-                    warning(f"  删除 tag 失败，跳过: {tag}")
+                    warning(f"  删除 tag 失败，跳过计数（Release 已删，tag 残留）: {tag}")
+                    continue
                 cleaned += 1
         if cleaned == 0:
             info("  无需清理")

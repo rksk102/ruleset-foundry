@@ -145,8 +145,11 @@ def debug(msg, *args):
 
 
 def _defang_command_lines(text):
+    # The runner trims leading whitespace before matching "::" (actions/runner
+    # ActionCommand.TryParseV2 does message.TrimStart()), so indenting is not a
+    # defence. Escape the colons instead: "%3A%3A" never matches the prefix.
     return "\n".join(
-        (" " + line) if line.lstrip().startswith("::") else line
+        ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line
         for line in text.split("\n")
     )
 

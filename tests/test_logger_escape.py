@@ -71,12 +71,16 @@ class TestCommandEscaping:
         assert "::group::组%0A::endgroup::" in out
         assert not any(line.strip() == "::endgroup::" for line in out.splitlines())
 
-    def test_warning_cannot_inject_command(self, monkeypatch, capsys):
+    def test_warning_cannot_inject_command_even_after_trim(self, monkeypatch, capsys):
+        """The runner trims leading whitespace, so indenting is not a defence."""
         _reset(monkeypatch, ci=True)
-        log.warning("ok\n::error::injected")
+        log.warning("ok\n::error::injected\n   ::add-mask::SECRET")
         out = capsys.readouterr().out
-        assert "::error::injected" in out
-        assert not any(line.startswith("::error::injected") for line in out.splitlines())
+        parser = __import__("re").compile(r"^::([A-Za-z0-9_-]+)")
+        parsed = [ln.strip() for ln in out.splitlines() if parser.match(ln.strip())]
+        assert [p for p in parsed if "injected" in p or "add-mask" in p] == []
+        assert not any(ln.strip().startswith("::error::injected") for ln in out.splitlines())
+        assert not any(ln.strip().startswith("::add-mask::") for ln in out.splitlines())
 
     def test_error_message_stays_readable_and_not_a_command(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
