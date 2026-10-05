@@ -18,15 +18,6 @@ CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
 
-STATS = {
-    "success": 0,
-    "skipped": 0,
-    "failed": 0,
-    "total_rules": 0,
-}
-ERROR_LOGS = []
-SUMMARY_ROWS = []
-
 
 def detect_mode(type_str):
     return "IP-CIDR" if "ipcidr" in str(type_str).lower() else "DOMAIN"
@@ -229,6 +220,10 @@ def detect_cross_policy_conflicts(merged_dir):
 def main():
     section("规则合并器")
 
+    stats = {"success": 0, "skipped": 0, "failed": 0}
+    error_logs = []
+    summary_rows = []
+
     if not os.path.exists(CONFIG_FILE):
         warning(f"配置文件 '{CONFIG_FILE}' 未找到，仅使用自动模式")
         config_tasks = []
@@ -263,15 +258,14 @@ def main():
                     t.get("description", "配置合并"),
                 )
                 if res:
-                    STATS["success"] += 1
-                    STATS["total_rules"] += res["opt"]
-                    SUMMARY_ROWS.append(res)
+                    stats["success"] += 1
+                    summary_rows.append(res)
                     success(f"  {fname} -> {res['opt']} 条规则")
                 else:
-                    STATS["skipped"] += 1
+                    stats["skipped"] += 1
             except Exception as e:
-                STATS["failed"] += 1
-                ERROR_LOGS.append(f"配置任务 '{fname}': {str(e)}")
+                stats["failed"] += 1
+                error_logs.append(f"配置任务 '{fname}': {str(e)}")
                 warning(f"  [失败] {fname}: {e}")
         group_end()
 
@@ -285,31 +279,30 @@ def main():
                     t["filename"], t["inputs"], t["description"],
                 )
                 if res:
-                    STATS["success"] += 1
-                    STATS["total_rules"] += res["opt"]
+                    stats["success"] += 1
                     res["file"] = f"(Auto) {res['file']}"
-                    SUMMARY_ROWS.append(res)
+                    summary_rows.append(res)
                     success(f"  {t['filename']} -> {res['opt']} 条规则")
                 else:
-                    STATS["skipped"] += 1
+                    stats["skipped"] += 1
             except Exception as e:
-                STATS["failed"] += 1
-                ERROR_LOGS.append(f"自动任务 '{t['filename']}': {str(e)}")
+                stats["failed"] += 1
+                error_logs.append(f"自动任务 '{t['filename']}': {str(e)}")
                 warning(f"  [失败] {t['filename']}: {e}")
         group_end()
 
     # 产出数量硬校验：任何任务静默消失（成功+跳过 != 期望）都必须失败
-    if STATS["failed"] == 0:
+    if stats["failed"] == 0:
         expected_tasks = len(config_tasks) + len(auto_tasks)
-        if STATS["success"] + STATS["skipped"] != expected_tasks:
+        if stats["success"] + stats["skipped"] != expected_tasks:
             error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
-                  f"成功 {STATS['success']} + 跳过 {STATS['skipped']}")
+                  f"成功 {stats['success']} + 跳过 {stats['skipped']}")
             sys.exit(1)
 
-    section(f"合并报告 | 成功:{STATS['success']} 跳过:{STATS['skipped']} 失败:{STATS['failed']}")
+    section(f"合并报告 | 成功:{stats['success']} 跳过:{stats['skipped']} 失败:{stats['failed']}")
 
-    if SUMMARY_ROWS:
-        for r in SUMMARY_ROWS:
+    if summary_rows:
+        for r in summary_rows:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
     # 跨策略冲突检测
@@ -349,11 +342,11 @@ def main():
 
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
-            f.write(f"\n### 合并报告: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
-            if ERROR_LOGS:
-                f.write("```diff\n" + "\n".join([f"- {e}" for e in ERROR_LOGS]) + "\n```\n")
+            f.write(f"\n### 合并报告: {stats['success']} OK, {stats['failed']} Failed\n\n")
+            if error_logs:
+                f.write("```diff\n" + "\n".join([f"- {e}" for e in error_logs]) + "\n```\n")
             f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
-            for r in SUMMARY_ROWS:
+            for r in summary_rows:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
 
             if show_conflicts and explicit_conflicts:
@@ -385,7 +378,7 @@ def main():
         error("检测到跨策略冲突，按配置终止合并")
         sys.exit(1)
 
-    if STATS["failed"] > 0:
+    if stats["failed"] > 0:
         error("存在失败任务，退出")
         sys.exit(1)
 

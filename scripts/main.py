@@ -115,9 +115,6 @@ class SyncStats:
         return f"{time.time() - self.start_time:.1f}s"
 
 
-stats = SyncStats()
-
-
 def parse_sources():
     tasks = []
     current_policy = "policy"
@@ -248,7 +245,7 @@ def clean_orphans(expected_files):
     group_end()
 
 
-def generate_summary():
+def generate_summary(stats):
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     dl_fail = len(stats.download_errors)
     parse_fail = len(stats.parse_errors)
@@ -294,6 +291,8 @@ def generate_summary():
 
 
 def main():
+    stats = SyncStats()
+
     group_start("初始化")
     RULESETS_DIR.mkdir(parents=True, exist_ok=True)
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
@@ -344,7 +343,7 @@ def main():
         expected_files.append(summary_file)
 
     clean_orphans(expected_files)
-    generate_summary()
+    generate_summary(stats)
 
     if STRICT_MODE and (stats.download_errors or stats.parse_errors):
         gh_error("严格模式下存在失败源，退出")
