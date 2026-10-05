@@ -9,8 +9,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import aiohttp
+import manifest
 import processor
-from config_loader import get
+from config_loader import ConfigError, get
 from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     atomic_write,
@@ -21,16 +22,24 @@ from utils import (
     normalize_type,
 )
 
-SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
-RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
-TIMEOUT = get("network", "timeout_seconds", default=15)
-RETRIES = get("network", "max_retries", default=2)
-MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
-STRICT_MODE = get("behavior", "strict_mode", default=False)
-UNRECOGNIZED_WARN_RATIO = get("behavior", "unrecognized_warn_ratio", default=0.10)
-CONCURRENCY = get("network", "max_concurrency", default=6)
-PER_HOST = get("network", "max_per_host", default=2)
-MAX_RETRY_AFTER = get("network", "max_retry_after_seconds", default=60)
+try:
+    SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
+    RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
+    TIMEOUT = get("network", "timeout_seconds", default=15)
+    RETRIES = get("network", "max_retries", default=2)
+    MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
+    STRICT_MODE = get("behavior", "strict_mode", default=False)
+    UNRECOGNIZED_WARN_RATIO = get("behavior", "unrecognized_warn_ratio", default=0.10)
+    CONCURRENCY = get("network", "max_concurrency", default=6)
+    PER_HOST = get("network", "max_per_host", default=2)
+    MAX_RETRY_AFTER = get("network", "max_retry_after_seconds", default=60)
+    MIN_SUCCESS_RATIO = get("behavior", "min_source_success_ratio", default=0.0)
+    ALLOW_PARTIAL = get("behavior", "allow_partial", default=False)
+except ConfigError as _cfg_err:
+    gh_error(f"配置校验失败: {_cfg_err}")
+    sys.exit(1)
+
+MANIFEST_FILE = RULESETS_DIR / "products.manifest"
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
@@ -98,11 +107,42 @@ def source_repo_slug(url):
     return host.replace(".", "_") if host else ""
 
 
+_SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_UNSAFE_COMPONENT_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_marker_value(value, label):
+    if not _SAFE_COMPONENT_RE.fullmatch(value) or ".." in value:
+        gh_error(f"非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，"
+                 f"不得含 '..'、前导点、盘符或路径分隔符）")
+        sys.exit(1)
+    return value
+
+
+def clean_path_component(value, fallback):
+    text = _UNSAFE_COMPONENT_CHARS_RE.sub("_", value or "")
+    while ".." in text:
+        text = text.replace("..", ".")
+    text = text.lstrip(".")
+    return text or fallback
+
+
+def ensure_within_rulesets(abs_path):
+    root = Path(RULESETS_DIR).resolve()
+    target = Path(abs_path).resolve()
+    if target != root and root not in target.parents:
+        gh_error(f"输出路径越界，拒绝写入: {target}（须位于 {root} 内）")
+        sys.exit(1)
+    return target
+
+
 def _base_rel_path(task):
-    owner = get_owner_from_url(task["url"])
+    owner = clean_path_component(get_owner_from_url(task["url"]), "unknown")
     last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
-    filename = last_segment.split(".")[0] + ".txt"
-    return Path(task["policy"]) / task["type"] / owner / filename
+    filename = clean_path_component(last_segment.split(".")[0], "rules") + ".txt"
+    policy = clean_path_component(task["policy"], "policy")
+    type_name = clean_path_component(task["type"], "domain")
+    return Path(policy) / type_name / owner / filename
 
 
 def colliding_output_paths(tasks):
@@ -125,7 +165,7 @@ def build_filepath(task, collide_plan=None, taken=None):
     slug = source_repo_slug(task["url"]) or owner
 
     if collide_plan and str(rel_path) in collide_plan:
-        candidate = slug
+        candidate = clean_path_component(slug, "source")
         proposal = Path(task["policy"]) / task["type"] / candidate / rel_path.name
         if taken is not None:
             while str(proposal) in taken and taken[str(proposal)] != slug:
@@ -285,6 +325,7 @@ def process_group(group, raw_by_index):
         return None, errors
 
     header = [f"# Source: {url}" for url in group.get("sources", [])]
+    ensure_within_rulesets(group["path"])
     atomic_write(group["path"], header + result)
     return len(result), errors
 
@@ -321,12 +362,14 @@ def parse_sources():
 
         m_pol = re.match(r"^\[policy:(.+)\]$", line)
         if m_pol:
-            current_policy = normalize_policy(m_pol.group(1))
+            current_policy = normalize_policy(
+                safe_marker_value(m_pol.group(1).strip(), "policy"))
             continue
 
         m_type = re.match(r"^\[type:(.+)\]$", line)
         if m_type:
-            current_type = normalize_type(m_type.group(1))
+            current_type = normalize_type(
+                safe_marker_value(m_type.group(1).strip(), "type"))
             continue
 
         m_kind = re.match(r"^\[domain-kind:(exact|suffix)\]$", line, re.IGNORECASE)
@@ -541,7 +584,28 @@ def main():
         label = f"[{group['policy']}/{group['type']}] {Path(group['path']).name}"
         success(f"  {label} -> {count} 条规则")
 
-    if stats.success == 0:
+    produced = manifest.collect_files(RULESETS_DIR)
+    manifest.save_manifest(MANIFEST_FILE, produced)
+    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
+
+    degraded = stats.success == 0
+    if not degraded and groups:
+        ratio = stats.success / len(groups)
+        if MIN_SUCCESS_RATIO > 0 and ratio < MIN_SUCCESS_RATIO:
+            degraded = True
+            gh_error(
+                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}"
+                f"（成功 {stats.success}/{len(groups)}）"
+            )
+        partial_failures = bool(stats.download_errors or stats.parse_errors)
+        if partial_failures and not ALLOW_PARTIAL:
+            degraded = True
+            gh_error(
+                f"存在失败源（下载 {len(stats.download_errors)} / 解析 {len(stats.parse_errors)}），"
+                "behavior.allow_partial=false 时拒绝发布部分产物"
+            )
+
+    if degraded:
         reason = "（全部源下载失败）" if stats.download_errors else ""
         info(f"  无新规则写入{reason}")
         summary_file = RULESETS_DIR / "sync-summary.txt"
@@ -552,7 +616,13 @@ def main():
             "# 无新规则内容同步\n",
             encoding="utf-8",
         )
-        expected_files.append(summary_file)
+        info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
+        generate_summary(stats)
+        gh_error(
+            f"同步未产出可用规则（成功 {stats.success}/{len(groups)}），"
+            "拒绝清理与发布；如需接受部分产物请设 behavior.allow_partial=true"
+        )
+        sys.exit(1)
 
     clean_orphans(expected_files)
     generate_summary(stats)
