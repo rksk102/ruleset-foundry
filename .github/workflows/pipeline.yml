@@ -82,6 +82,9 @@ jobs:
     needs: merge-rules
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # 本作业随后会下载并执行 mihomo 内核，不应把 GITHUB_TOKEN 留在 .git/config
+          persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
@@ -108,7 +111,6 @@ jobs:
         if: steps.dl-merged.outcome == 'success'
         id: convert
         env:
-          GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
       - name: 缓存 Mihomo 内核（保存）
