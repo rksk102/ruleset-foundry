@@ -182,10 +182,25 @@ def detect_cross_policy_conflicts(merged_dir):
         return {}, {}
 
     strategies = sorted(policy_domains.keys())
+
+    def bare(entry):
+        """去掉 `+.` / `.` 前缀，用于跨策略比较同一域名。"""
+        return entry.lstrip("+.") if entry[:1] in ("+", ".") else entry
+
+    def kind_of(entry):
+        if entry.startswith("+."):
+            return DomainTrie.SUFFIX
+        if entry.startswith("."):
+            return DomainTrie.SUBDOMAIN
+        return DomainTrie.EXACT
+
     explicit_conflicts = {}
     for i, s1 in enumerate(strategies):
         for s2 in strategies[i + 1:]:
-            overlap = policy_domains[s1] & policy_domains[s2]
+            # 按裸域名比较：`+.a.com` 与 `a.com` 指的是同一域名
+            left = {bare(d) for d in policy_domains[s1]}
+            right = {bare(d) for d in policy_domains[s2]}
+            overlap = left & right
             if overlap:
                 explicit_conflicts[f"{s1} ↔ {s2}"] = sorted(overlap)
 
@@ -193,7 +208,8 @@ def detect_cross_policy_conflicts(merged_dir):
     for strategy, domains in policy_domains.items():
         trie = DomainTrie()
         for domain in domains:
-            trie.add(domain)
+            # 必须区分 `+.d` 与裸 `d`：前者才具备覆盖子域的能力
+            trie.add(bare(domain), kind_of(domain))
         tries[strategy] = trie
 
     implicit_conflicts = {}
@@ -204,7 +220,8 @@ def detect_cross_policy_conflicts(merged_dir):
             key = f"{parent_strategy}(父) → {child_strategy}(子)"
             items = []
             for domain in sorted(child_domains):
-                ancestor = parent_trie.covering_parent(domain)
+                # 只有父策略的 `+.` 后缀条目才真正覆盖子策略条目
+                ancestor = parent_trie.covering_parent(bare(domain), DomainTrie.SUFFIX)
                 if ancestor:
                     items.append((domain, ancestor))
             if items:

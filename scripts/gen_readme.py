@@ -174,21 +174,29 @@ def make_static_sections():
 
 ## 规则格式与匹配语义（重要）
 
-`.txt` 产物按 **mihomo `behavior: domain` 规则集**格式生成：
+`.txt` 产物按 **mihomo `behavior: domain` 规则集**格式生成，四种写法的匹配范围各不相同：
 
-| 写法 | 含义 |
-| :--- | :--- |
-| `+.example.com` | 匹配 `example.com` **及其全部子域**（等价 `DOMAIN-SUFFIX`） |
-| `example.com` | **仅**匹配主机名恰好为 `example.com` 的请求 |
-| `*.example.com` | 匹配**恰好一级**子域（mihomo clash 通配符语法） |
-| `*.*.example.com` | 匹配恰好两级子域 |
+| 写法 | 匹配 `example.com` | 匹配 `www.example.com` | 匹配 `a.b.example.com` |
+| :--- | :---: | :---: | :---: |
+| `+.example.com` | ✅ | ✅ | ✅ |
+| `.example.com` | ❌ | ✅ | ✅ |
+| `example.com` | ✅ | ❌ | ❌ |
+| `*.example.com` | ❌ | ✅ | ❌ |
+| `*.*.example.com` | ❌ | ❌ | ✅ |
 
-因此请务必用 `behavior: domain` 引用 `.txt`。若用其它 behavior，`+.` 行会被当作字面域名而失效。
+记忆要点：
 
-> 注意：mihomo 官方 wiki 在 `DOMAIN-SUFFIX` 规则语境下描述 `.example.com` 会匹配子域；
-> 但在 `behavior: domain` 规则集路径下，前导点会被内部改写为 `+.` 形式，
-> 因此 `.example.com` 与 `+.example.com` **等效且都包含 apex**。二者与 wiki 的
-> `DOMAIN-SUFFIX` 表述存在差异，请以本表为准。
+- `+.d` 是**域及其全部子域**（等价 `DOMAIN-SUFFIX`）
+- `.d` 是**仅子域，不含 apex**
+- 裸 `d` 是**仅该主机名**
+- `*` 只匹配**恰好一级**，不匹配 apex
+
+因此请务必用 `behavior: domain` 引用 `.txt`。若用其它 behavior，`+.` 与 `.` 行会被当作字面域名而失效。
+
+> 以上依据 mihomo 源码 `component/trie/domain_set.go` 与其官方测试
+> `component/trie/domain_set_test.go`（`.example.com` 对 apex 断言为 false，
+> `+.example.org` 对 apex 断言为 true）。部分第三方文档把 `.d` 描述为包含 apex，
+> 与实现不符，请以本表为准。
 
 `.mrs` 由 `.txt` 编译而来，语义完全一致，无需额外配置。
 

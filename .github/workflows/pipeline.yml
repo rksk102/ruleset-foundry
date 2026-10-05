@@ -161,24 +161,32 @@ jobs:
           ARTIFACTS_BRANCH: artifacts
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "merged-rules/" > .gitignore
-          echo "merged-rules-mrs/" >> .gitignore
-          git checkout --orphan "${ARTIFACTS_BRANCH}"
-          git rm -r --cached . >/dev/null 2>&1 || true
-          find . -mindepth 1 -maxdepth 1 -not -name merged-rules -not -name merged-rules-mrs -not -name .git -exec rm -rf {} +
-          git add -f merged-rules merged-rules-mrs .gitignore
-          git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
-          git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
+          # 在独立 worktree 中操作：orphan 提交需要清空工作区，若在主工作区执行
+          # 会删掉刚生成的 README.md，导致后续 README 提交步骤无内容可提交。
+          WT="$(mktemp -d)"
+          git worktree add --detach "$WT"
+          (
+            cd "$WT"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout --orphan "${ARTIFACTS_BRANCH}"
+            git rm -rf . >/dev/null 2>&1 || true
+            cp -r "${GITHUB_WORKSPACE}/merged-rules" "${GITHUB_WORKSPACE}/merged-rules-mrs" .
+            printf 'merged-rules/\nmerged-rules-mrs/\n' > .gitignore
+            git add -f merged-rules merged-rules-mrs .gitignore
+            git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
+            git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
+          )
+          git worktree remove --force "$WT"
       - name: 提交 README 与发布状态
         if: steps.dl-merged.outcome == 'success'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git checkout "${REF_NAME}"
+          # 主工作区始终停留在触发分支上（产物提交已在独立 worktree 完成），
+          # 无需再 checkout，避免把刚生成的 README.md 覆盖回旧版本。
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md

@@ -54,6 +54,7 @@ def classify_rule_line(line):
 def new_stats():
     return {
         "suffix": 0,
+        "subdomain": 0,
         "exact": 0,
         "relaxed_exact": 0,
         "wildcard": 0,
@@ -196,17 +197,19 @@ def _analyze_and_process_domain(lines):
             continue
 
         s = s.strip()
-        if s.startswith('*.'):
+        # `*.d` 与 `*.*.d` 保持原样：`*` 只匹配一级且不含 apex，剥掉会改变匹配集
+        if re.match(r'^\*\.', s):
             s = re.sub(r'\s+', '', s)
-            if not s.endswith('.'):
+            if not s.endswith('.') and '*' in s:
                 stats["wildcard"] += 1
-                valid_domains.add(s)
+                valid_domains.add(s.lower())
                 continue
         if s.startswith('+.'):
             semantic = 'suffix'
             s = s[2:]
         elif s.startswith('.'):
-            semantic = semantic or 'suffix'
+            # `.d` 是「仅子域，不含 apex」，与 `+.d` 不同；保留前导点
+            semantic = 'subdomain'
             s = s.lstrip('.')
 
         parts = s.split()
@@ -216,7 +219,7 @@ def _analyze_and_process_domain(lines):
         if s.startswith('||'): s = s[2:]
         if '$' in s: s = s.split('$')[0]
         if '^' in s: s = s.replace('^', '')
-        s = re.sub(r'^(\*\.|\+\.|\.)', '', s)
+        s = re.sub(r'^(\+\.)', '', s)
         if '/' in s: s = s.split('/')[0]
         if ':' in s: s = s.split(':')[0]
 
@@ -229,6 +232,10 @@ def _analyze_and_process_domain(lines):
             if valid and semantic == 'suffix':
                 stats["suffix"] += 1
                 valid_domains.add('+.' + s)
+                continue
+            if valid and semantic == 'subdomain':
+                stats["subdomain"] += 1
+                valid_domains.add('.' + s)
                 continue
             if valid:
                 stats["bare_single_label"] += 1
@@ -263,6 +270,9 @@ def _analyze_and_process_domain(lines):
         if semantic == 'suffix':
             stats["suffix"] += 1
             valid_domains.add('+.' + s)
+        elif semantic == 'subdomain':
+            stats["subdomain"] += 1
+            valid_domains.add('.' + s)
         else:
             stats["relaxed_exact"] += 1
             valid_domains.add(s)

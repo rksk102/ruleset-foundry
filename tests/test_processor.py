@@ -50,8 +50,20 @@ class TestDomainCleaning:
         assert self.clean(["127.0.0.1 ads.example.com"]) == ["ads.example.com"]
         assert self.clean(["0.0.0.0 ads.example.com"]) == ["ads.example.com"]
 
-    def test_leading_wildcards_stripped_to_suffix(self):
-        assert self.clean([".ads.example.com", "+.ads.example.com"]) == ["+.ads.example.com"]
+    def test_leading_dot_is_subdomain_only(self):
+        """`.d` 是「仅子域，不含 apex」，与 `+.d` 匹配集不同，必须区分。"""
+        result, stats = processor.process_domain_detailed([".ads.example.com"])
+        assert result == [".ads.example.com"]
+        assert stats["subdomain"] == 1
+        assert stats["suffix"] == 0
+
+    def test_explicit_suffix_kept_distinct_from_subdomain(self):
+        result, stats = processor.process_domain_detailed(["+.ads.example.com"])
+        assert result == ["+.ads.example.com"]
+        assert stats["suffix"] == 1
+        assert stats["subdomain"] == 0
+
+    def test_single_level_wildcard_preserved(self):
         result, stats = processor.process_domain_detailed(["*.ads.example.com"])
         assert result == ["*.ads.example.com"]
         assert stats["wildcard"] == 1
@@ -65,6 +77,11 @@ class TestDomainCleaning:
         result, stats = processor.process_domain_detailed(["+.local", "+.lan", "+.internal"])
         assert result == ["+.internal", "+.lan", "+.local"]
         assert stats["suffix"] == 3
+
+    def test_single_label_subdomain_preserved(self):
+        result, stats = processor.process_domain_detailed([".local"])
+        assert result == [".local"]
+        assert stats["subdomain"] == 1
 
     def test_bare_single_label_kept_and_counted(self):
         result, stats = processor.process_domain_detailed(["localhost"])

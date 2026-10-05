@@ -139,7 +139,9 @@ class TestDownloadKernelDigest:
         ok, err = self._run(tmp_path, "sha256:" + "0" * 64)
         assert ok is False
         assert "摘要不匹配" in str(err)
-        assert not (tmp_path / "kernel").exists(), "校验失败不得落盘"
+        # _run 把 KERNEL_BIN 设为 tmp_path/k/kernel，断言路径必须与之一致
+        kernel = tmp_path / "k" / "kernel"
+        assert not kernel.exists(), f"校验失败不得落盘，但 {kernel} 存在"
 
     def test_uppercase_algorithm_accepted(self, tmp_path):
         import hashlib

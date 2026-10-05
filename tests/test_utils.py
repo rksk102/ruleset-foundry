@@ -1,6 +1,423 @@
 import hashlib
+import os
 
 import utils
+
+
+class TestAtomicWrite:
+    def test_list_joined_with_trailing_newline(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), ["a.com", "b.com"])
+        assert target.read_text(encoding="utf-8") == "a.com\nb.com\n"
+
+    def test_string_without_newline_gets_one(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), "a.com")
+        assert target.read_text(encoding="utf-8") == "a.com\n"
+
+    def test_existing_trailing_newline_not_duplicated(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), "a.com\n")
+        assert target.read_text(encoding="utf-8") == "a.com\n"
+
+    def test_empty_string_becomes_single_newline(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), "")
+        assert target.read_text(encoding="utf-8") == "\n"
+
+    def test_parent_dirs_created(self, tmp_path):
+        target = tmp_path / "deep" / "nested" / "out.txt"
+        utils.atomic_write(str(target), "x")
+        assert target.exists()
+
+    def test_overwrites_existing_content(self, tmp_path):
+        target = tmp_path / "out.txt"
+        target.write_text("old-and-long\n", encoding="utf-8")
+        utils.atomic_write(str(target), "new")
+        assert target.read_text(encoding="utf-8") == "new\n"
+
+    def test_no_tmp_file_left_behind(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), "x")
+        assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+    def test_failure_cleans_tmp_and_propagates(self, tmp_path):
+        """写入失败必须删掉临时文件并抛错，不得留下半成品。"""
+        target = tmp_path / "out.txt"
+        original = os.replace
+
+        def boom(src, dst):
+            raise OSError("disk full")
+
+        os.replace = boom
+        try:
+            try:
+                utils.atomic_write(str(target), "x")
+            except OSError:
+                pass
+            else:
+                raise AssertionError("应向上抛出 OSError")
+        finally:
+            os.replace = original
+        assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+        assert not target.exists(), "失败时不得留下目标文件"
+
+    def test_unicode_roundtrip(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), ["+.中文域名.com", "广告.example.com"])
+        assert "中文域名" in target.read_text(encoding="utf-8")
+
+
+class TestAtomicWriteWithHeader:
+    def test_header_lines_and_title_casing(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write_with_header(str(target), ["a.com"], {"sources": "u", "count": 1})
+        lines = target.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "# " + "-" * 40
+        assert lines[1] == "# Sources: u"
+        assert lines[2] == "# Count: 1"
+        assert lines[3] == "# " + "-" * 40
+        assert lines[4] == "a.com"
+
+    def test_empty_metadata_still_brackets(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write_with_header(str(target), ["a.com"], {})
+        lines = target.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == lines[1] == "# " + "-" * 40
+
+    def test_empty_rules_produces_only_header(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write_with_header(str(target), [], {"k": "v"})
+        lines = target.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3
+
+
+class TestFileSha256:
+    def test_matches_hashlib(self, tmp_path):
+        target = tmp_path / "f.bin"
+        payload = b"hello world" * 1000
+        target.write_bytes(payload)
+        assert utils.file_sha256(str(target)) == hashlib.sha256(payload).hexdigest()
+
+    def test_empty_file(self, tmp_path):
+        target = tmp_path / "f.bin"
+        target.write_bytes(b"")
+        assert utils.file_sha256(str(target)) == hashlib.sha256(b"").hexdigest()
+
+    def test_differs_on_content_change(self, tmp_path):
+        a = tmp_path / "a.bin"
+        b = tmp_path / "b.bin"
+        a.write_bytes(b"x")
+        b.write_bytes(b"y")
+        assert utils.file_sha256(str(a)) != utils.file_sha256(str(b))
+
+
+class TestHashFileBody:
+    def test_comments_and_blanks_ignored(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("# header\na.com\n\nb.com\n", encoding="utf-8")
+        b.write_text("a.com\nb.com\n", encoding="utf-8")
+        assert utils._hash_file_body(str(a)) == utils._hash_file_body(str(b))
+
+    def test_whitespace_stripped(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("  a.com  \n", encoding="utf-8")
+        b.write_text("a.com\n", encoding="utf-8")
+        assert utils._hash_file_body(str(a)) == utils._hash_file_body(str(b))
+
+    def test_content_change_detected(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("a.com\n", encoding="utf-8")
+        b.write_text("b.com\n", encoding="utf-8")
+        assert utils._hash_file_body(str(a)) != utils._hash_file_body(str(b))
+
+    def test_order_matters(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("a.com\nb.com\n", encoding="utf-8")
+        b.write_text("b.com\na.com\n", encoding="utf-8")
+        assert utils._hash_file_body(str(a)) != utils._hash_file_body(str(b))
+
+
+class TestDirHash:
+    def test_missing_dir_returns_empty(self, tmp_path):
+        assert utils.dir_hash(str(tmp_path / "nope")) == ("", 0)
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        assert utils.dir_hash(str(tmp_path)) == ("", 0)
+
+    def test_counts_only_matching_files(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+        (tmp_path / "b.mrs").write_text("b", encoding="utf-8")
+        digest, count = utils.dir_hash(str(tmp_path), "*.txt")
+        assert count == 1
+        assert digest
+
+    def test_hidden_files_skipped(self, tmp_path):
+        (tmp_path / ".hidden.txt").write_text("h", encoding="utf-8")
+        (tmp_path / "keep.txt").write_text("k", encoding="utf-8")
+        _digest, count = utils.dir_hash(str(tmp_path), "*.txt")
+        assert count == 1
+
+    def test_nested_dirs_included(self, tmp_path):
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        (tmp_path / "a" / "b" / "x.txt").write_text("x", encoding="utf-8")
+        _digest, count = utils.dir_hash(str(tmp_path), "*.txt")
+        assert count == 1
+
+    def test_stable_across_calls(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+        assert utils.dir_hash(str(tmp_path), "*.txt") == utils.dir_hash(str(tmp_path), "*.txt")
+
+    def test_content_change_changes_digest(self, tmp_path):
+        f = tmp_path / "a.txt"
+        f.write_text("a", encoding="utf-8")
+        first = utils.dir_hash(str(tmp_path), "*.txt")[0]
+        f.write_text("b", encoding="utf-8")
+        assert utils.dir_hash(str(tmp_path), "*.txt")[0] != first
+
+    def test_skip_comments_ignores_header_only_diff(self, tmp_path):
+        f = tmp_path / "a.txt"
+        f.write_text("# one\na.com\n", encoding="utf-8")
+        first = utils.dir_hash(str(tmp_path), "*.txt", skip_comments=True)[0]
+        f.write_text("# two\na.com\n", encoding="utf-8")
+        assert utils.dir_hash(str(tmp_path), "*.txt", skip_comments=True)[0] == first
+
+    def test_without_skip_comments_header_diff_matters(self, tmp_path):
+        f = tmp_path / "a.txt"
+        f.write_text("# one\na.com\n", encoding="utf-8")
+        first = utils.dir_hash(str(tmp_path), "*.txt")[0]
+        f.write_text("# two\na.com\n", encoding="utf-8")
+        assert utils.dir_hash(str(tmp_path), "*.txt")[0] != first
+
+
+class TestCombinedProductsHash:
+    def test_shape_is_pipe_joined(self, tmp_path):
+        txt = tmp_path / "t"
+        mrs = tmp_path / "m"
+        txt.mkdir()
+        mrs.mkdir()
+        (txt / "a.txt").write_text("a.com\n", encoding="utf-8")
+        (mrs / "a.mrs").write_text("MRS", encoding="utf-8")
+        combined, c1, c2 = utils.combined_products_hash(str(txt), str(mrs))
+        assert (c1, c2) == (1, 1)
+        assert combined.count("|") == 3
+        assert combined.endswith("|1|1")
+
+    def test_header_change_does_not_trigger_release(self, tmp_path):
+        """txt 侧跳过注释：仅头部（如时间戳）变化不应导致重新发布。"""
+        txt = tmp_path / "t"
+        mrs = tmp_path / "m"
+        txt.mkdir()
+        mrs.mkdir()
+        (mrs / "a.mrs").write_text("MRS", encoding="utf-8")
+        f = txt / "a.txt"
+        f.write_text("# Sources: x\na.com\n", encoding="utf-8")
+        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        f.write_text("# Sources: y\na.com\n", encoding="utf-8")
+        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        assert first == second
+
+    def test_rule_change_triggers_release(self, tmp_path):
+        txt = tmp_path / "t"
+        mrs = tmp_path / "m"
+        txt.mkdir()
+        mrs.mkdir()
+        (mrs / "a.mrs").write_text("MRS", encoding="utf-8")
+        f = txt / "a.txt"
+        f.write_text("a.com\n", encoding="utf-8")
+        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        f.write_text("b.com\n", encoding="utf-8")
+        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        assert first != second
+
+    def test_mrs_change_triggers_release(self, tmp_path):
+        txt = tmp_path / "t"
+        mrs = tmp_path / "m"
+        txt.mkdir()
+        mrs.mkdir()
+        (txt / "a.txt").write_text("a.com\n", encoding="utf-8")
+        f = mrs / "a.mrs"
+        f.write_text("MRS1", encoding="utf-8")
+        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        f.write_text("MRS2", encoding="utf-8")
+        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
+        assert first != second
+
+    def test_missing_dirs_give_zero_counts(self, tmp_path):
+        combined, c1, c2 = utils.combined_products_hash(
+            str(tmp_path / "no-txt"), str(tmp_path / "no-mrs"))
+        assert (c1, c2) == (0, 0)
+        assert combined.count("|") == 3
+
+
+class TestHashStatePersistence:
+    def test_load_missing_returns_none(self, tmp_path):
+        assert utils.load_last_hash(str(tmp_path / "absent.sha256")) is None
+
+    def test_save_then_load_roundtrip(self, tmp_path):
+        target = tmp_path / "state" / "release.sha256"
+        utils.save_last_hash("abc123", str(target))
+        assert utils.load_last_hash(str(target)) == "abc123"
+
+    def test_load_strips_whitespace(self, tmp_path):
+        target = tmp_path / "h.sha256"
+        target.write_text("  abc  \n", encoding="utf-8")
+        assert utils.load_last_hash(str(target)) == "abc"
+
+    def test_save_creates_parent_dirs(self, tmp_path):
+        target = tmp_path / "deep" / "nested" / "h.sha256"
+        utils.save_last_hash("x", str(target))
+        assert target.exists()
+
+    def test_save_overwrites(self, tmp_path):
+        target = tmp_path / "h.sha256"
+        utils.save_last_hash("one", str(target))
+        utils.save_last_hash("two", str(target))
+        assert utils.load_last_hash(str(target)) == "two"
+
+
+class TestNormalizePolicy:
+    def test_block_synonyms(self):
+        for raw in ["reject", "reject-list", "block", "deny", "ads", "adblock", "REJECT"]:
+            assert utils.normalize_policy(raw) == "block", raw
+
+    def test_direct_synonyms(self):
+        for raw in ["direct", "bypass", "no-proxy", "DIRECT"]:
+            assert utils.normalize_policy(raw) == "direct", raw
+
+    def test_policy_synonyms(self):
+        for raw in ["proxy", "proxy-list", "gfw", "POLICY"]:
+            assert utils.normalize_policy(raw) == "policy", raw
+
+    def test_empty_falls_back_to_proxy(self):
+        assert utils.normalize_policy("") == "proxy"
+
+    def test_block_wins_over_proxy_when_both_present(self):
+        """判定顺序：block 先于 policy，含 'ads' 的一律 block。"""
+        assert utils.normalize_policy("ads-proxy") == "block"
+
+    def test_direct_wins_over_policy(self):
+        assert utils.normalize_policy("direct-gfw") == "direct"
+
+    def test_substring_match_is_intentional(self):
+        """'adservice' 含 'ads' -> block。这是子串匹配的既定行为。"""
+        assert utils.normalize_policy("adservice") == "block"
+
+    def test_unknown_policy_passes_through(self):
+        assert utils.normalize_policy("custom") == "custom"
+
+
+class TestNormalizeType:
+    def test_ip_variants(self):
+        for raw in ["ip", "ipcidr", "IP-CIDR", "cidr", "IPCidr"]:
+            assert utils.normalize_type(raw) == "ipcidr", raw
+
+    def test_everything_else_is_domain(self):
+        for raw in ["domain", "general", "", "domain-suffix"]:
+            assert utils.normalize_type(raw) == "domain", raw
+
+
+class TestGetOwnerFromUrl:
+    def test_github_repo_url(self):
+        assert utils.get_owner_from_url(
+            "https://github.com/Loyalsoldier/clash-rules/raw/release/reject.txt"
+        ) == "Loyalsoldier"
+
+    def test_github_org_only(self):
+        assert utils.get_owner_from_url("https://github.com/") == "github"
+
+    def test_jsdelivr_gh_form(self):
+        assert utils.get_owner_from_url(
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/x.list"
+        ) == "MetaCubeX"
+
+    def test_jsdelivr_non_gh_falls_back_to_label(self):
+        assert utils.get_owner_from_url("https://cdn.jsdelivr.net/npm/foo/index.js") == "jsdelivr"
+
+    def test_other_host_returns_hostname(self):
+        assert utils.get_owner_from_url("https://example.com/a/b.txt") == "example.com"
+
+    def test_short_url_returns_unknown(self):
+        assert utils.get_owner_from_url("nonsense") == "unknown"
+
+    def test_raw_githubusercontent_owner_extracted(self):
+        """主机名含 'github' 即走 GitHub 分支，raw 形式同样能取到 owner。"""
+        assert utils.get_owner_from_url(
+            "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt"
+        ) == "Loyalsoldier"
+
+    def test_gist_owner_extracted(self):
+        assert utils.get_owner_from_url(
+            "https://gist.githubusercontent.com/someuser/abc123/raw/x.txt"
+        ) == "someuser"
+
+
+class TestNormalizePath:
+    def test_posix_separators(self):
+        assert "\\" not in utils.normalize_path("a\\b\\c.txt")
+
+    def test_plain_path_unchanged(self):
+        assert utils.normalize_path("a/b.txt") == "a/b.txt"
+
+
+class TestBeijingTime:
+    def test_offset_is_utc8(self):
+        import datetime
+
+        assert utils.beijing_now().utcoffset() == datetime.timedelta(hours=8)
+
+    def test_timestamp_format(self):
+        ts = utils.beijing_timestamp()
+        assert len(ts) == len("YYYY-MM-DD HH:MM:SS")
+        assert ts[4] == "-" and ts[10] == " " and ts[13] == ":"
+
+    def test_timestamp_close_to_now(self):
+        import datetime
+
+        now = utils.beijing_now()
+        parsed = datetime.datetime.strptime(utils.beijing_timestamp(), "%Y-%m-%d %H:%M:%S")
+        assert abs((parsed - now.replace(tzinfo=None)).total_seconds()) < 5
+
+
+class TestCleanDirectory:
+    def test_missing_dir_created_when_keep_root(self, tmp_path):
+        target = tmp_path / "new"
+        assert utils.clean_directory(str(target), keep_root=True) == []
+        assert target.is_dir()
+
+    def test_missing_dir_not_created_when_not_keep_root(self, tmp_path):
+        target = tmp_path / "new"
+        assert utils.clean_directory(str(target), keep_root=False) == []
+        assert not target.exists()
+
+    def test_removes_files_and_subdirs(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "f.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "top.txt").write_text("y", encoding="utf-8")
+        assert utils.clean_directory(str(tmp_path)) == []
+        assert list(tmp_path.iterdir()) == []
+
+    def test_returns_failures_instead_of_swallowing(self, tmp_path):
+        """清理失败必须回报路径与原因，不能静默 pass。"""
+        target = tmp_path / "blocked.txt"
+        target.write_text("x", encoding="utf-8")
+        original = os.unlink
+
+        def boom(path):
+            raise PermissionError("in use")
+
+        os.unlink = boom
+        try:
+            failed = utils.clean_directory(str(tmp_path))
+        finally:
+            os.unlink = original
+        assert len(failed) == 1
+        assert "blocked.txt" in failed[0][0]
+        assert "in use" in failed[0][1]
 
 
 class TestDedupDomainSuffix:
@@ -28,6 +445,27 @@ class TestDedupDomainSuffix:
         kept, removed = utils.dedup_domain_suffix({"google.com", "ads.google.com"})
         assert kept == ["ads.google.com", "google.com"]
         assert removed == 0
+
+    def test_suffix_covers_same_name_subdomain(self):
+        kept, removed = utils.dedup_domain_suffix({"+.google.com", ".google.com"})
+        assert kept == ["+.google.com"]
+        assert removed == 1
+
+    def test_subdomain_and_exact_coexist(self):
+        """`.d` 仅子域、`d` 仅 apex，匹配集不相交。"""
+        kept, removed = utils.dedup_domain_suffix({".google.com", "google.com"})
+        assert kept == [".google.com", "google.com"]
+        assert removed == 0
+
+    def test_subdomain_entries_do_not_cover_each_other(self):
+        kept, removed = utils.dedup_domain_suffix({".google.com", ".ads.google.com"})
+        assert kept == [".ads.google.com", ".google.com"]
+        assert removed == 0
+
+    def test_suffix_covers_subdomain_child(self):
+        kept, removed = utils.dedup_domain_suffix({"+.google.com", ".ads.google.com"})
+        assert kept == ["+.google.com"]
+        assert removed == 1
 
     def test_duplicates_dropped(self):
         kept, removed = utils.dedup_domain_suffix({"google.com", "google.com"})

@@ -184,9 +184,15 @@ def normalize_path(p):
 
 
 class DomainTrie:
+    """倒序标签 Trie，判定父子域名关系。
+
+    SUFFIX 为 `+.d`（域及全部子域），SUBDOMAIN 为 `.d`（仅子域），EXACT 为 `d`（仅该主机名）。
+    只有 SUFFIX 能覆盖其他条目。
+    """
 
     SUFFIX = 1
-    EXACT = 2
+    SUBDOMAIN = 2
+    EXACT = 3
 
     def __init__(self):
         self._root = {}
@@ -210,7 +216,7 @@ class DomainTrie:
     def has_marked_ancestor(self, domain, kind=None):
         for _matched, node in self._walk(domain):
             if kind is None:
-                if node.get(self.SUFFIX) or node.get(self.EXACT):
+                if node.get(self.SUFFIX) or node.get(self.SUBDOMAIN) or node.get(self.EXACT):
                     return True
             elif node.get(kind):
                 return True
@@ -221,14 +227,22 @@ class DomainTrie:
         for matched, node in self._walk(domain):
             if matched >= len(parts):
                 break
-            hit = (node.get(self.SUFFIX) or node.get(self.EXACT)) if kind is None \
-                else node.get(kind)
+            hit = (node.get(self.SUFFIX) or node.get(self.SUBDOMAIN)
+                   or node.get(self.EXACT)) if kind is None else node.get(kind)
             if hit:
                 return ".".join(parts[len(parts) - matched:])
         return None
 
 
 def dedup_domain_suffix(domains):
+    """同策略内父子域名去重，返回 (排序后的列表, 被移除的数量)。
+
+    条目写法与其匹配集：
+      `+.d` 域及其全部子域（最宽）
+      `.d`  仅子域，不含 apex
+      `d`   仅主机名 d
+    只有 `+.` 前缀具备覆盖能力：它同时涵盖 `.d` 与 `d`，也涵盖二者的子级写法。
+    """
     if not domains:
         return [], 0
 
@@ -237,18 +251,19 @@ def dedup_domain_suffix(domains):
     removed = 0
 
     def bare(d):
-        return d[2:] if d.startswith("+.") else d
+        return d.lstrip("+.") if d.startswith("+.") or d.startswith(".") else d
 
     for entry in sorted(domains, key=lambda d: (bare(d).count("."), d)):
         name = bare(entry)
-        is_suffix = entry.startswith("+.")
-        kind = DomainTrie.SUFFIX if is_suffix else DomainTrie.EXACT
+        if entry.startswith("+."):
+            kind = DomainTrie.SUFFIX
+        elif entry.startswith("."):
+            kind = DomainTrie.SUBDOMAIN
+        else:
+            kind = DomainTrie.EXACT
 
-        if is_suffix:
-            if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
-                removed += 1
-                continue
-        elif trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
+        # `+.p` 是唯一能覆盖其他条目的形态
+        if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
             removed += 1
             continue
 
