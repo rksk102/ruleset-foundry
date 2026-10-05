@@ -24,23 +24,40 @@ permissions:
   contents: read
 
 jobs:
+  no-generated-artifacts:
+    name: "禁止提交生成产物"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: 检查 merged-rules* 是否被跟踪
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files 'merged-rules/*' 'merged-rules-mrs/*' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::merged-rules/ 与 merged-rules-mrs/ 是生成产物，不得进入 git。"
+            echo "$tracked" | head -20
+            exit 1
+          fi
+          echo "OK: 产物未被跟踪"
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.13'
       - run: pip install -r requirements-dev.txt
-      - run: ruff check scripts
+      - run: ruff check scripts tests
 
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt -r requirements-dev.txt

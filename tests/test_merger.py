@@ -73,7 +73,7 @@ class TestProcessTaskLogic:
         finally:
             merger.SOURCE_DIR, merger.OUTPUT_DIR = original
 
-    def test_merges_dedups_and_reports_counts(self, tmp_path):
+    def test_merges_and_reports_counts(self, tmp_path):
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"
         write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\ngoogle.com\n")
@@ -85,12 +85,42 @@ class TestProcessTaskLogic:
         ))
 
         assert result["raw"] == 3
-        assert result["opt"] == 2
+        assert result["opt"] == 3
         assert result["path"] == "block/domain/Owner"
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
         assert "ads.example.com" in content
         assert "google.com" in content
-        assert "sub.google.com" not in content
+        assert "sub.google.com" in content
+
+    def test_suffix_parent_dedups_children(self, tmp_path):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        write(source / "block" / "domain" / "A" / "one.txt", "+.google.com\n+.ads.google.com\n")
+
+        result = self.use_dirs(source, output, lambda: merger.process_task_logic(
+            "block", "domain", "Owner", "all.txt",
+            ["block/domain/A/one.txt"], "后缀去重测试",
+        ))
+
+        assert result["raw"] == 2
+        assert result["opt"] == 1
+        content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
+        assert "+.google.com" in content
+        assert "+.ads.google.com" not in content
+
+    def test_sources_recorded_in_header(self, tmp_path):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        write(
+            source / "block" / "domain" / "A" / "one.txt",
+            "# Source: https://raw.githubusercontent.com/Owner/repo/main/one.txt\nads.example.com\n",
+        )
+        self.use_dirs(source, output, lambda: merger.process_task_logic(
+            "block", "domain", "Owner", "all.txt",
+            ["block/domain/A/one.txt"], "来源透传测试",
+        ))
+        content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
+        assert "# Sources: https://raw.githubusercontent.com/Owner/repo/main/one.txt" in content
 
     def test_missing_input_raises(self, tmp_path):
         source = tmp_path / "rulesets"
@@ -129,12 +159,44 @@ class TestDetectCrossPolicyConflicts:
         })
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
-    def test_implicit_conflict_parent_covers_child(self, tmp_path):
+    def test_explicit_conflict_across_prefix_forms(self, tmp_path):
+        """`+.d` 与裸 `d` 是同一域名，必须判为显式冲突。"""
+        explicit, _implicit = self.build(tmp_path, {
+            "block/domain/A/x.txt": "+.same.example.com\n",
+            "policy/domain/A/y.txt": "same.example.com\n",
+        })
+        assert explicit == {"block ↔ policy": ["same.example.com"]}
+
+    def test_implicit_conflict_suffix_parent_covers_child(self, tmp_path):
+        """只有父策略的 `+.` 后缀条目才覆盖子策略条目。"""
+        _explicit, implicit = self.build(tmp_path, {
+            "policy/domain/A/proxy.txt": "+.google.com\n",
+            "block/domain/A/ads.txt": "ads.google.com\n",
+        })
+        assert implicit == {"policy(父) → block(子)": [("ads.google.com", "google.com")]}
+
+    def test_implicit_conflict_suffix_parent_covers_subdomain_child(self, tmp_path):
+        _explicit, implicit = self.build(tmp_path, {
+            "policy/domain/A/proxy.txt": "+.google.com\n",
+            "block/domain/A/ads.txt": ".ads.google.com\n",
+        })
+        assert implicit == {"policy(父) → block(子)": [(".ads.google.com", "google.com")]}
+
+    def test_bare_parent_does_not_cover_child(self, tmp_path):
+        """裸域名是精确匹配，不构成隐式冲突。"""
         _explicit, implicit = self.build(tmp_path, {
             "policy/domain/A/proxy.txt": "google.com\n",
             "block/domain/A/ads.txt": "ads.google.com\n",
         })
-        assert implicit == {"policy(父) → block(子)": [("ads.google.com", "google.com")]}
+        assert implicit == {}
+
+    def test_subdomain_parent_does_not_cover_child(self, tmp_path):
+        """`.d` 只匹配子域且不含 d 自身，不能覆盖 `+.` 之外的条目。"""
+        _explicit, implicit = self.build(tmp_path, {
+            "policy/domain/A/proxy.txt": ".google.com\n",
+            "block/domain/A/ads.txt": ".ads.google.com\n",
+        })
+        assert implicit == {}
 
     def test_single_strategy_reports_nothing(self, tmp_path):
         explicit, implicit = self.build(tmp_path, {

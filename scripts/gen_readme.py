@@ -13,9 +13,11 @@ DIR_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs")
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
-BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH_NAME}"
+# 规则产物不进 git 历史，由常驻的 artifacts 分支对外分发
+ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH", "artifacts")
+BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{ARTIFACTS_BRANCH}"
 BASE_GHPROXY = f"https://ghproxy.net/{BASE_RAW}"
-BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{BRANCH_NAME}"
+BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{ARTIFACTS_BRANCH}"
 STYLE = "flat-square"
 
 
@@ -41,7 +43,6 @@ def get_time_badge(encoded_time=None):
 
 
 def resolve_badge_time():
-    """产物未变化时沿用 README 中的旧徽章时间，避免无意义提交。"""
     if not get("behavior", "release_change_detection", default=True):
         return None
     try:
@@ -155,10 +156,6 @@ def make_page_header(badge_time=None):
 
 
 def make_static_sections():
-    """生成与产物无关的静态运维说明。
-
-    README 每次整体重写，手写追加的尾部会被覆盖，故必须由此处输出。
-    """
     return """
 ## 内核版本升级流程（维护者）
 
@@ -170,7 +167,51 @@ def make_static_sections():
 ## 规则优先级与消费方式
 
 策略优先级固定为 `block > direct > policy`；在代理客户端中按此顺序引用 rule-provider。
-仓库提供 `.txt`（通用）与 `.mrs`（Mihomo 专用）两种格式，路径一一对应。
+本仓库提供 `.txt`（通用）与 `.mrs`（Mihomo 专用）两种格式，路径一一对应。
+
+产物由 CI 每日生成，**不进入 git 历史**，统一发布在本仓库的 `artifacts` 分支上。
+上表所有下载链接均指向该分支；请按链接原样引用，不要改用 `main` 分支。
+
+## 规则格式与匹配语义（重要）
+
+`.txt` 产物按 **mihomo `behavior: domain` 规则集**格式生成，四种写法的匹配范围各不相同：
+
+| 写法 | 匹配 `example.com` | 匹配 `www.example.com` | 匹配 `a.b.example.com` |
+| :--- | :---: | :---: | :---: |
+| `+.example.com` | ✅ | ✅ | ✅ |
+| `.example.com` | ❌ | ✅ | ✅ |
+| `example.com` | ✅ | ❌ | ❌ |
+| `*.example.com` | ❌ | ✅ | ❌ |
+| `*.*.example.com` | ❌ | ❌ | ✅ |
+
+记忆要点：
+
+- `+.d` 是**域及其全部子域**（等价 `DOMAIN-SUFFIX`）
+- `.d` 是**仅子域，不含 apex**
+- 裸 `d` 是**仅该主机名**
+- `*` 只匹配**恰好一级**，不匹配 apex
+
+因此请务必用 `behavior: domain` 引用 `.txt`。若用其它 behavior，`+.` 与 `.` 行会被当作字面域名而失效。
+
+> 以上依据 mihomo 源码 `component/trie/domain_set.go` 与其官方测试
+> `component/trie/domain_set_test.go`（`.example.com` 对 apex 断言为 false，
+> `+.example.org` 对 apex 断言为 true）。部分第三方文档把 `.d` 描述为包含 apex，
+> 与实现不符，请以本表为准。
+
+`.mrs` 由 `.txt` 编译而来，语义完全一致，无需额外配置。
+
+### 裸域名的语义取决于上游，本仓库不做猜测
+
+上游对「裸域名」的约定**并不统一**，本仓库按「裸域名 = 精确匹配」处理：
+
+- `MetaCubeX/meta-rules-dat` 的 `geo/geosite/*.list`：**同一文件内**裸行与 `+.` 行并存，
+  裸行是维护者有意保留的「精确命中」（例如 `ai.google.dev`），因此按精确处理是**正确**的。
+- `v2rayfly/domain-list-community`（`v2ray-rules-dat` 的上游）规范说明
+  `domain:` 前缀可省略，裸行编译为 **sub-domain** 规则，即**后缀**语义。
+  这类源目前会按精确处理，覆盖面偏窄。
+
+若你需要把某个纯 DLC 系源按后缀解释，请在 `sources.urls` 中为该源显式标注
+（见仓库 `config.yaml` 的说明），不要依赖自动猜测。
 
 ## 发布去重语义
 

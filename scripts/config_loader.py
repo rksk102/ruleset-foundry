@@ -22,6 +22,9 @@ def load_config():
             "timeout_seconds": 15,
             "max_retries": 2,
             "max_source_bytes": 64 * 1024 * 1024,
+            "max_concurrency": 6,
+            "max_per_host": 2,
+            "max_retry_after_seconds": 60,
         },
         "paths": {
             "sources_file": "sources.urls",
@@ -37,6 +40,7 @@ def load_config():
             "release_change_detection": True,
             "release_keep_days": 3,
             "conflict_policy": "warn",
+            "unrecognized_warn_ratio": 0.10,
         },
         "mihomo": {
             "kernel_cache_path": ".cache/mihomo-kernel",

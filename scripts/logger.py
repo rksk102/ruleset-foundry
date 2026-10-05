@@ -35,15 +35,13 @@ class _StripAnsiFilter(logging.Filter):
 
 
 class _BeijingFormatter(logging.Formatter):
-    """以北京时间渲染 asctime，避免与产物/README 时间戳语义不一致。"""
 
-    def formatTime(self, record, datefmt=None):
-        dt = beijing_now()
-        return dt.strftime(datefmt) if datefmt else dt.isoformat()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.converter = lambda *_: beijing_now().timetuple()
 
 
 def _resolve_log_file():
-    """延迟解析日志文件路径，优先读取 config 的 paths.log_dir。"""
     global _LOG_FILE
     if _LOG_FILE is not None:
         return _LOG_FILE

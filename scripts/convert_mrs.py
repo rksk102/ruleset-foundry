@@ -1,5 +1,6 @@
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -29,7 +30,6 @@ MAX_KERNEL_BYTES = 100 * 1024 * 1024
 
 
 def release_api_url(pinned_version, repo_api=None):
-    """由 repo_api 派生 release 查询地址；pinned_version 为空时跟随 latest。"""
     root = (repo_api or REPO_API).rstrip("/")
     if root.endswith("/latest"):
         root = root[: -len("/latest")]
@@ -47,16 +47,18 @@ def sha256_file(path):
 
 
 def select_kernel_asset(assets, asset_name, pinned_version):
-    """选择 linux-amd64 内核资产，返回下载地址或 None。
+    def pick(asset):
+        return {
+            "name": asset["name"],
+            "url": asset["browser_download_url"],
+            "digest": asset.get("digest") or "",
+        }
 
-    asset_name 非空时精确匹配；否则排除 go1xx / v1 / v2 / v3 / compatible
-    变体后，优先取 mihomo-linux-amd64-<tag>.gz。
-    """
     gz = [a for a in assets if "linux-amd64" in a["name"] and a["name"].endswith(".gz")]
     if asset_name:
         for a in gz:
             if a["name"] == asset_name:
-                return a["browser_download_url"]
+                return pick(a)
         return None
 
     def is_variant(name):
@@ -72,21 +74,26 @@ def select_kernel_asset(assets, asset_name, pinned_version):
         exact = f"mihomo-linux-amd64-{pinned_version}.gz"
         for a in stable:
             if a["name"] == exact:
-                return a["browser_download_url"]
+                return pick(a)
     if stable:
-        return sorted(stable, key=lambda a: a["name"])[0]["browser_download_url"]
+        return pick(sorted(stable, key=lambda a: a["name"])[0])
     return None
 
 
-def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF"):
-    """校验内核结构，并在提供 expected_sha 时强制比对解压后二进制哈希。"""
+def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF", require_sha=False):
     with open(path, "rb") as f:
         magic = f.read(len(expected_magic))
     if magic != expected_magic:
         raise ValueError(f"内核不是有效 ELF 文件（magic={magic!r}）")
 
     actual = sha256_file(path)
-    if expected_sha and actual != expected_sha:
+    if not expected_sha:
+        if require_sha:
+            raise ValueError(
+                "缺少 kernel_sha256，拒绝以仅校验 ELF magic 的方式降级使用内核"
+            )
+        return actual
+    if actual != expected_sha:
         raise ValueError(f"内核哈希不匹配：期望 {expected_sha}，实际 {actual}")
     return actual
 
@@ -106,14 +113,39 @@ def _fetch_latest_release_info(headers, max_retries=3):
     raise last_err
 
 
-def _download_kernel(download_url, headers, max_retries=3):
-    """下载内核到 KERNEL_BIN，失败时清理残留。"""
+def _download_kernel(download_url, headers, expected_digest=None, max_retries=3):
     last_err = None
     for attempt in range(max_retries):
         try:
             dl_req = urllib.request.Request(download_url, headers=headers)
             with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
-                with gzip.GzipFile(fileobj=dl_resp) as gz:
+                digest = hashlib.sha256()
+                buf = io.BytesIO()
+                total = 0
+                while True:
+                    chunk = dl_resp.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_KERNEL_BYTES:
+                        raise ValueError(
+                            f"内核压缩包超过上限 {MAX_KERNEL_BYTES} 字节，已中止"
+                        )
+                    digest.update(chunk)
+                    buf.write(chunk)
+
+                actual_digest = digest.hexdigest()
+                if expected_digest:
+                    want = expected_digest.split(":", 1)[-1].strip().lower()
+                    if actual_digest != want:
+                        raise ValueError(
+                            f"内核资产摘要不匹配：期望 {want}，实际 {actual_digest}"
+                        )
+                else:
+                    warning("  资产未提供 digest，跳过压缩流校验（仅依赖解压后哈希）")
+
+                buf.seek(0)
+                with gzip.GzipFile(fileobj=buf) as gz:
                     written = 0
                     with open(KERNEL_BIN, "wb") as f:
                         while True:
@@ -140,7 +172,6 @@ def _download_kernel(download_url, headers, max_retries=3):
 
 
 def _verify_kernel():
-    """内核可运行时返回版本输出，否则 None。"""
     try:
         ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True, timeout=10)
         return ver_out.strip()
@@ -166,7 +197,7 @@ def get_latest_mihomo(skip_hash_check=False):
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
                 try:
-                    verify_kernel_file(KERNEL_BIN, expected_sha)
+                    verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=True)
                 except ValueError as e:
                     warning(f"  缓存内核校验失败，将重新下载: {e}")
                     try:
@@ -180,18 +211,19 @@ def get_latest_mihomo(skip_hash_check=False):
                         return
                     warning("  缓存内核不可运行，将重新下载")
 
-        download_url = select_kernel_asset(data["assets"], ASSET_NAME, PINNED_VERSION)
-        if not download_url:
+        asset = select_kernel_asset(data["assets"], ASSET_NAME, PINNED_VERSION)
+        if not asset:
             raise Exception(f"未找到合适的 linux-amd64 内核资源（asset_name={ASSET_NAME!r}）")
 
-        info(f"  下载内核: {download_url}")
+        info(f"  下载内核: {asset['url']}")
+        if not asset["digest"]:
+            warning("  上游未提供资产 digest，压缩流校验将被跳过")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _download_kernel(download_url, headers)
+        _download_kernel(asset["url"], headers, expected_digest=asset["digest"])
 
         try:
-            actual_sha = verify_kernel_file(KERNEL_BIN, expected_sha)
+            actual_sha = verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=not skip_hash_check)
         except ValueError as e:
-            # 安全场景 fail-fast：不得降级复用旧内核
             error(f"  内核完整性校验失败: {e}")
             sys.exit(1)
         if not expected_sha:
@@ -210,9 +242,22 @@ def get_latest_mihomo(skip_hash_check=False):
         error(f"  内核准备失败: {e}")
         if os.path.exists(KERNEL_BIN):
             warning("  尝试降级使用已缓存的内核...")
+            try:
+                verify_kernel_file(KERNEL_BIN, EXPECTED_SHA, require_sha=True)
+            except (ValueError, OSError) as ve:
+                error(f"  缓存内核校验失败，拒绝执行: {ve}")
+                sys.exit(1)
             ver_out = _verify_kernel()
             if ver_out:
                 warning(f"  使用缓存内核（版本可能非最新）: {ver_out}")
+                summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+                if summary_path:
+                    with open(summary_path, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"\n> ⚠️ 本次降级使用缓存内核"
+                            f"（目标 {PINNED_VERSION or 'latest'} 准备失败）: "
+                            f"{type(e).__name__}: {e}\n"
+                        )
                 return
             error("  缓存内核也无法运行")
         sys.exit(1)
@@ -279,7 +324,6 @@ def _set_config_field(text, key, value):
 
 
 def _smoke_convert():
-    """用新内核跑一次最小转换，确认 convert-ruleset 可用。"""
     if not sys.platform.startswith("linux"):
         warning("  非 Linux 平台，跳过转换冒烟验证")
         return
@@ -308,7 +352,6 @@ def _smoke_convert():
 
 
 def bump_config():
-    """检查最新正式版并更新 config.yaml 的钉扎三字段，供 kernel-bump 工作流调用。"""
     headers = {}
     if "GH_TOKEN" in os.environ:
         headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
@@ -323,15 +366,18 @@ def bump_config():
         info(f"  已是最新正式版 {tag}，无需更新")
         return
 
-    download_url = select_kernel_asset(data["assets"], "", tag)
-    if not download_url:
+    asset = select_kernel_asset(data["assets"], "", tag)
+    if not asset:
         error(f"  未找到期望资产 mihomo-linux-amd64-{tag}.gz")
         sys.exit(1)
 
-    asset_name = download_url.rsplit("/", 1)[-1]
+    asset_name = asset["name"]
     info(f"  下载并校验 {tag} ...")
+    if not asset["digest"]:
+        error("  上游未提供资产 digest，无法锚定压缩流完整性，拒绝继续")
+        sys.exit(1)
     KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _download_kernel(download_url, headers)
+    _download_kernel(asset["url"], headers, expected_digest=asset["digest"])
 
     try:
         verify_kernel_file(KERNEL_BIN, "")
@@ -360,7 +406,6 @@ def bump_config():
 
 def main():
     if "--print-kernel-hash" in sys.argv:
-        # 跳过哈希强校验，否则旧哈希未清时打印不出新值
         get_latest_mihomo(skip_hash_check=True)
         print(sha256_file(KERNEL_BIN))
         return
@@ -374,7 +419,8 @@ def main():
 
     group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
-    clean_directory(DST_ROOT)
+    for stale, why in clean_directory(DST_ROOT):
+        warning(f"  清理失败（可能残留陈旧 .mrs）: {stale} -> {why}")
 
     if not os.path.exists(SRC_ROOT):
         error(f"源目录 {SRC_ROOT} 不存在！")
