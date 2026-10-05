@@ -11,7 +11,10 @@
    `MetaCubeX/mihomo` 的 Release 下载 `config.yaml` 中 `mihomo.asset_name` 指定的资产，
    校验解压后二进制的 SHA-256 是否等于 `mihomo.kernel_sha256`（缺失该字段时**拒绝**降级使用），
    随后 `chmod +x` 并在 GitHub Actions 的 `ubuntu-latest` runner 上执行，用于把 `.txt` 编译成 `.mrs`。
-   该二进制**只在 CI 内执行**，不会在你的机器上运行。
+   该二进制**在运行脚本的机器上执行**：CI 里是临时 runner，本地手动运行
+   `scripts/convert_mrs.py`（含 `--print-kernel-hash`、`--bump-config`）时则是你自己的机器。
+   内核有四重校验（GitHub 资产摘要、解压后 SHA-256、ELF magic、`-v` 可运行性），
+   但本地运行前请自行确认你信任该版本。
 2. **上游规则列表是不可信数据。** 它们只被当作文本解析为域名/IP 规则，不参与脚本拼接、
    不作为代码执行；但它们的内容会**原样进入发布产物**。若某个上游列表被投毒，
    产物中的规则也会被污染（这属于上游仓库的问题，见下）。

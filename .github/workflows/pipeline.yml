@@ -234,6 +234,11 @@ jobs:
           fi
       - name: 校验制品下载完整性
         if: steps.dl-merged.outcome != 'success' || steps.dl-mrs.outcome != 'success'
+        env:
+          MERGED_OUTCOME: ${{ steps.dl-merged.outcome }}
+          MERGED_CONCLUSION: ${{ steps.dl-merged.conclusion }}
+          MRS_OUTCOME: ${{ steps.dl-mrs.outcome }}
+          MRS_CONCLUSION: ${{ steps.dl-mrs.conclusion }}
         run: |
-          echo "::error::制品下载不完整: merged-rules(outcome=${{ steps.dl-merged.outcome }} conclusion=${{ steps.dl-merged.conclusion }}) merged-rules-mrs(outcome=${{ steps.dl-mrs.outcome }} conclusion=${{ steps.dl-mrs.conclusion }}) run_id=${{ github.run_id }}"
+          echo "::error::制品下载不完整: merged-rules(outcome=${MERGED_OUTCOME} conclusion=${MERGED_CONCLUSION}) merged-rules-mrs(outcome=${MRS_OUTCOME} conclusion=${MRS_CONCLUSION}) run_id=${{ github.run_id }}"
           exit 1
