@@ -116,7 +116,9 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
     count = 0
     for f in files:
         if f.is_file() and not f.name.startswith("."):
+            rel = f.relative_to(p).as_posix()
             digest = _hash_file_body(str(f)) if skip_comments else file_sha256(str(f))
+            h_all.update(rel.encode("utf-8") + b"\n")
             h_all.update(digest.encode())
             count += 1
 
