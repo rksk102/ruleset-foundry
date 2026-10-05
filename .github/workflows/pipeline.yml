@@ -28,16 +28,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
         env:
           STRICT_MODE: ${{ inputs.strict_mode || 'false' }}
           PYTHONPATH: ${{ github.workspace }}/scripts
+          GH_TOKEN: ${{ github.token }}
         run: python scripts/main.py
       - name: 上传 rulesets 产物
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: rulesets
           path: rulesets/
@@ -49,12 +50,12 @@ jobs:
     timeout-minutes: 5
     needs: sync-rules
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 rulesets 产物
         id: dl-rulesets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         continue-on-error: true
         with:
           name: rulesets
@@ -67,7 +68,7 @@ jobs:
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
         if: steps.dl-rulesets.outcome == 'success' && steps.merge.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: merged-rules
           path: merged-rules/
@@ -79,14 +80,14 @@ jobs:
     timeout-minutes: 10
     needs: merge-rules
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
         run: rm -rf merged-rules merged-rules-mrs
       - name: 下载 merged-rules 产物
         id: dl-merged
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         continue-on-error: true
         with:
           name: merged-rules
@@ -94,7 +95,7 @@ jobs:
       - name: 缓存 Mihomo 内核（恢复）
         if: steps.dl-merged.outcome == 'success'
         id: kernel-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
@@ -110,13 +111,13 @@ jobs:
         run: python -u scripts/convert_mrs.py
       - name: 缓存 Mihomo 内核（保存）
         if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success' && steps.kernel-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
       - name: 上传 merged-rules-mrs 产物
         if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
@@ -130,23 +131,21 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
         run: rm -rf merged-rules merged-rules-mrs
       - name: 下载 merged-rules 产物
         id: dl-merged
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
       - name: 下载 merged-rules-mrs 产物
         id: dl-mrs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         continue-on-error: true
         with:
           name: merged-rules-mrs
@@ -156,17 +155,40 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
-      - name: 提交并推送所有产物
+      - name: 发布规则产物到 artifacts 分支
         if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
+        env:
+          ARTIFACTS_BRANCH: artifacts
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "merged-rules/" > .gitignore
+          echo "merged-rules-mrs/" >> .gitignore
+          git checkout --orphan "${ARTIFACTS_BRANCH}"
+          git rm -r --cached . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 -not -name merged-rules -not -name merged-rules-mrs -not -name .git -exec rm -rf {} +
+          git add -f merged-rules merged-rules-mrs .gitignore
+          git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
+          git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
+      - name: 提交 README 与发布状态
+        if: steps.dl-merged.outcome == 'success'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          git checkout "${REF_NAME}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add merged-rules/ merged-rules-mrs/ README.md
-          git commit -m "chore: 自动更新规则与 README [skip ci]" || echo "nothing to commit"
-          git pull --rebase origin "${REF_NAME}"
-          git push
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "README 无变化"
+          else
+            git commit -m "docs: 自动更新 README [skip ci]"
+            git pull --rebase origin "${REF_NAME}"
+            git push
+          fi
       - name: 发布 Release
         if: ${{ inputs.skip_release != true && steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success' }}
         env:
