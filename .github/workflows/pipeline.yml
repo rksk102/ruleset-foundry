@@ -60,12 +60,13 @@ jobs:
           name: rulesets
           path: rulesets/
       - name: 运行合并
+        id: merge
         if: steps.dl-rulesets.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
-        if: steps.dl-rulesets.outcome == 'success'
+        if: steps.dl-rulesets.outcome == 'success' && steps.merge.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: merged-rules
@@ -114,7 +115,7 @@ jobs:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
       - name: 上传 merged-rules-mrs 产物
-        if: steps.dl-merged.outcome == 'success'
+        if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: merged-rules-mrs
@@ -156,7 +157,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
       - name: 提交并推送所有产物
-        if: steps.dl-merged.outcome == 'success' || steps.dl-mrs.outcome == 'success'
+        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -183,3 +184,8 @@ jobs:
             git pull --rebase origin ${{ github.ref_name }}
             git push
           fi
+      - name: 校验制品下载完整性
+        if: steps.dl-merged.outcome != 'success' || steps.dl-mrs.outcome != 'success'
+        run: |
+          echo "::error::制品下载不完整: merged-rules=${{ steps.dl-merged.outcome }}, merged-rules-mrs=${{ steps.dl-mrs.outcome }}"
+          exit 1

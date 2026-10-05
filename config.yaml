@@ -27,7 +27,7 @@ merges:
     type: "ipcidr"
     owner: "rksk102"
     filename: "all-cnip.txt"
-    description: "所有直连cnipcidr"
+    description: "所有直连 CN IP 段"
     inputs:
       - "direct/ipcidr/Loyalsoldier/cncidr.txt"
       - "direct/ipcidr/MetaCubeX/cn.txt"
