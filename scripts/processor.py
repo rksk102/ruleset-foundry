@@ -130,7 +130,6 @@ def _analyze_and_process_domain(lines):
         if ' ' in s: continue
         if ip_check.match(s): continue
 
-        # 拒绝空标签、首尾点、连续点、首尾连字符
         if s.startswith('.') or s.endswith('.') or '..' in s: continue
         labels = s.split('.')
         if not all(

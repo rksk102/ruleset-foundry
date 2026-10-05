@@ -208,7 +208,6 @@ def dedup_domain_suffix(domains):
 
     for domain in sorted_domains:
         # 按 . 分割并倒序，与 mihomo ValidAndSplitDomain 一致
-        # "ads.google.com" → ["com", "google", "ads"]
         parts = domain.split(".")
         parts.reverse()
 

@@ -18,7 +18,6 @@ class Colors:
     BLUE = "\033[94m"
     MAGENTA = "\033[95m"
 
-# 保留最近 N 个日志文件，避免无限增长
 LOG_KEEP_COUNT = 20
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")

@@ -241,7 +241,6 @@ def detect_cross_policy_conflicts(merged_dir):
     # 为每个策略构建 Trie
     tries = {s: _build_domain_trie(d) for s, d in policy_domains.items()}
 
-    # 定义需要检测的覆盖方向（父域策略 → 子域策略）
     # block 子域被其他策略父域覆盖是最危险的
     implicit_conflicts = {}
     for parent_strategy, parent_trie in tries.items():

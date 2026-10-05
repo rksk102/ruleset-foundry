@@ -164,7 +164,6 @@ def get_latest_mihomo(skip_hash_check=False):
 
         expected_sha = "" if skip_hash_check else EXPECTED_SHA
 
-        # 版本一致且缓存内核可用（结构+哈希均通过）时直接复用
         if VERSION_FILE.exists():
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
@@ -211,7 +210,6 @@ def get_latest_mihomo(skip_hash_check=False):
         raise
     except Exception as e:
         error(f"  内核准备失败: {e}")
-        # 降级：尝试使用已缓存的内核
         if os.path.exists(KERNEL_BIN):
             warning("  尝试降级使用已缓存的内核...")
             ver_out = _verify_kernel()
