@@ -5,6 +5,7 @@ from pathlib import Path
 from config_loader import get, load_config
 from logger import error, group_end, group_start, info, section, success, warning
 from utils import (
+    DomainTrie,
     atomic_write_with_header,
     beijing_timestamp,
     clean_directory,
@@ -149,45 +150,6 @@ def load_domains_from_file(filepath):
     return domains
 
 
-_MARK = object()
-
-
-def _build_domain_trie(domains):
-    """构建倒序标签 Trie，用于高效检测父子域名关系。"""
-    trie = {}
-    for domain in domains:
-        parts = domain.split(".")
-        parts.reverse()
-        node = trie
-        for part in parts:
-            if part not in node:
-                node[part] = {}
-            node = node[part]
-        node[_MARK] = True
-    return trie
-
-
-def _find_covering_parent(domain, trie):
-    """在 Trie 中查找 domain 的已标记祖先域名，返回 (祖先域名, 是否找到)。
-
-    沿 domain 的标签路径搜索，若遇到已标记节点则返回该祖先的域名。
-    """
-    parts = domain.split(".")
-    parts.reverse()
-    node = trie
-    matched_parts = []
-    for part in parts:
-        if part not in node:
-            break
-        node = node[part]
-        matched_parts.append(part)
-        if node.get(_MARK) and len(matched_parts) < len(parts):
-            # 找到祖先（不能是自身，必须是严格祖先）
-            ancestor = ".".join(reversed(matched_parts))
-            return ancestor, True
-    return None, False
-
-
 VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
 
 
@@ -239,7 +201,12 @@ def detect_cross_policy_conflicts(merged_dir):
 
     # 隐式冲突：一个策略的父域名覆盖另一个策略的子域名
     # 为每个策略构建 Trie
-    tries = {s: _build_domain_trie(d) for s, d in policy_domains.items()}
+    tries = {}
+    for strategy, domains in policy_domains.items():
+        trie = DomainTrie()
+        for domain in domains:
+            trie.add(domain)
+        tries[strategy] = trie
 
     # block 子域被其他策略父域覆盖是最危险的
     implicit_conflicts = {}
@@ -250,8 +217,8 @@ def detect_cross_policy_conflicts(merged_dir):
             key = f"{parent_strategy}(父) → {child_strategy}(子)"
             items = []
             for domain in sorted(child_domains):
-                ancestor, found = _find_covering_parent(domain, parent_trie)
-                if found:
+                ancestor = parent_trie.covering_parent(domain)
+                if ancestor:
                     items.append((domain, ancestor))
             if items:
                 implicit_conflicts[key] = items

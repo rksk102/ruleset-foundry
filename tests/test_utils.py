@@ -125,3 +125,81 @@ class TestCleanDirectory:
         target = tmp_path / "newdir"
         utils.clean_directory(str(target))
         assert target.is_dir()
+
+
+class TestDomainTrie:
+    def test_covering_parent_returns_strict_ancestor(self):
+        trie = utils.DomainTrie()
+        trie.add("google.com")
+        assert trie.covering_parent("ads.google.com") == "google.com"
+
+    def test_covering_parent_none_for_self(self):
+        trie = utils.DomainTrie()
+        trie.add("google.com")
+        assert trie.covering_parent("google.com") is None
+
+    def test_covering_parent_none_for_unrelated(self):
+        trie = utils.DomainTrie()
+        trie.add("google.com")
+        assert trie.covering_parent("youtube.com") is None
+
+    def test_covering_parent_returns_outermost_marked_ancestor(self):
+        trie = utils.DomainTrie()
+        trie.add("com")
+        trie.add("google.com")
+        assert trie.covering_parent("ads.google.com") == "com"
+
+    def test_has_marked_ancestor_includes_self(self):
+        trie = utils.DomainTrie()
+        trie.add("google.com")
+        assert trie.has_marked_ancestor("google.com") is True
+        assert trie.has_marked_ancestor("ads.google.com") is True
+        assert trie.has_marked_ancestor("example.org") is False
+
+    def test_child_does_not_mark_parent(self):
+        trie = utils.DomainTrie()
+        trie.add("ads.google.com")
+        assert trie.has_marked_ancestor("google.com") is False
+        assert trie.covering_parent("google.com") is None
+
+
+class TestFlattenIpDefaultRoute:
+    def test_ipv4_default_route_dropped(self):
+        result, _errors = utils.flatten_ip_cidr(["9.0.0.0/8", "0.0.0.0/0"])
+        assert result == ["9.0.0.0/8"]
+
+    def test_ipv4_default_route_does_not_swallow_others(self):
+        result, _errors = utils.flatten_ip_cidr(["1.0.0.0/24", "0.0.0.0/0", "10.0.0.0/8"])
+        assert result == ["1.0.0.0/24", "10.0.0.0/8"]
+
+    def test_ipv6_default_route_dropped(self):
+        result, _errors = utils.flatten_ip_cidr(["2001:db8::/32", "::/0"])
+        assert result == ["2001:db8::/32"]
+
+
+class TestFlattenIpModes:
+    def test_strict_mode_rejects_trailing_text(self):
+        result, errors = utils.flatten_ip_cidr(["1.2.3.0/24 # comment"])
+        assert result == []
+        assert len(errors) == 1
+
+    def test_extract_mode_reads_trailing_text(self):
+        result, errors = utils.flatten_ip_cidr(["1.2.3.0/24 # comment"], extract=True)
+        assert result == ["1.2.3.0/24"]
+        assert errors == []
+
+    def test_extract_mode_matches_legacy_process_ip(self):
+        import processor
+
+        lines = ["IP-CIDR,x", "  1.2.3.0/24 # note", "10.0.0.0/8"]
+        assert processor.process_ip(lines) == utils.flatten_ip_cidr(lines, extract=True)[0]
+
+
+class TestFlattenIpOrdering:
+    def test_lexical_within_family(self):
+        result, _errors = utils.flatten_ip_cidr(["1.0.8.0/24", "1.0.32.0/24"])
+        assert result == ["1.0.32.0/24", "1.0.8.0/24"]
+
+    def test_v4_block_before_v6_block(self):
+        result, _errors = utils.flatten_ip_cidr(["2001:db8::/32", "10.0.0.0/8"])
+        assert result == ["10.0.0.0/8", "2001:db8::/32"]

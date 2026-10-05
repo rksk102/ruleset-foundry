@@ -1,6 +1,7 @@
 import hashlib
 import ipaddress
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -17,23 +18,46 @@ def beijing_timestamp():
     return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def flatten_ip_cidr(cidr_strings, strict=False):
+_IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
+
+
+def flatten_ip_cidr(entries, strict=False, extract=False):
+    """解析并合并 CIDR，丢弃默认路由（/0），返回 (列表, 错误列表)。
+
+    extract=True 时按行内首个 IP/CIDR 子串解析（规则文本行），否则整串解析；
+    提取规则与历史 process_ip 一致："1.2.3.0/24 # 注释" 可用，
+    但 "IP-CIDR,1.2.3.0/24" 中的 C 会先被匹配而失败。
+    输出为 v4 块 + v6 块，块内字典序。
+    """
     ipv4_nets = []
     ipv6_nets = []
     errors = []
 
-    for c in cidr_strings:
-        c = c.strip()
-        if not c:
+    for entry in entries:
+        text = entry.strip()
+        if not text:
             continue
+
+        candidate = text
+        if extract:
+            match = _IP_CANDIDATE_RE.search(text)
+            if not match:
+                errors.append((text, "未找到 IP/CIDR"))
+                continue
+            candidate = match.group(1)
+
         try:
-            net = ipaddress.ip_network(c, strict=strict)
-            if net.version == 4:
-                ipv4_nets.append(net)
-            else:
-                ipv6_nets.append(net)
+            net = ipaddress.ip_network(candidate, strict=strict)
         except ValueError as e:
-            errors.append((c, str(e)))
+            errors.append((text, str(e)))
+            continue
+
+        if net.prefixlen == 0:
+            continue
+        if net.version == 4:
+            ipv4_nets.append(net)
+        else:
+            ipv6_nets.append(net)
 
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
@@ -181,58 +205,66 @@ def normalize_path(p):
     return str(Path(p).as_posix())
 
 
+class DomainTrie:
+    """倒序标签 Trie，用于父子域名关系判定。
+
+    标签遍历顺序与 mihomo ValidAndSplitDomain 一致，因此"父域名覆盖子域名"
+    的判定与 behavior:domain 下 DOMAIN-SUFFIX 的匹配语义相同。
+    """
+
+    _MARK = object()
+
+    def __init__(self):
+        self._root = {}
+
+    def add(self, domain):
+        node = self._root
+        for part in reversed(domain.split(".")):
+            node = node.setdefault(part, {})
+        node[self._MARK] = True
+
+    def has_marked_ancestor(self, domain):
+        node = self._root
+        for part in reversed(domain.split(".")):
+            if part not in node:
+                return False
+            node = node[part]
+            if node.get(self._MARK):
+                return True
+        return False
+
+    def covering_parent(self, domain):
+        """返回已标记的严格祖先域名，没有则返回 None。"""
+        parts = domain.split(".")
+        node = self._root
+        matched = []
+        for part in reversed(parts):
+            if part not in node:
+                break
+            node = node[part]
+            matched.append(part)
+            if node.get(self._MARK) and len(matched) < len(parts):
+                return ".".join(reversed(matched))
+        return None
+
+
 def dedup_domain_suffix(domains):
-    """同策略内父子域名去重（无条件执行）。
+    """同策略内父子域名去重，返回 (去重后的排序域名列表, 被移除的数量)。
 
-    在 mihomo behavior:domain 语义下，每条规则等同于 DOMAIN-SUFFIX 匹配，
-    父域名已覆盖所有子域名，因此子域名规则是冗余的，可安全移除。
-
-    算法：构建与 mihomo 内核相同的倒序标签 Trie，按标签数从少到多遍历，
-    若某域名的祖先节点已标记，则跳过；否则插入并标记。
-
-    返回: (去重后的排序域名列表, 被移除的数量)
+    父域名已覆盖其全部子域名，故子域名规则冗余、可安全移除。
     """
     if not domains:
         return [], 0
 
-    # 唯一哨兵对象，避免与真实域名标签冲突
-    _MARK = object()
-
-    # 按标签数从少到多排序，短域名（可能的父域名）优先处理
-    sorted_domains = sorted(domains, key=lambda d: d.count("."))
-
-    # 倒序标签 Trie: {"com": {"google": {MARK}, "youtube": {MARK}}}
-    trie = {}
+    trie = DomainTrie()
     kept = []
     removed = 0
 
-    for domain in sorted_domains:
-        # 按 . 分割并倒序，与 mihomo ValidAndSplitDomain 一致
-        parts = domain.split(".")
-        parts.reverse()
-
-        # 在 Trie 中搜索：沿路径检查是否存在已标记的祖先节点
-        node = trie
-        has_marked_ancestor = False
-        for part in parts:
-            if part not in node:
-                break
-            node = node[part]
-            if _MARK in node:
-                has_marked_ancestor = True
-                break
-
-        if has_marked_ancestor:
+    for domain in sorted(domains, key=lambda d: d.count(".")):
+        if trie.has_marked_ancestor(domain):
             removed += 1
             continue
-
-        # 无已标记祖先，插入 Trie 并标记
-        node = trie
-        for part in parts:
-            if part not in node:
-                node[part] = {}
-            node = node[part]
-        node[_MARK] = True
+        trie.add(domain)
         kept.append(domain)
 
     return sorted(kept), removed

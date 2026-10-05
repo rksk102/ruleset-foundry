@@ -1,8 +1,9 @@
 import base64
 import binascii
-import ipaddress
 import re
 import sys
+
+import utils
 
 
 def safe_decode(binary_data):
@@ -160,32 +161,7 @@ def process_domain(lines):
     return _analyze_and_process_domain(lines)[0]
 
 def process_ip(lines):
-    v4_nets = []
-    v6_nets = []
-    regex_ip = re.compile(r'([0-9a-fA-F:.]+(?:/[0-9]+)?)')
-
-    for item in lines:
-        m = regex_ip.search(item)
-        if not m: continue
-        ip_str = m.group(1)
-        try:
-            net = ipaddress.ip_network(ip_str, strict=False)
-            if net.prefixlen == 0: continue
-            if net.version == 4:
-                v4_nets.append(net)
-            else:
-                v6_nets.append(net)
-        except ValueError:
-            continue
-
-    merged_v4 = ipaddress.collapse_addresses(v4_nets)
-    merged_v6 = ipaddress.collapse_addresses(v6_nets)
-
-    final_list = []
-    final_list.extend(str(n) for n in merged_v4)
-    final_list.extend(str(n) for n in merged_v6)
-
-    return final_list
+    return utils.flatten_ip_cidr(lines, extract=True)[0]
 
 def main():
     mode = "domain"
