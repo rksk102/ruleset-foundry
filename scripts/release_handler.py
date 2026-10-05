@@ -24,11 +24,13 @@ def run_gh(cmd_list, fail_fast=False):
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
         if fail_fast:
-            # 删除失败却继续重建会造成 Release 与 tag 不一致，必须显式失败
             error(f"  GH CLI 失败: {e.stderr.strip()}")
             sys.exit(1)
         warning(f"  GH CLI 警告: {e.stderr.strip()}")
         return None
+    except OSError as e:
+        error(f"  无法执行 gh CLI: {e}")
+        sys.exit(1)
 
 
 def should_publish(current_hash, last_hash, enabled):
@@ -121,7 +123,6 @@ def generate_release_notes(tag_date, tag_time, manifest):
 
 
 def publish_release(release_tag, zip_file, title, notes, exists):
-    """已存在则原地更新资产与说明，否则新建。失败返回 None。"""
     if exists:
         if run_gh(["release", "upload", release_tag, zip_file, "--clobber"]) is None:
             return None

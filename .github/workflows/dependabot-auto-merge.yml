@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  actions: read
 
 jobs:
   auto-merge:
@@ -23,8 +22,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+
+          if [ -z "${HEAD_SHA:-}" ]; then
+            echo "::error::workflow_run.head_sha 为空，拒绝在没有 SHA 绑定的情况下合并"
+            exit 1
+          fi
 
           case "$HEAD_BRANCH" in
             dependabot/*) ;;
@@ -49,5 +54,6 @@ jobs:
             echo "PR #$pr 状态为 $state，无需合并"; exit 0
           fi
 
-          echo "CI 已通过，合并 PR #$pr"
-          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --merge
+          echo "CI 已通过（head_sha=$HEAD_SHA），合并 PR #$pr"
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --merge \
+            --match-head-commit "$HEAD_SHA"

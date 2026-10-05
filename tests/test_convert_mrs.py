@@ -5,8 +5,12 @@ import convert_mrs
 API_LATEST = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 
 
-def asset(name):
-    return {"name": name, "browser_download_url": f"https://example.com/{name}"}
+def asset(name, digest="sha256:" + "0" * 64):
+    return {
+        "name": name,
+        "browser_download_url": f"https://example.com/{name}",
+        "digest": digest,
+    }
 
 
 class TestReleaseApiUrl:
@@ -26,8 +30,21 @@ class TestReleaseApiUrl:
 class TestSelectKernelAsset:
     def test_exact_asset_name_match(self):
         assets = [asset("mihomo-linux-amd64-v1.19.30.gz")]
-        url = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
-        assert url == "https://example.com/mihomo-linux-amd64-v1.19.30.gz"
+        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        assert got["url"] == "https://example.com/mihomo-linux-amd64-v1.19.30.gz"
+        assert got["name"] == "mihomo-linux-amd64-v1.19.30.gz"
+        assert got["digest"].startswith("sha256:")
+
+    def test_digest_is_carried_through(self):
+        assets = [asset("mihomo-linux-amd64-v1.19.30.gz", digest="sha256:deadbeef")]
+        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        assert got["digest"] == "sha256:deadbeef"
+
+    def test_missing_digest_becomes_empty_string(self):
+        assets = [{"name": "mihomo-linux-amd64-v1.19.30.gz",
+                   "browser_download_url": "https://example.com/x.gz"}]
+        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        assert got["digest"] == ""
 
     def test_exact_asset_name_missing_returns_none(self):
         assets = [asset("mihomo-linux-amd64-v1.19.30.gz")]
@@ -39,8 +56,8 @@ class TestSelectKernelAsset:
             asset("mihomo-linux-amd64-compatible-v1.19.32.gz"),
             asset("mihomo-linux-amd64-v1.19.32.gz"),
         ]
-        url = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
-        assert url == "https://example.com/mihomo-linux-amd64-v1.19.32.gz"
+        got = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
+        assert got["url"] == "https://example.com/mihomo-linux-amd64-v1.19.32.gz"
 
     def test_only_variants_returns_none(self):
         assets = [
@@ -56,16 +73,152 @@ class TestSelectKernelAsset:
             asset("mihomo-windows-amd64-v1.19.32.zip"),
             asset("mihomo-linux-amd64-v1.19.32.gz"),
         ]
-        url = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
-        assert url.endswith("mihomo-linux-amd64-v1.19.32.gz")
+        got = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
+        assert got["url"].endswith("mihomo-linux-amd64-v1.19.32.gz")
 
     def test_without_pinned_version_picks_sorted_first(self):
         assets = [
             asset("mihomo-linux-amd64-v1.19.31.gz"),
             asset("mihomo-linux-amd64-v1.19.30.gz"),
         ]
-        url = convert_mrs.select_kernel_asset(assets, "", "")
-        assert url.endswith("v1.19.30.gz")
+        got = convert_mrs.select_kernel_asset(assets, "", "")
+        assert got["url"].endswith("v1.19.30.gz")
+
+
+class TestDownloadKernelDigest:
+
+    def _payload(self, body=b"ELF-BODY-CONTENT"):
+        import gzip
+        import io
+
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(body)
+        return buf.getvalue()
+
+    def _run(self, tmp_path, expected_digest, payload=None):
+        import io as _io
+        import urllib.request as _ur
+
+        payload = payload if payload is not None else self._payload()
+        kernel_dir = tmp_path / "k"
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        target = kernel_dir / "kernel"
+
+        class FakeResp(_io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        original_urlopen = _ur.urlopen
+        original_bin = convert_mrs.KERNEL_BIN
+        _ur.urlopen = lambda req, timeout=None: FakeResp(payload)
+        convert_mrs.KERNEL_BIN = str(target)
+        try:
+            convert_mrs._download_kernel(
+                "https://example.com/k.gz", {}, expected_digest=expected_digest, max_retries=1
+            )
+            return True, target.read_bytes() if target.exists() else None
+        except Exception as e:
+            return False, e
+        finally:
+            _ur.urlopen = original_urlopen
+            convert_mrs.KERNEL_BIN = original_bin
+
+    def test_correct_digest_accepted(self, tmp_path):
+        import hashlib
+
+        payload = self._payload()
+        ok, data = self._run(tmp_path, "sha256:" + hashlib.sha256(payload).hexdigest())
+        assert ok is True
+        assert data == b"ELF-BODY-CONTENT"
+
+    def test_wrong_digest_rejected_and_not_written(self, tmp_path):
+        ok, err = self._run(tmp_path, "sha256:" + "0" * 64)
+        assert ok is False
+        assert "摘要不匹配" in str(err)
+        assert not (tmp_path / "kernel").exists(), "校验失败不得落盘"
+
+    def test_uppercase_algorithm_accepted(self, tmp_path):
+        import hashlib
+
+        payload = self._payload()
+        ok, _ = self._run(tmp_path, "SHA256:" + hashlib.sha256(payload).hexdigest())
+        assert ok is True
+
+    def test_digest_without_algorithm_prefix_accepted(self, tmp_path):
+        import hashlib
+
+        payload = self._payload()
+        ok, _ = self._run(tmp_path, hashlib.sha256(payload).hexdigest())
+        assert ok is True
+
+    def test_trailing_whitespace_tolerated(self, tmp_path):
+        import hashlib
+
+        payload = self._payload()
+        ok, _ = self._run(tmp_path, "sha256:" + hashlib.sha256(payload).hexdigest() + " ")
+        assert ok is True, "digest 首尾空白应被 strip"
+
+    def test_other_algorithm_fails_closed(self, tmp_path):
+        ok, _err = self._run(tmp_path, "sha512:" + "0" * 128)
+        assert ok is False, "未知算法必须响亮失败，不得静默通过"
+
+    def test_empty_digest_skips_compressed_check(self, tmp_path):
+        ok, _ = self._run(tmp_path, "")
+        assert ok is True
+
+    def test_compressed_stream_size_capped(self, tmp_path):
+        import os as _os
+
+        original = convert_mrs.MAX_KERNEL_BYTES
+        convert_mrs.MAX_KERNEL_BYTES = 64
+        try:
+            ok, err = self._run(tmp_path, "", payload=self._payload(_os.urandom(4096)))
+        finally:
+            convert_mrs.MAX_KERNEL_BYTES = original
+        assert ok is False
+        assert "压缩包超过上限" in str(err)
+
+
+class TestVerifyKernelRequireSha:
+    def test_missing_sha_rejected_when_required(self, tmp_path):
+        target = tmp_path / "kernel"
+        target.write_bytes(b"\x7fELF" + b"\x00" * 32)
+        try:
+            convert_mrs.verify_kernel_file(str(target), "", require_sha=True)
+        except ValueError as e:
+            assert "缺少 kernel_sha256" in str(e)
+            return
+        raise AssertionError("require_sha=True 时缺少哈希应报错")
+
+    def test_missing_sha_allowed_when_not_required(self, tmp_path):
+        target = tmp_path / "kernel"
+        target.write_bytes(b"\x7fELF" + b"\x00" * 32)
+        actual = convert_mrs.verify_kernel_file(str(target), "", require_sha=False)
+        assert len(actual) == 64
+
+    def test_wrong_magic_rejected(self, tmp_path):
+        target = tmp_path / "kernel"
+        target.write_bytes(b"NOTELF" + b"\x00" * 32)
+        try:
+            convert_mrs.verify_kernel_file(str(target), "")
+        except ValueError as e:
+            assert "ELF" in str(e)
+            return
+        raise AssertionError("非 ELF 应报错")
+
+    def test_sha_mismatch_rejected(self, tmp_path):
+        target = tmp_path / "kernel"
+        target.write_bytes(b"\x7fELF" + b"\x00" * 32)
+        try:
+            convert_mrs.verify_kernel_file(str(target), "0" * 64)
+        except ValueError as e:
+            assert "哈希不匹配" in str(e)
+            return
+        raise AssertionError("哈希不匹配应报错")
 
 
 class TestSetConfigField:
@@ -145,3 +298,12 @@ class TestBumpConfig:
         except SystemExit:
             return
         raise AssertionError("无匹配资产应退出")
+
+    def test_missing_digest_exits(self, tmp_path):
+        assets = [{"name": "mihomo-linux-amd64-v9.9.9.gz",
+                   "browser_download_url": "https://example.com/k.gz"}]
+        try:
+            self.run_with(tmp_path, "v9.9.9", assets, 'mihomo:\n  pinned_version: "v1.0.0"\n')
+        except SystemExit:
+            return
+        raise AssertionError("缺少资产 digest 应退出")

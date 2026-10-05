@@ -3,7 +3,10 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import aiohttp
 import processor
@@ -24,47 +27,197 @@ TIMEOUT = get("network", "timeout_seconds", default=15)
 RETRIES = get("network", "max_retries", default=2)
 MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
 STRICT_MODE = get("behavior", "strict_mode", default=False)
+UNRECOGNIZED_WARN_RATIO = get("behavior", "unrecognized_warn_ratio", default=0.10)
+CONCURRENCY = get("network", "max_concurrency", default=6)
+PER_HOST = get("network", "max_per_host", default=2)
+MAX_RETRY_AFTER = get("network", "max_retry_after_seconds", default=60)
+
+RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+AUTH_HOST_SUFFIXES = (
+    "githubusercontent.com",
+    "github.com",
+    "githubassets.com",
+    "github.io",
+)
 
 
-def build_filepath(task):
+def is_trusted_host(url):
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return any(host == sfx or host.endswith("." + sfx) for sfx in AUTH_HOST_SUFFIXES)
+
+
+def auth_headers(url):
+    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
+    if not token or not is_trusted_host(url):
+        return None
+    return {"Authorization": f"Bearer {token}"}
+
+
+def parse_retry_after(value, default):
+    if not value:
+        return default
+    text = value.strip()
+    if text.isascii() and text.isdecimal():
+        seconds = int(text)
+    else:
+        try:
+            when = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return default
+        if when is None:
+            return default
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = int((when - datetime.now(timezone.utc)).total_seconds())
+    return max(0, min(seconds, MAX_RETRY_AFTER))
+
+
+def source_repo_slug(url):
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    path = [p for p in parts.path.strip("/").split("/") if p]
+
+    if host in ("github.com", "www.github.com", "raw.githubusercontent.com",
+                "objects.githubusercontent.com", "codeload.github.com",
+                "gist.githubusercontent.com", "github.io") or host.endswith(".github.io"):
+        if len(path) >= 2:
+            return f"{path[0]}__{path[1]}"
+        return ""
+    if host == "cdn.jsdelivr.net":
+        if len(path) >= 3 and path[0] == "gh":
+            return f"{path[1]}__{path[2].split('@')[0]}"
+        if len(path) >= 2:
+            return f"{path[0]}__{path[1].split('@')[0]}"
+        return ""
+    return host.replace(".", "_") if host else ""
+
+
+def _base_rel_path(task):
     owner = get_owner_from_url(task["url"])
     last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
     filename = last_segment.split(".")[0] + ".txt"
-    rel_path = Path(task["policy"]) / task["type"] / owner / filename
-    abs_path = RULESETS_DIR / rel_path
-    return owner, filename, rel_path, abs_path
+    return Path(task["policy"]) / task["type"] / owner / filename
+
+
+def colliding_output_paths(tasks):
+    by_path = {}
+    for task in tasks:
+        rel = _base_rel_path(task)
+        by_path.setdefault(str(rel), []).append(source_repo_slug(task["url"]))
+
+    plan = {}
+    for rel, slugs in by_path.items():
+        distinct = {s for s in slugs if s}
+        if len(slugs) > 1 and len(distinct) > 1:
+            plan[rel] = sorted(distinct)
+    return plan
+
+
+def build_filepath(task, collide_plan=None, taken=None):
+    rel_path = _base_rel_path(task)
+    owner = rel_path.parent.name
+    slug = source_repo_slug(task["url"]) or owner
+
+    if collide_plan and str(rel_path) in collide_plan:
+        candidate = slug
+        proposal = Path(task["policy"]) / task["type"] / candidate / rel_path.name
+        if taken is not None:
+            while str(proposal) in taken and taken[str(proposal)] != slug:
+                candidate += "_"
+                proposal = Path(task["policy"]) / task["type"] / candidate / rel_path.name
+        rel_path = proposal
+        owner = candidate
+
+    if taken is not None:
+        taken[str(rel_path)] = slug
+    return owner, rel_path.name, rel_path, RULESETS_DIR / rel_path
 
 
 def plan_groups(tasks):
-    """按输出绝对路径分组，同路径多源合并清洗，避免静默覆盖。"""
+    collide_plan = colliding_output_paths(tasks)
+    for rel, slugs in sorted(collide_plan.items()):
+        warning(f"  输出路径跨来源冲突 {rel} -> 已按来源拆分为 {slugs}")
+
+    taken = {}
+    for task in tasks:
+        base = _base_rel_path(task)
+        taken.setdefault(str(base), source_repo_slug(task["url"]) or base.parent.name)
+
     groups = {}
     for idx, task in enumerate(tasks):
-        _, _, _, abs_path = build_filepath(task)
+        _, _, _, abs_path = build_filepath(task, collide_plan, taken)
         key = str(abs_path)
         group = groups.setdefault(key, {
             "path": key,
             "policy": task["policy"],
             "type": task["type"],
             "members": [],
+            "sources": [],
         })
         group["members"].append((idx, task))
+        group["sources"].append(task["url"])
+
+    conflicts = []
+    for key, group in groups.items():
+        slugs = {source_repo_slug(t["url"]) for _i, t in group["members"]}
+        if len(group["members"]) > 1 and len(slugs) > 1:
+            conflicts.append((key, sorted(slugs)))
+    if conflicts:
+        for key, slugs in sorted(conflicts):
+            warning(f"  输出路径仍被多来源共享 {key} <- {slugs}")
 
     ordered = []
     for key in sorted(groups):
         group = groups[key]
         if len(group["members"]) > 1:
-            warning(f"  输出路径冲突，合并 {len(group['members'])} 个源 -> {group['path']}")
-            for _idx, t in group["members"]:
-                warning(f"    L {t['url']}")
+            info(f"  同输出多源合并 {len(group['members'])} 个源 -> {group['path']}")
         ordered.append(group)
     return ordered
 
 
-def process_group(group, raw_by_index):
-    """合并组内成员原始行后统一清洗写出，返回 (规则数|None, 错误分组)。
+def _process_ip_group(all_lines):
+    ip_lines = []
+    stats = processor.new_stats()
+    for line in all_lines:
+        kind, payload, type_name = processor.classify_rule_line(line)
+        if kind == "ip":
+            if payload:
+                ip_lines.append(payload)
+            else:
+                stats["unrecognized"] += 1
+        elif kind in ("suffix", "exact"):
+            stats["suffix" if kind == "suffix" else "relaxed_exact"] += 1
+        elif kind == "opaque":
+            stats["dropped_rule_type"][type_name] = \
+                stats["dropped_rule_type"].get(type_name, 0) + 1
+        else:
+            ip_lines.append(line)
 
-    下载与解析失败分开上报，避免严格模式把两者混为一谈。
-    """
+    result, ip_errors = processor.process_ip(ip_lines)
+    for bad, why in ip_errors[:10]:
+        warning(f"    无效 CIDR 已丢弃: {bad} -> {why}")
+    if len(ip_errors) > 10:
+        warning(f"    ... 及其他 {len(ip_errors) - 10} 条无效 CIDR")
+
+    for label, count in (
+        ("后缀(+./domain:)", stats["suffix"]),
+        ("精确(full:/host:/DOMAIN,)", stats["relaxed_exact"]),
+        ("空负载", stats["unrecognized"]),
+    ):
+        if count:
+            warning(f"    {label} 规则不可放入 ipcidr 产物，已丢弃: {count} 行")
+    for type_name, count in sorted(stats["dropped_rule_type"].items()):
+        warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
+    return result, stats
+
+
+def process_group(group, raw_by_index):
     all_lines = []
     errors = {"download": [], "parse": []}
     for idx, task in group["members"]:
@@ -81,24 +234,41 @@ def process_group(group, raw_by_index):
         return None, errors
 
     if group["type"] == "ipcidr":
-        result = processor.process_ip(all_lines)
+        result, _special = _process_ip_group(all_lines)
     else:
         result, special = processor.process_domain_detailed(all_lines)
         for key, label in (
+            ("suffix", "后缀规则(+./domain:)已保留 +. 前缀"),
+            ("relaxed_exact", "精确规则(full:/host:/裸域名)按精确匹配输出"),
+            ("wildcard", "通配符规则(*)已原样保留"),
+            ("bare_single_label", "裸单标签条目按精确匹配保留"),
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),
-            ("widened_exact", "精确规则(full:/host:)被放宽为 suffix"),
-            ("bad_anchor", "含 AdBlock 锚点(^)已归一化"),
+            ("ip_in_domain", "IP 规则出现在 domain 源中，已丢弃"),
         ):
             if special.get(key):
                 warning(f"    {label}: {special[key]} 行")
+        for type_name, count in sorted((special.get("dropped_rule_type") or {}).items()):
+            warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
+
+        unrecognized = special.get("unrecognized", 0)
+        if unrecognized:
+            ratio = unrecognized / len(all_lines)
+            warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
+            if ratio >= UNRECOGNIZED_WARN_RATIO:
+                errors["parse"].append((
+                    group["path"],
+                    f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
+                    f"（{unrecognized}/{len(all_lines)}），疑似上游格式变更",
+                ))
 
     if not result:
         for _idx, task in group["members"]:
             errors["parse"].append((task["url"], "未解析出有效规则"))
         return None, errors
 
-    atomic_write(group["path"], result)
+    header = [f"# Source: {url}" for url in group.get("sources", [])]
+    atomic_write(group["path"], header + result)
     return len(result), errors
 
 
@@ -153,7 +323,6 @@ def parse_sources():
 
 
 async def read_capped(stream):
-    """流式读取；超过 MAX_SOURCE_BYTES 返回 None。"""
     chunks = []
     total = 0
     async for chunk in stream.iter_chunked(65536):
@@ -164,13 +333,23 @@ async def read_capped(stream):
     return b"".join(chunks)
 
 
+def _retry_delay(resp, attempt):
+    header = resp.headers.get("Retry-After") if resp.headers else None
+    if header:
+        return parse_retry_after(header, 1 * (attempt + 1))
+    return 1 * (attempt + 1)
+
+
 async def download_one(session, task):
     url = task["url"]
+    headers = auth_headers(url)
+    backoff_budget = MAX_RETRY_AFTER * 2
 
     for attempt in range(RETRIES + 1):
+        delay = None
         try:
             async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+                url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), headers=headers,
             ) as resp:
                 if resp.status == 200:
                     content = await read_capped(resp.content)
@@ -185,13 +364,23 @@ async def download_one(session, task):
                         return (task, None, "非文本响应")
                     return (task, content, None)
 
-                if 400 <= resp.status < 500 and resp.status != 429:
+                if 400 <= resp.status < 500 and resp.status not in RETRYABLE_STATUS:
                     warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
                     return (task, None, f"HTTP {resp.status}")
 
                 if attempt == RETRIES:
                     return (task, None, f"HTTP {resp.status}")
-                await asyncio.sleep(1 * (attempt + 1))
+
+                delay = _retry_delay(resp, attempt)
+                warning(f"  下载失败，{delay}s 后重试 [{attempt+1}/{RETRIES+1}]: "
+                        f"{url} -> HTTP {resp.status}")
+
+            if delay:
+                if delay > backoff_budget:
+                    warning(f"  退避预算耗尽（{backoff_budget}s），放弃重试: {url}")
+                    return (task, None, f"HTTP {resp.status}（退避预算耗尽）")
+                backoff_budget -= delay
+                await asyncio.sleep(delay)
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if attempt == RETRIES:
@@ -206,7 +395,7 @@ async def download_one(session, task):
 
 
 async def download_all(tasks):
-    connector = aiohttp.TCPConnector(limit=6)
+    connector = aiohttp.TCPConnector(limit=CONCURRENCY, limit_per_host=PER_HOST)
     async with aiohttp.ClientSession(connector=connector) as session:
         coros = [download_one(session, t) for t in tasks]
         results = await asyncio.gather(*coros, return_exceptions=True)
