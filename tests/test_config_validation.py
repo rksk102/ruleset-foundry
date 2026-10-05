@@ -1,9 +1,21 @@
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 import config_loader
+
+
+SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+
+
+def child_env():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = SCRIPTS
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 BASE = (
@@ -38,9 +50,9 @@ def run_child(cwd):
     proc = subprocess.run(
         [sys.executable, "-c", child],
         cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=60,
+        env=child_env(), timeout=60,
     )
-    return proc.stdout.strip()
+    return (proc.stdout or "").strip() or f"<no stdout; stderr={proc.stderr.strip()[:200]}>"
 
 
 class TestConfigValidation:
@@ -104,6 +116,20 @@ class TestConfigValidation:
         write_cfg(work_dir, BASE)
         out = run_child(work_dir)
         assert out.startswith("OK")
+
+    def test_empty_rulesets_dir_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE.replace('sources_file: "sources.urls"',
+                                         'sources_file: "sources.urls"\n  rulesets_dir: ""'))
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "rulesets_dir" in out
+
+    def test_empty_sources_file_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE.replace('sources_file: "sources.urls"',
+                                         'sources_file: "  "'))
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "sources_file" in out
 
     def test_merges_empty_list_is_allowed(self, work_dir):
         write_cfg(work_dir, BASE + "merges: []\n")

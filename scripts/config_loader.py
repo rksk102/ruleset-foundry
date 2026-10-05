@@ -55,6 +55,16 @@ _RATIOS = {
 
 _CONFLICT_POLICIES = ("ignore", "warn", "fail")
 
+_PATH_KEYS = {
+    ("paths", "sources_file"),
+    ("paths", "rulesets_dir"),
+    ("paths", "merged_output_dir"),
+    ("paths", "mrs_output_dir"),
+    ("paths", "cache_dir"),
+    ("paths", "log_dir"),
+    ("mihomo", "kernel_cache_path"),
+}
+
 _MERGE_REQUIRED = ("strategy", "type", "owner", "filename", "inputs")
 
 
@@ -120,6 +130,9 @@ def _validate_scalar(section, key, value):
         raise ConfigError(
             f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）"
         )
+    if expected is not None and expected is str and (section, key) in _PATH_KEYS:
+        if not value.strip():
+            raise ConfigError(f"{section}.{key} 不能为空字符串")
     if (section, key) in _POSITIVE_INTS and value <= 0:
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
