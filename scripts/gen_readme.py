@@ -156,7 +156,7 @@ def make_page_header(badge_time=None):
 
 
 def make_static_sections():
-    return """
+    return r"""
 ## 内核版本升级流程（维护者）
 
 1. 运行 `python scripts/convert_mrs.py --print-kernel-hash`（会下载并打印解压后二进制 sha256）。
