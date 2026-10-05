@@ -1,12 +1,14 @@
 import os
 
+import pytest
+
 import config_loader
 
 
-def use_config(tmp_path, content=None):
+def use_config(work_dir, content=None):
     """把模块级缓存与配置文件路径指向临时目录，必要时写入配置内容。"""
     config_loader._CONFIG = None
-    path = tmp_path / "config.yaml"
+    path = work_dir / "config.yaml"
     if content is not None:
         path.write_text(content, encoding="utf-8")
     config_loader._CONFIG_FILE = path
@@ -61,8 +63,8 @@ class TestMergeDict:
 
 
 class TestLoadConfig:
-    def test_missing_file_uses_defaults(self, tmp_path):
-        use_config(tmp_path)
+    def test_missing_file_uses_defaults(self, work_dir):
+        use_config(work_dir)
         try:
             cfg = config_loader.load_config()
             assert cfg["network"]["timeout_seconds"] == 15
@@ -77,15 +79,15 @@ class TestLoadConfig:
         finally:
             reset_config()
 
-    def test_result_is_cached(self, tmp_path):
-        use_config(tmp_path)
+    def test_result_is_cached(self, work_dir):
+        use_config(work_dir)
         try:
             assert config_loader.load_config() is config_loader.load_config()
         finally:
             reset_config()
 
-    def test_user_file_overrides_only_given_keys(self, tmp_path):
-        use_config(tmp_path, "behavior:\n  conflict_policy: fail\n")
+    def test_user_file_overrides_only_given_keys(self, work_dir):
+        use_config(work_dir, "behavior:\n  conflict_policy: fail\n")
         try:
             cfg = config_loader.load_config()
             assert cfg["behavior"]["conflict_policy"] == "fail"
@@ -94,8 +96,8 @@ class TestLoadConfig:
         finally:
             reset_config()
 
-    def test_nested_merge_keeps_sibling_defaults(self, tmp_path):
-        use_config(tmp_path, "network:\n  timeout_seconds: 30\n")
+    def test_nested_merge_keeps_sibling_defaults(self, work_dir):
+        use_config(work_dir, "network:\n  timeout_seconds: 30\n")
         try:
             cfg = config_loader.load_config()
             assert cfg["network"]["timeout_seconds"] == 30
@@ -104,41 +106,43 @@ class TestLoadConfig:
         finally:
             reset_config()
 
-    def test_empty_file_falls_back_to_defaults(self, tmp_path):
-        use_config(tmp_path, "")
+    def test_empty_file_falls_back_to_defaults(self, work_dir):
+        use_config(work_dir, "")
         try:
             assert config_loader.load_config()["behavior"]["conflict_policy"] == "warn"
         finally:
             reset_config()
 
-    def test_malformed_yaml_warns_and_uses_defaults(self, tmp_path):
-        use_config(tmp_path, "a: [1, 2\n")
+    def test_malformed_yaml_is_rejected(self, work_dir):
+        use_config(work_dir, "a: [1, 2\n")
         try:
-            assert config_loader.load_config()["behavior"]["conflict_policy"] == "warn"
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
         finally:
             reset_config()
 
-    def test_strict_mode_env_true(self, tmp_path):
-        use_config(tmp_path)
+    def test_strict_mode_env_true(self, work_dir):
+        use_config(work_dir)
         os.environ["STRICT_MODE"] = "true"
         try:
             assert config_loader.load_config()["behavior"]["strict_mode"] is True
         finally:
             reset_config()
 
-    def test_strict_mode_env_is_case_insensitive_and_exact(self, tmp_path):
-        use_config(tmp_path)
+    def test_strict_mode_env_is_case_insensitive_and_exact(self, work_dir):
+        use_config(work_dir)
         try:
-            for raw, expected in [("TRUE", True), ("True", True), ("false", False),
-                                  ("1", False), ("yes", False), ("", False)]:
+            for raw, expected in [("TRUE", True), ("True", True), ("yes", True),
+                                  ("1", True), ("on", True),
+                                  ("false", False), ("0", False), ("no", False), ("", False)]:
                 config_loader._CONFIG = None
                 os.environ["STRICT_MODE"] = raw
                 assert config_loader.load_config()["behavior"]["strict_mode"] is expected
         finally:
             reset_config()
 
-    def test_strict_mode_env_absent_keeps_default(self, tmp_path):
-        use_config(tmp_path)
+    def test_strict_mode_env_absent_keeps_default(self, work_dir):
+        use_config(work_dir)
         try:
             assert config_loader.load_config()["behavior"]["strict_mode"] is False
         finally:
@@ -146,22 +150,22 @@ class TestLoadConfig:
 
 
 class TestGet:
-    def test_single_key(self, tmp_path):
-        use_config(tmp_path)
+    def test_single_key(self, work_dir):
+        use_config(work_dir)
         try:
             assert config_loader.get("behavior")["conflict_policy"] == "warn"
         finally:
             reset_config()
 
-    def test_nested_keys(self, tmp_path):
-        use_config(tmp_path)
+    def test_nested_keys(self, work_dir):
+        use_config(work_dir)
         try:
             assert config_loader.get("network", "timeout_seconds") == 15
         finally:
             reset_config()
 
-    def test_missing_returns_default(self, tmp_path):
-        use_config(tmp_path)
+    def test_missing_returns_default(self, work_dir):
+        use_config(work_dir)
         try:
             assert config_loader.get("nope") is None
             assert config_loader.get("nope", default=7) == 7
@@ -169,23 +173,31 @@ class TestGet:
         finally:
             reset_config()
 
-    def test_traversing_through_scalar_returns_default(self, tmp_path):
+    def test_traversing_through_scalar_returns_default(self, work_dir):
         """对非 dict 继续取键不能抛异常。"""
-        use_config(tmp_path)
+        use_config(work_dir)
         try:
             assert config_loader.get("network", "timeout_seconds", "deeper", default=9) == 9
         finally:
             reset_config()
 
-    def test_value_zero_is_not_treated_as_missing(self, tmp_path):
-        use_config(tmp_path, "behavior:\n  release_keep_days: 0\n")
+    def test_zero_release_keep_days_is_rejected(self, work_dir):
+        use_config(work_dir, "behavior:\n  release_keep_days: 0\n")
         try:
-            assert config_loader.get("behavior", "release_keep_days", default=99) == 0
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
         finally:
             reset_config()
 
-    def test_false_is_not_treated_as_missing(self, tmp_path):
-        use_config(tmp_path, "behavior:\n  strict_mode: false\n")
+    def test_zero_unrecognized_ratio_is_not_treated_as_missing(self, work_dir):
+        use_config(work_dir, "behavior:\n  unrecognized_warn_ratio: 0\n")
+        try:
+            assert config_loader.get("behavior", "unrecognized_warn_ratio", default=99) == 0
+        finally:
+            reset_config()
+
+    def test_false_is_not_treated_as_missing(self, work_dir):
+        use_config(work_dir, "behavior:\n  strict_mode: false\n")
         try:
             assert config_loader.get("behavior", "strict_mode", default=True) is False
         finally:
