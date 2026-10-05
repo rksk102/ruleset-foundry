@@ -1,5 +1,5 @@
 # 显式固定规则集，避免依赖各版本默认值导致门禁漂移。
-target-version = "py311"
+target-version = "py313"
 line-length = 120
 
 [lint]
