@@ -197,10 +197,15 @@ def main():
                 rel["createdAt"].replace("Z", "+00:00")
             )
             tag = rel["tagName"]
+            if not tag.startswith("rules-"):
+                continue
             if created_at < cutoff_time and tag != release_tag:
                 info(f"  删除旧 Release: {tag}")
-                run_gh(["release", "delete", tag, "--yes"], fail_fast=True)
-                run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"], fail_fast=True)
+                if run_gh(["release", "delete", tag, "--yes"]) is None:
+                    warning(f"  删除 Release 失败，跳过: {tag}")
+                    continue
+                if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
+                    warning(f"  删除 tag 失败，跳过: {tag}")
                 cleaned += 1
         if cleaned == 0:
             info("  无需清理")

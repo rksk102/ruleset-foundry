@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import config_loader
 from config_loader import get
 from logger import error, group_end, group_start, info, success, warning
 from utils import clean_directory
@@ -27,6 +28,20 @@ KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihom
 KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
 VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
 MAX_KERNEL_BYTES = 100 * 1024 * 1024
+
+
+def ensure_config_usable():
+    if getattr(config_loader, "_HAS_YAML", True):
+        return
+    config_file = getattr(config_loader, "_CONFIG_FILE", None)
+    if config_file is None or not Path(config_file).exists():
+        return
+    error(f"检测到 {config_file} 但 PyYAML 未安装，配置将被整份忽略；请先执行 pip install -r requirements.txt")
+    sys.exit(1)
+
+
+def expected_kernel_asset_name(tag_name):
+    return f"mihomo-linux-amd64-{tag_name}.gz"
 
 
 def release_api_url(pinned_version, repo_api=None):
@@ -98,11 +113,11 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF", require_sh
     return actual
 
 
-def _fetch_latest_release_info(headers, max_retries=3):
+def _fetch_latest_release_info(max_retries=3):
     last_err = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(release_api_url(PINNED_VERSION, REPO_API), headers=headers)
+            req = urllib.request.Request(release_api_url(PINNED_VERSION, REPO_API))
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
@@ -113,11 +128,11 @@ def _fetch_latest_release_info(headers, max_retries=3):
     raise last_err
 
 
-def _download_kernel(download_url, headers, expected_digest=None, max_retries=3):
+def _download_kernel(download_url, expected_digest=None, max_retries=3):
     last_err = None
     for attempt in range(max_retries):
         try:
-            dl_req = urllib.request.Request(download_url, headers=headers)
+            dl_req = urllib.request.Request(download_url)
             with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
                 digest = hashlib.sha256()
                 buf = io.BytesIO()
@@ -183,11 +198,7 @@ def get_latest_mihomo(skip_hash_check=False):
     group_start("准备 Mihomo 内核")
 
     try:
-        headers = {}
-        if "GH_TOKEN" in os.environ:
-            headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
-
-        data = _fetch_latest_release_info(headers)
+        data = _fetch_latest_release_info()
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
@@ -219,7 +230,7 @@ def get_latest_mihomo(skip_hash_check=False):
         if not asset["digest"]:
             warning("  上游未提供资产 digest，压缩流校验将被跳过")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _download_kernel(asset["url"], headers, expected_digest=asset["digest"])
+        _download_kernel(asset["url"], expected_digest=asset["digest"])
 
         try:
             actual_sha = verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=not skip_hash_check)
@@ -352,11 +363,7 @@ def _smoke_convert():
 
 
 def bump_config():
-    headers = {}
-    if "GH_TOKEN" in os.environ:
-        headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
-
-    data = _fetch_latest_release_info(headers)
+    data = _fetch_latest_release_info()
     tag = data["tag_name"]
 
     cfg_path = Path("config.yaml")
@@ -366,18 +373,18 @@ def bump_config():
         info(f"  已是最新正式版 {tag}，无需更新")
         return
 
-    asset = select_kernel_asset(data["assets"], "", tag)
+    asset_name = expected_kernel_asset_name(tag)
+    asset = select_kernel_asset(data["assets"], asset_name, tag)
     if not asset:
-        error(f"  未找到期望资产 mihomo-linux-amd64-{tag}.gz")
+        error(f"  未找到期望资产 {asset_name}，拒绝改用启发式挑选")
         sys.exit(1)
 
-    asset_name = asset["name"]
     info(f"  下载并校验 {tag} ...")
     if not asset["digest"]:
         error("  上游未提供资产 digest，无法锚定压缩流完整性，拒绝继续")
         sys.exit(1)
     KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _download_kernel(asset["url"], headers, expected_digest=asset["digest"])
+    _download_kernel(asset["url"], expected_digest=asset["digest"])
 
     try:
         verify_kernel_file(KERNEL_BIN, "")
@@ -405,6 +412,8 @@ def bump_config():
 
 
 def main():
+    ensure_config_usable()
+
     if "--print-kernel-hash" in sys.argv:
         get_latest_mihomo(skip_hash_check=True)
         print(sha256_file(KERNEL_BIN))
