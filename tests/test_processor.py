@@ -1,4 +1,6 @@
 import base64
+import io
+import sys
 
 import processor
 
@@ -354,3 +356,209 @@ class TestDecodeHelpers:
     def test_is_text_data_rejects_binary(self):
         assert processor.is_text_data("ok") is True
         assert processor.is_text_data("a\0b\0c") is False
+
+
+class TestRuleTypeTable:
+
+    DOCUMENTED = [
+        "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD", "DOMAIN-REGEX",
+        "GEOSITE", "GEOIP", "SRC-GEOIP",
+        "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN",
+        "DST-PORT", "SRC-PORT", "IN-PORT", "IN-TYPE", "IN-USER", "IN-NAME", "REMATCH-NAME",
+        "PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
+        "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX", "UID", "NETWORK", "DSCP",
+        "RULE-SET", "SUB-RULE", "AND", "OR", "NOT", "MATCH",
+    ]
+
+    def test_documented_mihomo_types_are_recognized(self):
+        for name in self.DOCUMENTED:
+            assert name in processor._MIHOMO_RULE_TYPES, name
+            assert processor.classify_rule_line(f"{name},payload")[2] == name
+
+    def test_alias_types_from_other_formats_are_recognized(self):
+        for name in ("HOST-SUFFIX", "HOST", "FULL"):
+            assert processor.classify_rule_line(f"{name},payload")[2] == name
+
+    def test_types_mihomo_does_not_have_are_not_mihomo_types(self):
+        for name in ("DST-IP-CIDR", "DST-IP-ASN", "DST-GEOIP", "SCRIPT",
+                     "SRC-PORT-RANGE", "DST-PORT-RANGE"):
+            assert name not in processor._MIHOMO_RULE_TYPES, name
+            assert name in processor._UNSUPPORTED_TYPES, name
+
+    def test_only_cidr_types_classify_as_ip(self):
+        for name in ("IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"):
+            assert processor.classify_rule_line(f"{name},1.2.3.0/24")[0] == "ip"
+
+    def test_unexpressible_ip_types_do_not_classify_as_ip(self):
+        for name in ("IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN"):
+            kind, _payload, type_name = processor.classify_rule_line(f"{name},x")
+            assert kind == "opaque", name
+            assert type_name == name
+
+    def test_longest_type_name_wins(self):
+        assert processor.classify_rule_line("PROCESS-NAME-WILDCARD,*telegram*")[2] == "PROCESS-NAME-WILDCARD"
+        assert processor.classify_rule_line("PROCESS-PATH-WILDCARD,/usr/*/wget")[2] == "PROCESS-PATH-WILDCARD"
+        assert processor.classify_rule_line("PROCESS-NAME-REGEX,curl$")[2] == "PROCESS-NAME-REGEX"
+
+
+class TestNoSilentRewriteInIpMode:
+
+    def test_ip_suffix_is_not_rewritten_to_cidr(self):
+        result, errors, stats = processor.process_ip_detailed(["IP-SUFFIX,8.8.8.8/24"])
+        assert result == []
+        assert errors == []
+        assert stats["dropped_rule_type"]["IP-SUFFIX"] == 1
+
+    def test_ip_asn_is_reported_as_type_not_as_invalid_cidr(self):
+        result, errors, stats = processor.process_ip_detailed(["IP-ASN,13335"])
+        assert result == []
+        assert errors == []
+        assert stats["dropped_rule_type"]["IP-ASN"] == 1
+
+    def test_src_ip_asn_and_src_ip_suffix_dropped(self):
+        result, errors, stats = processor.process_ip_detailed(
+            ["SRC-IP-ASN,9808", "SRC-IP-SUFFIX,192.168.1.1/8"]
+        )
+        assert result == []
+        assert errors == []
+        assert stats["dropped_rule_type"] == {"SRC-IP-ASN": 1, "SRC-IP-SUFFIX": 1}
+
+    def test_unsupported_types_dropped_without_cidr_error(self):
+        result, errors, stats = processor.process_ip_detailed(
+            ["DST-IP-CIDR,1.2.3.0/24", "SCRIPT,code"]
+        )
+        assert result == []
+        assert errors == []
+        assert stats["dropped_rule_type"] == {"DST-IP-CIDR": 1, "SCRIPT": 1}
+
+    def test_domain_rules_in_ip_source_are_dropped_and_counted(self):
+        result, errors, stats = processor.process_ip_detailed(["DOMAIN-SUFFIX,ads.example.com"])
+        assert result == []
+        assert errors == []
+        assert stats["dropped_rule_type"]["DOMAIN-SUFFIX"] == 1
+
+    def test_drop_reasons_all_mention_ipcidr(self):
+        for name in ("IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN",
+                     "DST-IP-CIDR", "SCRIPT", "DOMAIN-SUFFIX"):
+            assert "ipcidr 规则集表达" in processor.ipcidr_drop_reason(name), name
+
+
+class TestClassicalRuleLinesInIpMode:
+
+    def test_classic_rule_lines_keep_their_payload(self):
+        result, errors = processor.process_ip([
+            "IP-CIDR,1.2.3.0/24",
+            "IP-CIDR6,2001:db8::/32",
+            "SRC-IP-CIDR,10.0.0.0/8",
+        ])
+        assert errors == []
+        assert result == ["1.2.3.0/24", "10.0.0.0/8", "2001:db8::/32"]
+
+    def test_classic_line_is_not_read_as_hex_fragment(self):
+        result, errors = processor.process_ip(["IP-CIDR,x"])
+        assert result == []
+        assert len(errors) == 1
+        assert errors[0][0] == "x"
+
+    def test_no_resolve_modifier_stripped(self):
+        result, errors = processor.process_ip(["IP-CIDR,1.2.3.0/24,no-resolve"])
+        assert result == ["1.2.3.0/24"]
+        assert errors == []
+
+    def test_rule_target_after_payload_is_ignored(self):
+        result, errors = processor.process_ip(["IP-CIDR,1.2.3.0/24,DIRECT"])
+        assert result == ["1.2.3.0/24"]
+        assert errors == []
+
+    def test_empty_payload_counted(self):
+        _result, errors, stats = processor.process_ip_detailed(["IP-CIDR,"])
+        assert errors == []
+        assert stats["unrecognized"] == 1
+
+    def test_unclassified_lines_still_use_extract(self):
+        result, errors = processor.process_ip(["  1.2.3.0/24 # note", "10.0.0.0/8"])
+        assert result == ["1.2.3.0/24", "10.0.0.0/8"]
+        assert errors == []
+
+    def test_process_ip_keeps_legacy_two_tuple(self):
+        assert len(processor.process_ip(["1.2.3.0/24"])) == 2
+
+    def test_classified_and_unclassified_lines_collapse_together(self):
+        result, _errors = processor.process_ip(["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])
+        assert result == ["1.0.0.0/23"]
+
+
+class _FakeStdin:
+    def __init__(self, raw):
+        self.buffer = io.BytesIO(raw)
+
+
+class TestMainCliContract:
+
+    def invoke(self, monkeypatch, capsys, payload):
+        monkeypatch.setattr(sys, "argv", ["processor.py", "ipcidr"])
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(payload))
+        processor.main()
+        return capsys.readouterr()
+
+    def test_ipcidr_mode_classifies_before_extract(self, monkeypatch, capsys):
+        captured = self.invoke(
+            monkeypatch, capsys,
+            b"IP-CIDR,1.2.3.0/24\nIP-CIDR6,2001:db8::/32\nIP-ASN,13335\n",
+        )
+        assert captured.out.splitlines() == ["1.2.3.0/24", "2001:db8::/32"]
+        assert "无效 CIDR" not in captured.err
+        assert "IP-ASN" in captured.err
+        assert "无法用 ipcidr 规则集表达" in captured.err
+
+    def test_ip_suffix_is_not_emitted_as_cidr(self, monkeypatch, capsys):
+        captured = self.invoke(monkeypatch, capsys, b"IP-SUFFIX,8.8.8.8/24\n")
+        assert captured.out.splitlines() == []
+        assert "IP-SUFFIX" in captured.err
+        assert "8.8.8.0/24" not in captured.out
+
+
+class TestYamlPayloadParsing:
+
+    def test_multiline_flow_array(self):
+        content = "payload: [\n  'a.com',\n  'b.com'\n]\n"
+        assert processor.parse_lines(content) == ["a.com", "b.com"]
+
+    def test_rules_key(self):
+        content = "rules:\n  - DOMAIN-SUFFIX,a.com\n  - IP-CIDR,1.2.3.0/24\n"
+        assert processor.parse_lines(content) == ["DOMAIN-SUFFIX,a.com", "IP-CIDR,1.2.3.0/24"]
+
+    def test_payload_preferred_over_rules(self):
+        content = "payload:\n  - a.com\nrules:\n  - b.com\n"
+        assert processor.parse_lines(content) == ["a.com"]
+
+    def test_payload_with_trailing_key(self):
+        content = "payload:\n  - '+.a.com'\n  - 'b.com'\nbehavior: domain\n"
+        assert processor.parse_lines(content) == ["+.a.com", "b.com"]
+
+    def test_quoted_and_unquoted_entries_agree(self):
+        content = "payload:\n  - '+.a.com'\n  - b.com\n"
+        assert processor.parse_lines(content) == ["+.a.com", "b.com"]
+
+    def test_non_string_items_fall_back_to_line_scan(self):
+        content = "payload:\n  - 13335\n  - a.com\n"
+        assert processor.parse_lines(content) == ["13335", "a.com"]
+
+    def test_invalid_yaml_falls_back_to_line_scan(self):
+        content = "payload:\n  - a.com\n: : :\n"
+        assert processor.parse_lines(content) == ["a.com"]
+
+    def test_missing_pyyaml_falls_back_silently(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        assert processor.parse_lines("payload: ['a.com', 'b.com']\n") == ["a.com", "b.com"]
+
+    def test_missing_pyyaml_keeps_plain_line_scan(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        assert processor.parse_lines("a.com\n# note\nb.com\n") == ["a.com", "b.com"]
+
+    def test_base64_yaml_payload_decoded_then_parsed(self):
+        encoded = base64.b64encode(b"payload:\n  - a.com\n  - b.com\n").decode()
+        assert processor.parse_lines(encoded) == ["a.com", "b.com"]
+
+    def test_plain_domain_list_is_not_taken_as_yaml(self):
+        assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]

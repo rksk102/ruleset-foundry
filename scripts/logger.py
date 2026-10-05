@@ -1,5 +1,6 @@
 import logging
 import logging.handlers
+import os
 import re
 import sys
 from pathlib import Path
@@ -21,16 +22,43 @@ class Colors:
 LOG_KEEP_COUNT = 20
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_ESCAPE_RE = re.compile(r"[%\r\n]")
+_ESCAPE_MAP = {"%": "%25", "\r": "%0D", "\n": "%0A"}
+_UNESCAPE_RE = re.compile(r"%25|%0D|%0A")
+_UNESCAPE_MAP = {"%25": "%", "%0D": "\r", "%0A": "\n"}
 
 _logger = None
 _log_file_handle = None
 _LOG_FILE = None
 
 
+def _escape_data(value):
+    return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], str(value))
+
+
+def _unescape_data(value):
+    return _UNESCAPE_RE.sub(lambda m: _UNESCAPE_MAP[m.group(0)], str(value))
+
+
+def _render(msg, args):
+    text = str(msg)
+    if args:
+        text = text % args
+    return _escape_data(text)
+
+
 class _StripAnsiFilter(logging.Filter):
     def filter(self, record):
         if isinstance(record.msg, str) and "\x1b" in record.msg:
             record.msg = _ANSI_RE.sub("", record.msg)
+        return True
+
+
+class _UnescapeFilter(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.msg, str):
+            record.msg = _unescape_data(record.msg)
+            record.args = ()
         return True
 
 
@@ -88,6 +116,8 @@ def _init_logger():
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter("%(message)s"))
+    if not os.environ.get("GITHUB_ACTIONS"):
+        console.addFilter(_UnescapeFilter())
     _logger.addHandler(console)
 
     _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
@@ -109,33 +139,33 @@ def get_logger():
 
 def info(msg, *args):
     _init_logger()
-    _logger.info(str(msg), *args)
+    _logger.info(_render(msg, args))
 
 
 def debug(msg, *args):
     _init_logger()
-    _logger.debug(str(msg), *args)
+    _logger.debug(_render(msg, args))
 
 
 def warning(msg, *args):
     _init_logger()
-    _logger.warning(f"{Colors.YELLOW}[警告] {msg}{Colors.RESET}", *args)
+    _logger.warning(f"{Colors.YELLOW}[警告] {_render(msg, args)}{Colors.RESET}")
 
 
 def error(msg, *args):
     _init_logger()
-    _logger.error(f"{Colors.RED}[错误] {msg}{Colors.RESET}", *args)
+    _logger.error(f"{Colors.RED}[错误] {_render(msg, args)}{Colors.RESET}")
 
 
 def success(msg, *args):
     _init_logger()
-    _logger.info(f"{Colors.GREEN}[成功] {msg}{Colors.RESET}", *args)
+    _logger.info(f"{Colors.GREEN}[成功] {_render(msg, args)}{Colors.RESET}")
 
 
 def group_start(title):
     _init_logger()
     title_str = str(title)
-    print(f"::group::{title_str}")
+    print(f"::group::{_escape_data(title_str)}")
     sys.stdout.flush()
     _logger.debug(f"[GROUP START] {title_str}")
 
@@ -148,9 +178,9 @@ def group_end():
 
 
 def gh_error(msg):
-    print(f"::error::{msg}")
+    print(f"::error::{_escape_data(msg)}")
 
 
 def section(msg):
     _init_logger()
-    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {msg}{Colors.RESET}")
+    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {_escape_data(msg)}{Colors.RESET}")
