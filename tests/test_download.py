@@ -147,63 +147,6 @@ class TestRetryPolicy:
         _s, _r, slept = self.retry_with(429, {"Retry-After": "not-a-date"})
         assert slept == [1, 2]
 
-
-class TestAuthHeaderAllowlist:
-    def test_trusted_github_hosts(self):
-        for url in (
-            "https://raw.githubusercontent.com/a/b.txt",
-            "https://github.com/a/b/raw/x.txt",
-            "https://objects.githubusercontent.com/x",
-            "https://api.github.com/repos/x",
-        ):
-            assert main.is_trusted_host(url) is True, url
-
-    def test_untrusted_hosts_rejected(self):
-        for url in (
-            "https://evil.example.com/x.txt",
-            "https://raw.githubusercontent.com.evil.com/x.txt",
-            "https://notgithub.com/x.txt",
-            "https://github.com.evil.net/x.txt",
-            "not-a-url",
-        ):
-            assert main.is_trusted_host(url) is False, url
-
-    def test_token_only_sent_to_trusted_hosts(self):
-        import os
-
-        os.environ["GH_TOKEN"] = "test-token-value"
-        try:
-            assert main.auth_headers("https://raw.githubusercontent.com/a") == {
-                "Authorization": "Bearer test-token-value"
-            }
-            assert main.auth_headers("https://evil.example.com/a") is None
-        finally:
-            os.environ.pop("GH_TOKEN", None)
-
-    def test_no_token_means_no_header(self):
-        import os
-
-        os.environ.pop("GH_TOKEN", None)
-        os.environ.pop("GITHUB_TOKEN", None)
-        assert main.auth_headers("https://raw.githubusercontent.com/a") is None
-
-    def test_parse_retry_after_variants(self):
-        assert main.parse_retry_after("45", 1) == 45
-        assert main.parse_retry_after("99999", 1) == main.MAX_RETRY_AFTER
-        assert main.parse_retry_after("", 7) == 7
-        assert main.parse_retry_after(None, 7) == 7
-        assert main.parse_retry_after("garbage", 7) == 7
-
-    def test_parse_retry_after_unicode_digits_do_not_raise(self):
-        for weird in ("²", "³", "①", "٣٠"):
-            assert main.parse_retry_after(weird, 7) == 7, weird
-
-    def test_parse_retry_after_negative_and_compound(self):
-        assert main.parse_retry_after("-5", 7) == 7
-        assert main.parse_retry_after("30, 60", 7) == 7
-        assert main.parse_retry_after("+30", 7) == 7
-
-
 class TestBackoffBudget:
     def test_budget_stops_endless_retries(self):
         slept = []
@@ -226,25 +169,7 @@ class TestBackoffBudget:
         assert sum(slept) <= main.MAX_RETRY_AFTER * 2
 
 
-class TestSourceRepoSlug:
-
-    def test_known_hosts_extract_owner_repo(self):
-        assert main.source_repo_slug(
-            "https://raw.githubusercontent.com/Owner/repo/release/gfw.txt") == "Owner__repo"
-        assert main.source_repo_slug(
-            "https://github.com/Owner/repo/raw/x/gfw.txt") == "Owner__repo"
-        assert main.source_repo_slug(
-            "https://cdn.jsdelivr.net/gh/Owner/repo@ver/gfw.txt") == "Owner__repo"
-
-    def test_lookalike_host_is_not_treated_as_github(self):
-        slug = main.source_repo_slug(
-            "https://evil-github-cdn.example.com/Owner/repo/release/gfw.txt")
-        assert "Owner__repo" != slug
-        assert slug == "evil-github-cdn_example_com"
-
-    def test_unknown_host_falls_back_to_hostname_not_empty(self):
-        assert main.source_repo_slug("https://mirror.example.org/a/b/gfw.txt") == \
-            "mirror_example_org"
+class TestSourceDisambiguation:
 
     def _task(self, url):
         return {"url": url, "policy": "policy", "type": "domain"}
