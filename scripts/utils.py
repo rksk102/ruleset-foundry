@@ -1,6 +1,7 @@
 import hashlib
 import ipaddress
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -17,23 +18,44 @@ def beijing_timestamp():
     return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def flatten_ip_cidr(cidr_strings, strict=False):
+_IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
+
+
+def flatten_ip_cidr(entries, strict=False, extract=False):
+    """解析并合并 CIDR，返回 (列表, 错误列表)。
+
+    丢弃默认路由（/0）；extract=True 按行内子串提取，否则整串解析；
+    输出为 v4 块 + v6 块，块内字典序。
+    """
     ipv4_nets = []
     ipv6_nets = []
     errors = []
 
-    for c in cidr_strings:
-        c = c.strip()
-        if not c:
+    for entry in entries:
+        text = entry.strip()
+        if not text:
             continue
+
+        candidate = text
+        if extract:
+            match = _IP_CANDIDATE_RE.search(text)
+            if not match:
+                errors.append((text, "未找到 IP/CIDR"))
+                continue
+            candidate = match.group(1)
+
         try:
-            net = ipaddress.ip_network(c, strict=strict)
-            if net.version == 4:
-                ipv4_nets.append(net)
-            else:
-                ipv6_nets.append(net)
+            net = ipaddress.ip_network(candidate, strict=strict)
         except ValueError as e:
-            errors.append((c, str(e)))
+            errors.append((text, str(e)))
+            continue
+
+        if net.prefixlen == 0:
+            continue
+        if net.version == 4:
+            ipv4_nets.append(net)
+        else:
+            ipv6_nets.append(net)
 
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
@@ -91,12 +113,10 @@ def _hash_file_body(path):
 
 
 def dir_hash(dirpath, pattern="*", skip_comments=False):
-    """计算目录下所有文件的聚合 SHA256。
+    """计算目录下所有文件的聚合 SHA256，返回 (hash_hex, file_count)。
 
-    返回 (hash_hex, file_count)。空目录或不存在时返回 ("", 0)，
-    以便调用方据此跳过 Release（避免对空内容发布"无变化"误判）。
-
-    skip_comments=True 时按规则正文哈希（忽略 # Date: 等易变元数据行）。
+    空目录或不存在时返回 ("", 0)，供调用方跳过发布；
+    skip_comments=True 忽略 # Date: 等易变元数据行。
     """
     p = Path(dirpath)
     if not p.exists():
@@ -114,6 +134,16 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
     if count == 0:
         return "", 0
     return h_all.hexdigest(), count
+
+
+def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs"):
+    """产物聚合哈希，返回 (hash, txt_count, mrs_count)。
+
+    与 release_handler 变更检测同口径：.txt 按正文哈希，.mrs 整文件哈希。
+    """
+    h1, c1 = dir_hash(txt_dir, "*.txt", skip_comments=True)
+    h2, c2 = dir_hash(mrs_dir, "*.mrs")
+    return f"{h1}|{h2}|{c1}|{c2}", c1, c2
 
 
 def load_last_hash(hash_file="state/release.sha256"):
@@ -147,8 +177,7 @@ def normalize_type(t):
 
 def get_owner_from_url(url):
     parts = url.split("/")
-    # 标准格式: https://domain/owner/repo/...
-    # parts[0]="https:", parts[1]="", parts[2]="domain", parts[3]="owner"...
+    # 标准格式 https://域名/owner/repo/...：parts[2] 为域名，parts[3] 起为 owner
     if len(parts) < 3:
         return "unknown"
 
@@ -170,59 +199,62 @@ def normalize_path(p):
     return str(Path(p).as_posix())
 
 
-def dedup_domain_suffix(domains):
-    """同策略内父子域名去重（无条件执行）。
+class DomainTrie:
+    """倒序标签 Trie，用于父子域名关系判定。
 
-    在 mihomo behavior:domain 语义下，每条规则等同于 DOMAIN-SUFFIX 匹配，
-    父域名已覆盖所有子域名，因此子域名规则是冗余的，可安全移除。
-
-    算法：构建与 mihomo 内核相同的倒序标签 Trie，按标签数从少到多遍历，
-    若某域名的祖先节点已标记，则跳过；否则插入并标记。
-
-    返回: (去重后的排序域名列表, 被移除的数量)
+    遍历顺序与 mihomo ValidAndSplitDomain 一致，判定语义等同 DOMAIN-SUFFIX。
     """
+
+    _MARK = object()
+
+    def __init__(self):
+        self._root = {}
+
+    def add(self, domain):
+        node = self._root
+        for part in reversed(domain.split(".")):
+            node = node.setdefault(part, {})
+        node[self._MARK] = True
+
+    def has_marked_ancestor(self, domain):
+        node = self._root
+        for part in reversed(domain.split(".")):
+            if part not in node:
+                return False
+            node = node[part]
+            if node.get(self._MARK):
+                return True
+        return False
+
+    def covering_parent(self, domain):
+        """返回已标记的严格祖先域名，没有则返回 None。"""
+        parts = domain.split(".")
+        node = self._root
+        matched = []
+        for part in reversed(parts):
+            if part not in node:
+                break
+            node = node[part]
+            matched.append(part)
+            if node.get(self._MARK) and len(matched) < len(parts):
+                return ".".join(reversed(matched))
+        return None
+
+
+def dedup_domain_suffix(domains):
+    """同策略内父子域名去重，返回 (排序后的域名列表, 被移除的数量)。"""
     if not domains:
         return [], 0
 
-    # 唯一哨兵对象，避免与真实域名标签冲突
-    _MARK = object()
-
-    # 按标签数从少到多排序，短域名（可能的父域名）优先处理
-    sorted_domains = sorted(domains, key=lambda d: d.count("."))
-
-    # 倒序标签 Trie: {"com": {"google": {MARK}, "youtube": {MARK}}}
-    trie = {}
+    trie = DomainTrie()
     kept = []
     removed = 0
 
-    for domain in sorted_domains:
-        # 按 . 分割并倒序，与 mihomo ValidAndSplitDomain 一致
-        # "ads.google.com" → ["com", "google", "ads"]
-        parts = domain.split(".")
-        parts.reverse()
-
-        # 在 Trie 中搜索：沿路径检查是否存在已标记的祖先节点
-        node = trie
-        has_marked_ancestor = False
-        for part in parts:
-            if part not in node:
-                break
-            node = node[part]
-            if _MARK in node:
-                has_marked_ancestor = True
-                break
-
-        if has_marked_ancestor:
+    for domain in sorted(domains, key=lambda d: d.count(".")):
+        if trie.has_marked_ancestor(domain):
             removed += 1
             continue
-
-        # 无已标记祖先，插入 Trie 并标记
-        node = trie
-        for part in parts:
-            if part not in node:
-                node[part] = {}
-            node = node[part]
-        node[_MARK] = True
+        trie.add(domain)
         kept.append(domain)
 
     return sorted(kept), removed

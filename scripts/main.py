@@ -8,7 +8,7 @@ from pathlib import Path
 import aiohttp
 import processor
 from config_loader import get
-from logger import debug, get_logger, gh_error, group_end, group_start, info, section, success, warning
+from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     atomic_write,
     beijing_now,
@@ -18,12 +18,11 @@ from utils import (
     normalize_type,
 )
 
-logger = get_logger()
-
 SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
 RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
 TIMEOUT = get("network", "timeout_seconds", default=15)
 RETRIES = get("network", "max_retries", default=2)
+MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
 STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 
@@ -37,7 +36,7 @@ def build_filepath(task):
 
 
 def plan_groups(tasks):
-    """按输出绝对路径分组。同路径多源将在清洗前合并，避免静默覆盖。"""
+    """按输出绝对路径分组，同路径多源合并清洗，避免静默覆盖。"""
     groups = {}
     for idx, task in enumerate(tasks):
         _, _, _, abs_path = build_filepath(task)
@@ -62,10 +61,9 @@ def plan_groups(tasks):
 
 
 def process_group(group, raw_by_index):
-    """合并组内所有成员的原始规则行后统一清洗写出。
+    """合并组内成员原始行后统一清洗写出，返回 (规则数|None, 错误分组)。
 
-    返回 (规则数|None, {"download": [(url,原因)], "parse": [(url,原因)]})。
-    下载失败与解析失败分开上报，避免严格模式把两者混为一谈。
+    下载与解析失败分开上报，避免严格模式把两者混为一谈。
     """
     all_lines = []
     errors = {"download": [], "parse": []}
@@ -85,8 +83,7 @@ def process_group(group, raw_by_index):
     if group["type"] == "ipcidr":
         result = processor.process_ip(all_lines)
     else:
-        result = processor.process_domain(all_lines)
-        special = processor.analyze_domain(all_lines)
+        result, special = processor.process_domain_detailed(all_lines)
         for key, label in (
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),
@@ -115,9 +112,6 @@ class SyncStats:
 
     def elapsed(self):
         return f"{time.time() - self.start_time:.1f}s"
-
-
-stats = SyncStats()
 
 
 def parse_sources():
@@ -158,6 +152,18 @@ def parse_sources():
     return tasks
 
 
+async def read_capped(stream):
+    """流式读取；超过 MAX_SOURCE_BYTES 返回 None。"""
+    chunks = []
+    total = 0
+    async for chunk in stream.iter_chunked(65536):
+        total += len(chunk)
+        if total > MAX_SOURCE_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def download_one(session, task):
     url = task["url"]
 
@@ -167,7 +173,10 @@ async def download_one(session, task):
                 url, timeout=aiohttp.ClientTimeout(total=TIMEOUT),
             ) as resp:
                 if resp.status == 200:
-                    content = await resp.read()
+                    content = await read_capped(resp.content)
+                    if content is None:
+                        warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {url}")
+                        return (task, None, f"超过 {MAX_SOURCE_BYTES} 字节上限")
                     if not content:
                         warning(f"  空响应: {url}")
                         return (task, None, "空响应")
@@ -235,7 +244,7 @@ def clean_orphans(expected_files):
     group_end()
 
 
-def generate_summary():
+def generate_summary(stats):
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     dl_fail = len(stats.download_errors)
     parse_fail = len(stats.parse_errors)
@@ -281,6 +290,8 @@ def generate_summary():
 
 
 def main():
+    stats = SyncStats()
+
     group_start("初始化")
     RULESETS_DIR.mkdir(parents=True, exist_ok=True)
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
@@ -331,7 +342,7 @@ def main():
         expected_files.append(summary_file)
 
     clean_orphans(expected_files)
-    generate_summary()
+    generate_summary(stats)
 
     if STRICT_MODE and (stats.download_errors or stats.parse_errors):
         gh_error("严格模式下存在失败源，退出")

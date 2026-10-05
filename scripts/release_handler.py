@@ -6,10 +6,8 @@ import sys
 import zipfile
 
 from config_loader import get
-from logger import error, get_logger, group_end, group_start, info, section, success, warning
-from utils import beijing_now, dir_hash, load_last_hash, save_last_hash
-
-logger = get_logger()
+from logger import error, group_end, group_start, info, section, success, warning
+from utils import beijing_now, combined_products_hash, load_last_hash, save_last_hash
 
 REPO_ROOT = os.getcwd()
 TARGET_CONFIG = {
@@ -122,6 +120,26 @@ def generate_release_notes(tag_date, tag_time, manifest):
     return notes
 
 
+def publish_release(release_tag, zip_file, title, notes, exists):
+    """已存在则原地更新资产与说明，否则新建。失败返回 None。"""
+    if exists:
+        if run_gh(["release", "upload", release_tag, zip_file, "--clobber"]) is None:
+            return None
+        return run_gh([
+            "release", "edit", release_tag,
+            "--title", title,
+            "--notes", notes,
+            "--latest",
+        ])
+
+    return run_gh([
+        "release", "create", release_tag, zip_file,
+        "--title", title,
+        "--notes", notes,
+        "--latest",
+    ])
+
+
 def main():
     group_start("处理发布")
 
@@ -135,10 +153,7 @@ def main():
 
     if CHANGE_DETECTION:
         section("内容变更检测")
-        # .txt 按正文哈希（忽略 # Date: 等元数据）；.mrs 由正文派生，整文件哈希
-        h1, c1 = dir_hash("merged-rules", "*.txt", skip_comments=True)
-        h2, c2 = dir_hash("merged-rules-mrs", "*.mrs")
-        combined_hash = f"{h1}|{h2}|{c1}|{c2}"
+        combined_hash, c1, c2 = combined_products_hash()
 
         if c1 != c2:
             error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
@@ -153,23 +168,13 @@ def main():
 
     zip_file, manifest = zip_target_files(tag_date)
 
-    if run_gh(["release", "view", release_tag]):
-        info(f"已存在 Release {release_tag}，删除以更新...")
-        run_gh(["release", "delete", release_tag, "--yes"], fail_fast=True)
-        run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{release_tag}"], fail_fast=True)
-
     info("生成发布说明...")
     notes = generate_release_notes(tag_date, tag_time, manifest)
+    exists = bool(run_gh(["release", "view", release_tag]))
+    info(f"{'更新' if exists else '创建'} Release {release_tag}...")
 
-    info(f"上传 Release {release_tag}...")
-    create_result = run_gh([
-        "release", "create", release_tag, zip_file,
-        "--title", f"Merged Rules - {tag_date}",
-        "--notes", notes,
-        "--latest",
-    ])
-    if create_result is None:
-        error("  Release 创建失败，不保存哈希，下次运行将重试")
+    if publish_release(release_tag, zip_file, f"Merged Rules - {tag_date}", notes, exists) is None:
+        error("  Release 发布失败，不保存哈希，下次运行将重试")
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)

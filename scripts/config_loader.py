@@ -21,6 +21,7 @@ def load_config():
         "network": {
             "timeout_seconds": 15,
             "max_retries": 2,
+            "max_source_bytes": 64 * 1024 * 1024,
         },
         "paths": {
             "sources_file": "sources.urls",

@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -11,10 +12,8 @@ import urllib.request
 from pathlib import Path
 
 from config_loader import get
-from logger import error, get_logger, group_end, group_start, info, success, warning
+from logger import error, group_end, group_start, info, success, warning
 from utils import clean_directory
-
-logger = get_logger()
 
 SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
@@ -48,12 +47,10 @@ def sha256_file(path):
 
 
 def select_kernel_asset(assets, asset_name, pinned_version):
-    """确定性地选择 linux-amd64 内核资产。
+    """选择 linux-amd64 内核资产，返回下载地址或 None。
 
-    1) asset_name 非空：精确匹配；
-    2) 否则在候选 .gz 中排除 go1xx / v1 / v2 / v3 / compatible 变体；
-    3) 再优先文件名形如 mihomo-linux-amd64-<tag>.gz 的默认构建。
-    返回 browser_download_url，找不到返回 None。
+    asset_name 非空时精确匹配；否则排除 go1xx / v1 / v2 / v3 / compatible
+    变体后，优先取 mihomo-linux-amd64-<tag>.gz。
     """
     gz = [a for a in assets if "linux-amd64" in a["name"] and a["name"].endswith(".gz")]
     if asset_name:
@@ -63,7 +60,7 @@ def select_kernel_asset(assets, asset_name, pinned_version):
         return None
 
     def is_variant(name):
-        base = name[:-3]  # 去 .gz
+        base = name[:-3]
         return (
             any(k in base for k in ("-go1", "-go2", "compatible"))
             or "-v1-" in base or "-v2-" in base or "-v3-" in base
@@ -95,7 +92,6 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF"):
 
 
 def _fetch_latest_release_info(headers, max_retries=3):
-    """获取 release 信息，带重试。"""
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -111,7 +107,7 @@ def _fetch_latest_release_info(headers, max_retries=3):
 
 
 def _download_kernel(download_url, headers, max_retries=3):
-    """下载内核到 KERNEL_BIN（覆盖旧文件），带重试。失败时清理残留。"""
+    """下载内核到 KERNEL_BIN，失败时清理残留。"""
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -144,7 +140,7 @@ def _download_kernel(download_url, headers, max_retries=3):
 
 
 def _verify_kernel():
-    """验证内核可运行，返回版本输出字符串；不可用返回 None。"""
+    """内核可运行时返回版本输出，否则 None。"""
     try:
         ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True, timeout=10)
         return ver_out.strip()
@@ -166,7 +162,6 @@ def get_latest_mihomo(skip_hash_check=False):
 
         expected_sha = "" if skip_hash_check else EXPECTED_SHA
 
-        # 版本一致且缓存内核可用（结构+哈希均通过）时直接复用
         if VERSION_FILE.exists():
             cached_ver = VERSION_FILE.read_text().strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
@@ -213,7 +208,6 @@ def get_latest_mihomo(skip_hash_check=False):
         raise
     except Exception as e:
         error(f"  内核准备失败: {e}")
-        # 降级：尝试使用已缓存的内核
         if os.path.exists(KERNEL_BIN):
             warning("  尝试降级使用已缓存的内核...")
             ver_out = _verify_kernel()
@@ -276,11 +270,103 @@ def write_summary(stats, total_time):
         f.write("\n".join(markdown))
 
 
+def _set_config_field(text, key, value):
+    new_text, count = re.subn(rf'(\b{key}:)\s*"[^"]*"', rf'\1 "{value}"', text, flags=re.M)
+    if count != 1:
+        error(f"  config.yaml 中 {key} 命中 {count} 次，拒绝写入")
+        sys.exit(1)
+    return new_text
+
+
+def _smoke_convert():
+    """用新内核跑一次最小转换，确认 convert-ruleset 可用。"""
+    if not sys.platform.startswith("linux"):
+        warning("  非 Linux 平台，跳过转换冒烟验证")
+        return
+
+    src = KERNEL_CACHE_DIR / "smoke-input.txt"
+    dst = KERNEL_CACHE_DIR / "smoke-output.mrs"
+    src.write_text("smoke-test.com\nexample.org\n", encoding="utf-8")
+    produced = False
+    try:
+        subprocess.run(
+            [KERNEL_BIN, "convert-ruleset", "domain", "text", str(src), str(dst)],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        produced = dst.exists() and dst.stat().st_size > 0
+    except subprocess.CalledProcessError as e:
+        error(f"  内核冒烟转换失败: {(e.stderr or '').strip()}")
+        sys.exit(1)
+    finally:
+        for path in (src, dst):
+            if path.exists():
+                path.unlink()
+
+    if not produced:
+        error("  内核冒烟转换未产出有效文件")
+        sys.exit(1)
+
+
+def bump_config():
+    """检查最新正式版并更新 config.yaml 的钉扎三字段，供 kernel-bump 工作流调用。"""
+    headers = {}
+    if "GH_TOKEN" in os.environ:
+        headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
+
+    data = _fetch_latest_release_info(headers)
+    tag = data["tag_name"]
+
+    cfg_path = Path("config.yaml")
+    text = cfg_path.read_text(encoding="utf-8")
+    current = re.search(r'pinned_version:\s*"([^"]*)"', text)
+    if current and current.group(1) == tag:
+        info(f"  已是最新正式版 {tag}，无需更新")
+        return
+
+    download_url = select_kernel_asset(data["assets"], "", tag)
+    if not download_url:
+        error(f"  未找到期望资产 mihomo-linux-amd64-{tag}.gz")
+        sys.exit(1)
+
+    asset_name = download_url.rsplit("/", 1)[-1]
+    info(f"  下载并校验 {tag} ...")
+    KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _download_kernel(download_url, headers)
+
+    try:
+        verify_kernel_file(KERNEL_BIN, "")
+    except ValueError as e:
+        error(f"  内核结构校验失败: {e}")
+        sys.exit(1)
+
+    sha = sha256_file(KERNEL_BIN)
+    ver_out = _verify_kernel()
+    if not ver_out or "Mihomo" not in ver_out:
+        error("  内核无法运行，拒绝写入配置")
+        sys.exit(1)
+    _smoke_convert()
+
+    text = _set_config_field(text, "pinned_version", tag)
+    text = _set_config_field(text, "asset_name", asset_name)
+    text = _set_config_field(text, "kernel_sha256", sha)
+    cfg_path.write_text(text, encoding="utf-8")
+    info(f"  已更新 config.yaml: {asset_name} ({sha[:12]}...)")
+
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(f"changed=true\ntag={tag}\n")
+
+
 def main():
     if "--print-kernel-hash" in sys.argv:
         # 跳过哈希强校验，否则旧哈希未清时打印不出新值
         get_latest_mihomo(skip_hash_check=True)
         print(sha256_file(KERNEL_BIN))
+        return
+
+    if "--bump-config" in sys.argv:
+        bump_config()
         return
 
     start_time = time.time()

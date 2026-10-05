@@ -1,5 +1,6 @@
 import logging
 import logging.handlers
+import re
 import sys
 from pathlib import Path
 
@@ -17,12 +18,20 @@ class Colors:
     BLUE = "\033[94m"
     MAGENTA = "\033[95m"
 
-# 保留最近 N 个日志文件，避免无限增长
 LOG_KEEP_COUNT = 20
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _logger = None
 _log_file_handle = None
 _LOG_FILE = None
+
+
+class _StripAnsiFilter(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.msg, str) and "\x1b" in record.msg:
+            record.msg = _ANSI_RE.sub("", record.msg)
+        return True
 
 
 class _BeijingFormatter(logging.Formatter):
@@ -34,10 +43,7 @@ class _BeijingFormatter(logging.Formatter):
 
 
 def _resolve_log_file():
-    """延迟解析日志目录与文件路径，避免模块导入时即创建目录。
-
-    优先从 config_loader 读取 paths.log_dir，缺失时回退到 "logs"。
-    """
+    """延迟解析日志文件路径，优先读取 config 的 paths.log_dir。"""
     global _LOG_FILE
     if _LOG_FILE is not None:
         return _LOG_FILE
@@ -56,7 +62,6 @@ def _resolve_log_file():
 
 
 def _cleanup_old_logs():
-    """保留最近 LOG_KEEP_COUNT 个日志文件，删除更早的。"""
     try:
         log_file = _resolve_log_file()
         log_dir = log_file.parent
@@ -93,6 +98,7 @@ def _init_logger():
         "[%(asctime)s] %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
+    _log_file_handle.addFilter(_StripAnsiFilter())
     _logger.addHandler(_log_file_handle)
 
     _cleanup_old_logs()

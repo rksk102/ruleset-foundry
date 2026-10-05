@@ -33,4 +33,3 @@ debug.log
 
 # 不纳入版本控制的开发资料
 docs/
-tests/

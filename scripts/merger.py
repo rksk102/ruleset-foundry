@@ -3,8 +3,9 @@ import sys
 from pathlib import Path
 
 from config_loader import get, load_config
-from logger import error, get_logger, group_end, group_start, info, section, success, warning
+from logger import error, group_end, group_start, info, section, success, warning
 from utils import (
+    DomainTrie,
     atomic_write_with_header,
     beijing_timestamp,
     clean_directory,
@@ -13,20 +14,9 @@ from utils import (
     normalize_path,
 )
 
-logger = get_logger()
-
 CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
-
-STATS = {
-    "success": 0,
-    "skipped": 0,
-    "failed": 0,
-    "total_rules": 0,
-}
-ERROR_LOGS = []
-SUMMARY_ROWS = []
 
 
 def detect_mode(type_str):
@@ -140,7 +130,6 @@ def auto_discover_files(source_dir=None):
 
 
 def load_domains_from_file(filepath):
-    """从规则文件中加载域名集合（跳过注释和空行）。"""
     domains = set()
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
@@ -149,45 +138,6 @@ def load_domains_from_file(filepath):
                 continue
             domains.add(line.lower())
     return domains
-
-
-_MARK = object()
-
-
-def _build_domain_trie(domains):
-    """构建倒序标签 Trie，用于高效检测父子域名关系。"""
-    trie = {}
-    for domain in domains:
-        parts = domain.split(".")
-        parts.reverse()
-        node = trie
-        for part in parts:
-            if part not in node:
-                node[part] = {}
-            node = node[part]
-        node[_MARK] = True
-    return trie
-
-
-def _find_covering_parent(domain, trie):
-    """在 Trie 中查找 domain 的已标记祖先域名，返回 (祖先域名, 是否找到)。
-
-    沿 domain 的标签路径搜索，若遇到已标记节点则返回该祖先的域名。
-    """
-    parts = domain.split(".")
-    parts.reverse()
-    node = trie
-    matched_parts = []
-    for part in parts:
-        if part not in node:
-            break
-        node = node[part]
-        matched_parts.append(part)
-        if node.get(_MARK) and len(matched_parts) < len(parts):
-            # 找到祖先（不能是自身，必须是严格祖先）
-            ancestor = ".".join(reversed(matched_parts))
-            return ancestor, True
-    return None, False
 
 
 VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
@@ -204,12 +154,10 @@ def resolve_conflict_action(conflict_policy, has_conflicts):
 
 
 def detect_cross_policy_conflicts(merged_dir):
-    """检测跨策略的域名冲突，包括显式冲突和隐式冲突。
+    """检测跨策略域名冲突，返回 (显式冲突, 隐式冲突)。
 
-    显式冲突：同一域名同时出现在多个策略中。
-    隐式冲突：一个策略中的父域名覆盖另一个策略中的子域名
-    （如 google.com 在 policy 中，adservice.google.com 在 block 中，
-    suffix 匹配下 google.com 会覆盖 adservice.google.com）。
+    显式：同一域名出现在多个策略；隐式：某策略的父域名在 suffix 匹配下
+    覆盖另一策略的子域名。ipcidr 目录不参与。
     """
     policy_domains = {}
 
@@ -230,7 +178,6 @@ def detect_cross_policy_conflicts(merged_dir):
     if len(policy_domains) < 2:
         return {}, {}
 
-    # 显式冲突：同一域名出现在多个策略中
     strategies = sorted(policy_domains.keys())
     explicit_conflicts = {}
     for i, s1 in enumerate(strategies):
@@ -239,11 +186,13 @@ def detect_cross_policy_conflicts(merged_dir):
             if overlap:
                 explicit_conflicts[f"{s1} ↔ {s2}"] = sorted(overlap)
 
-    # 隐式冲突：一个策略的父域名覆盖另一个策略的子域名
-    # 为每个策略构建 Trie
-    tries = {s: _build_domain_trie(d) for s, d in policy_domains.items()}
+    tries = {}
+    for strategy, domains in policy_domains.items():
+        trie = DomainTrie()
+        for domain in domains:
+            trie.add(domain)
+        tries[strategy] = trie
 
-    # 定义需要检测的覆盖方向（父域策略 → 子域策略）
     # block 子域被其他策略父域覆盖是最危险的
     implicit_conflicts = {}
     for parent_strategy, parent_trie in tries.items():
@@ -253,8 +202,8 @@ def detect_cross_policy_conflicts(merged_dir):
             key = f"{parent_strategy}(父) → {child_strategy}(子)"
             items = []
             for domain in sorted(child_domains):
-                ancestor, found = _find_covering_parent(domain, parent_trie)
-                if found:
+                ancestor = parent_trie.covering_parent(domain)
+                if ancestor:
                     items.append((domain, ancestor))
             if items:
                 implicit_conflicts[key] = items
@@ -264,6 +213,10 @@ def detect_cross_policy_conflicts(merged_dir):
 
 def main():
     section("规则合并器")
+
+    stats = {"success": 0, "skipped": 0, "failed": 0}
+    error_logs = []
+    summary_rows = []
 
     if not os.path.exists(CONFIG_FILE):
         warning(f"配置文件 '{CONFIG_FILE}' 未找到，仅使用自动模式")
@@ -299,15 +252,14 @@ def main():
                     t.get("description", "配置合并"),
                 )
                 if res:
-                    STATS["success"] += 1
-                    STATS["total_rules"] += res["opt"]
-                    SUMMARY_ROWS.append(res)
+                    stats["success"] += 1
+                    summary_rows.append(res)
                     success(f"  {fname} -> {res['opt']} 条规则")
                 else:
-                    STATS["skipped"] += 1
+                    stats["skipped"] += 1
             except Exception as e:
-                STATS["failed"] += 1
-                ERROR_LOGS.append(f"配置任务 '{fname}': {str(e)}")
+                stats["failed"] += 1
+                error_logs.append(f"配置任务 '{fname}': {str(e)}")
                 warning(f"  [失败] {fname}: {e}")
         group_end()
 
@@ -321,34 +273,32 @@ def main():
                     t["filename"], t["inputs"], t["description"],
                 )
                 if res:
-                    STATS["success"] += 1
-                    STATS["total_rules"] += res["opt"]
+                    stats["success"] += 1
                     res["file"] = f"(Auto) {res['file']}"
-                    SUMMARY_ROWS.append(res)
+                    summary_rows.append(res)
                     success(f"  {t['filename']} -> {res['opt']} 条规则")
                 else:
-                    STATS["skipped"] += 1
+                    stats["skipped"] += 1
             except Exception as e:
-                STATS["failed"] += 1
-                ERROR_LOGS.append(f"自动任务 '{t['filename']}': {str(e)}")
+                stats["failed"] += 1
+                error_logs.append(f"自动任务 '{t['filename']}': {str(e)}")
                 warning(f"  [失败] {t['filename']}: {e}")
         group_end()
 
     # 产出数量硬校验：任何任务静默消失（成功+跳过 != 期望）都必须失败
-    if STATS["failed"] == 0:
+    if stats["failed"] == 0:
         expected_tasks = len(config_tasks) + len(auto_tasks)
-        if STATS["success"] + STATS["skipped"] != expected_tasks:
+        if stats["success"] + stats["skipped"] != expected_tasks:
             error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
-                  f"成功 {STATS['success']} + 跳过 {STATS['skipped']}")
+                  f"成功 {stats['success']} + 跳过 {stats['skipped']}")
             sys.exit(1)
 
-    section(f"合并报告 | 成功:{STATS['success']} 跳过:{STATS['skipped']} 失败:{STATS['failed']}")
+    section(f"合并报告 | 成功:{stats['success']} 跳过:{stats['skipped']} 失败:{stats['failed']}")
 
-    if SUMMARY_ROWS:
-        for r in SUMMARY_ROWS:
+    if summary_rows:
+        for r in summary_rows:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
-    # 跨策略冲突检测
     explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
 
     conflict_policy = get("behavior", "conflict_policy", default="warn")
@@ -385,11 +335,11 @@ def main():
 
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
-            f.write(f"\n### 合并报告: {STATS['success']} OK, {STATS['failed']} Failed\n\n")
-            if ERROR_LOGS:
-                f.write("```diff\n" + "\n".join([f"- {e}" for e in ERROR_LOGS]) + "\n```\n")
+            f.write(f"\n### 合并报告: {stats['success']} OK, {stats['failed']} Failed\n\n")
+            if error_logs:
+                f.write("```diff\n" + "\n".join([f"- {e}" for e in error_logs]) + "\n```\n")
             f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
-            for r in SUMMARY_ROWS:
+            for r in summary_rows:
                 f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
 
             if show_conflicts and explicit_conflicts:
@@ -421,7 +371,7 @@ def main():
         error("检测到跨策略冲突，按配置终止合并")
         sys.exit(1)
 
-    if STATS["failed"] > 0:
+    if stats["failed"] > 0:
         error("存在失败任务，退出")
         sys.exit(1)
 
