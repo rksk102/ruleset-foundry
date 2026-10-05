@@ -22,11 +22,6 @@ _IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
 
 
 def flatten_ip_cidr(entries, strict=False, extract=False):
-    """解析并合并 CIDR，返回 (列表, 错误列表)。
-
-    丢弃默认路由（/0）；extract=True 按行内子串提取，否则整串解析；
-    输出为 v4 块 + v6 块，块内字典序。
-    """
     ipv4_nets = []
     ipv6_nets = []
     errors = []
@@ -101,7 +96,6 @@ def file_sha256(filepath):
 
 
 def _hash_file_body(path):
-    """只哈希规则正文（跳过空行与 # 注释/元数据行），使时间戳不影响聚合哈希。"""
     h = hashlib.sha256()
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -113,11 +107,6 @@ def _hash_file_body(path):
 
 
 def dir_hash(dirpath, pattern="*", skip_comments=False):
-    """计算目录下所有文件的聚合 SHA256，返回 (hash_hex, file_count)。
-
-    空目录或不存在时返回 ("", 0)，供调用方跳过发布；
-    skip_comments=True 忽略 # Date: 等易变元数据行。
-    """
     p = Path(dirpath)
     if not p.exists():
         return "", 0
@@ -137,10 +126,6 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
 
 
 def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs"):
-    """产物聚合哈希，返回 (hash, txt_count, mrs_count)。
-
-    与 release_handler 变更检测同口径：.txt 按正文哈希，.mrs 整文件哈希。
-    """
     h1, c1 = dir_hash(txt_dir, "*.txt", skip_comments=True)
     h2, c2 = dir_hash(mrs_dir, "*.mrs")
     return f"{h1}|{h2}|{c1}|{c2}", c1, c2
@@ -177,7 +162,6 @@ def normalize_type(t):
 
 def get_owner_from_url(url):
     parts = url.split("/")
-    # 标准格式 https://域名/owner/repo/...：parts[2] 为域名，parts[3] 起为 owner
     if len(parts) < 3:
         return "unknown"
 
@@ -200,49 +184,51 @@ def normalize_path(p):
 
 
 class DomainTrie:
-    """倒序标签 Trie，用于父子域名关系判定。
 
-    遍历顺序与 mihomo ValidAndSplitDomain 一致，判定语义等同 DOMAIN-SUFFIX。
-    """
-
-    _MARK = object()
+    SUFFIX = 1
+    EXACT = 2
 
     def __init__(self):
         self._root = {}
 
-    def add(self, domain):
+    def add(self, domain, kind=None):
         node = self._root
         for part in reversed(domain.split(".")):
             node = node.setdefault(part, {})
-        node[self._MARK] = True
+        node[kind or self.EXACT] = True
 
-    def has_marked_ancestor(self, domain):
+    def _walk(self, domain):
         node = self._root
+        matched = 0
         for part in reversed(domain.split(".")):
             if part not in node:
-                return False
+                return
             node = node[part]
-            if node.get(self._MARK):
+            matched += 1
+            yield matched, node
+
+    def has_marked_ancestor(self, domain, kind=None):
+        for _matched, node in self._walk(domain):
+            if kind is None:
+                if node.get(self.SUFFIX) or node.get(self.EXACT):
+                    return True
+            elif node.get(kind):
                 return True
         return False
 
-    def covering_parent(self, domain):
-        """返回已标记的严格祖先域名，没有则返回 None。"""
+    def covering_parent(self, domain, kind=None):
         parts = domain.split(".")
-        node = self._root
-        matched = []
-        for part in reversed(parts):
-            if part not in node:
+        for matched, node in self._walk(domain):
+            if matched >= len(parts):
                 break
-            node = node[part]
-            matched.append(part)
-            if node.get(self._MARK) and len(matched) < len(parts):
-                return ".".join(reversed(matched))
+            hit = (node.get(self.SUFFIX) or node.get(self.EXACT)) if kind is None \
+                else node.get(kind)
+            if hit:
+                return ".".join(parts[len(parts) - matched:])
         return None
 
 
 def dedup_domain_suffix(domains):
-    """同策略内父子域名去重，返回 (排序后的域名列表, 被移除的数量)。"""
     if not domains:
         return [], 0
 
@@ -250,12 +236,24 @@ def dedup_domain_suffix(domains):
     kept = []
     removed = 0
 
-    for domain in sorted(domains, key=lambda d: d.count(".")):
-        if trie.has_marked_ancestor(domain):
+    def bare(d):
+        return d[2:] if d.startswith("+.") else d
+
+    for entry in sorted(domains, key=lambda d: (bare(d).count("."), d)):
+        name = bare(entry)
+        is_suffix = entry.startswith("+.")
+        kind = DomainTrie.SUFFIX if is_suffix else DomainTrie.EXACT
+
+        if is_suffix:
+            if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
+                removed += 1
+                continue
+        elif trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
             removed += 1
             continue
-        trie.add(domain)
-        kept.append(domain)
+
+        trie.add(name, kind)
+        kept.append(entry)
 
     return sorted(kept), removed
 
@@ -265,13 +263,16 @@ def clean_directory(dirpath, keep_root=True):
     if not p.exists():
         if keep_root:
             p.mkdir(parents=True)
-        return
+        return []
 
+    failed = []
     for item in p.iterdir():
         try:
             if item.is_file() or item.is_symlink():
                 item.unlink()
             elif item.is_dir():
                 shutil.rmtree(str(item))
-        except Exception:
-            pass
+        except Exception as e:
+            failed.append((str(item), str(e)))
+
+    return failed

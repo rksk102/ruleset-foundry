@@ -29,6 +29,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     full_output_file = os.path.join(full_output_dir, filename)
     combined_rules = set()
     files_read_count = 0
+    source_urls = []
 
     missing_files = []
 
@@ -41,11 +42,18 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         with open(full_src_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("#") or line.startswith("//"):
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    if line.startswith("# Source:"):
+                        source_urls.append(line.split(":", 1)[1].strip())
+                    continue
+                if line.startswith("//"):
                     continue
                 if "#" in line:
                     line = line.split("#")[0].strip()
-                combined_rules.add(line)
+                if line:
+                    combined_rules.add(line)
             files_read_count += 1
 
     if missing_files:
@@ -85,6 +93,8 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
         "count": count_desc,
         "desc": desc,
     }
+    if source_urls:
+        metadata["sources"] = " ".join(sorted(set(source_urls)))
     atomic_write_with_header(full_output_file, final_list, metadata)
 
     return {
@@ -112,7 +122,6 @@ def auto_discover_files(source_dir=None):
             rel_path = os.path.relpath(abs_path, root_dir)
             rel_path_norm = normalize_path(rel_path)
 
-            # 只透传 strategy/type/owner/file.txt 三级结构，跳过浅层控制文件（如 sync-summary.txt）
             parts = Path(rel_path_norm).parent.parts
             if len(parts) < 3:
                 continue
@@ -144,7 +153,6 @@ VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
 
 
 def resolve_conflict_action(conflict_policy, has_conflicts):
-    """把配置的冲突策略解析为实际动作：none/ignore/warn/fail。"""
     policy = (conflict_policy or "warn").lower()
     if policy not in VALID_CONFLICT_POLICIES:
         raise ValueError(f"behavior.conflict_policy 取值非法: {conflict_policy!r}")
@@ -154,11 +162,6 @@ def resolve_conflict_action(conflict_policy, has_conflicts):
 
 
 def detect_cross_policy_conflicts(merged_dir):
-    """检测跨策略域名冲突，返回 (显式冲突, 隐式冲突)。
-
-    显式：同一域名出现在多个策略；隐式：某策略的父域名在 suffix 匹配下
-    覆盖另一策略的子域名。ipcidr 目录不参与。
-    """
     policy_domains = {}
 
     if not os.path.exists(merged_dir):
@@ -193,7 +196,6 @@ def detect_cross_policy_conflicts(merged_dir):
             trie.add(domain)
         tries[strategy] = trie
 
-    # block 子域被其他策略父域覆盖是最危险的
     implicit_conflicts = {}
     for parent_strategy, parent_trie in tries.items():
         for child_strategy, child_domains in policy_domains.items():
@@ -232,7 +234,8 @@ def main():
 
     if os.path.exists(OUTPUT_DIR):
         info("  清理输出目录...")
-        clean_directory(OUTPUT_DIR)
+        for path, why in clean_directory(OUTPUT_DIR):
+            warning(f"  清理失败（可能残留陈旧产物）: {path} -> {why}")
     else:
         os.makedirs(OUTPUT_DIR)
 
@@ -285,7 +288,6 @@ def main():
                 warning(f"  [失败] {t['filename']}: {e}")
         group_end()
 
-    # 产出数量硬校验：任何任务静默消失（成功+跳过 != 期望）都必须失败
     if stats["failed"] == 0:
         expected_tasks = len(config_tasks) + len(auto_tasks)
         if stats["success"] + stats["skipped"] != expected_tasks:

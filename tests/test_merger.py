@@ -73,7 +73,7 @@ class TestProcessTaskLogic:
         finally:
             merger.SOURCE_DIR, merger.OUTPUT_DIR = original
 
-    def test_merges_dedups_and_reports_counts(self, tmp_path):
+    def test_merges_and_reports_counts(self, tmp_path):
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"
         write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\ngoogle.com\n")
@@ -85,12 +85,42 @@ class TestProcessTaskLogic:
         ))
 
         assert result["raw"] == 3
-        assert result["opt"] == 2
+        assert result["opt"] == 3
         assert result["path"] == "block/domain/Owner"
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
         assert "ads.example.com" in content
         assert "google.com" in content
-        assert "sub.google.com" not in content
+        assert "sub.google.com" in content
+
+    def test_suffix_parent_dedups_children(self, tmp_path):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        write(source / "block" / "domain" / "A" / "one.txt", "+.google.com\n+.ads.google.com\n")
+
+        result = self.use_dirs(source, output, lambda: merger.process_task_logic(
+            "block", "domain", "Owner", "all.txt",
+            ["block/domain/A/one.txt"], "后缀去重测试",
+        ))
+
+        assert result["raw"] == 2
+        assert result["opt"] == 1
+        content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
+        assert "+.google.com" in content
+        assert "+.ads.google.com" not in content
+
+    def test_sources_recorded_in_header(self, tmp_path):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        write(
+            source / "block" / "domain" / "A" / "one.txt",
+            "# Source: https://raw.githubusercontent.com/Owner/repo/main/one.txt\nads.example.com\n",
+        )
+        self.use_dirs(source, output, lambda: merger.process_task_logic(
+            "block", "domain", "Owner", "all.txt",
+            ["block/domain/A/one.txt"], "来源透传测试",
+        ))
+        content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
+        assert "# Sources: https://raw.githubusercontent.com/Owner/repo/main/one.txt" in content
 
     def test_missing_input_raises(self, tmp_path):
         source = tmp_path / "rulesets"

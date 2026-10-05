@@ -4,15 +4,45 @@ import utils
 
 
 class TestDedupDomainSuffix:
-    def test_child_covered_by_parent(self):
-        kept, removed = utils.dedup_domain_suffix({"google.com", "ads.google.com", "youtube.com"})
-        assert kept == ["google.com", "youtube.com"]
+    def test_suffix_parent_covers_suffix_child(self):
+        kept, removed = utils.dedup_domain_suffix({"+.google.com", "+.ads.google.com"})
+        assert kept == ["+.google.com"]
         assert removed == 1
 
-    def test_exact_parent_not_removed_by_itself(self):
+    def test_bare_domain_does_not_cover_child(self):
+        kept, removed = utils.dedup_domain_suffix({"google.com", "ads.google.com"})
+        assert kept == ["ads.google.com", "google.com"]
+        assert removed == 0
+
+    def test_suffix_parent_covers_exact_child(self):
+        kept, removed = utils.dedup_domain_suffix({"+.google.com", "ads.google.com"})
+        assert kept == ["+.google.com"]
+        assert removed == 1
+
+    def test_same_name_suffix_subsumes_exact(self):
+        kept, removed = utils.dedup_domain_suffix({"+.google.com", "google.com"})
+        assert kept == ["+.google.com"]
+        assert removed == 1
+
+    def test_exact_parent_not_removed_when_no_suffix_ancestor(self):
+        kept, removed = utils.dedup_domain_suffix({"google.com", "ads.google.com"})
+        assert kept == ["ads.google.com", "google.com"]
+        assert removed == 0
+
+    def test_duplicates_dropped(self):
         kept, removed = utils.dedup_domain_suffix({"google.com", "google.com"})
         assert kept == ["google.com"]
         assert removed == 0
+
+    def test_multi_level_suffix_chain(self):
+        kept, removed = utils.dedup_domain_suffix({"+.com", "+.google.com", "+.ads.google.com"})
+        assert kept == ["+.com"]
+        assert removed == 2
+
+    def test_order_independent(self):
+        a, _ = utils.dedup_domain_suffix({"+.google.com", "+.ads.google.com"})
+        b, _ = utils.dedup_domain_suffix({"+.ads.google.com", "+.google.com"})
+        assert a == b
 
     def test_empty(self):
         assert utils.dedup_domain_suffix(set()) == ([], 0)
@@ -130,23 +160,23 @@ class TestCleanDirectory:
 class TestDomainTrie:
     def test_covering_parent_returns_strict_ancestor(self):
         trie = utils.DomainTrie()
-        trie.add("google.com")
+        trie.add("google.com", utils.DomainTrie.SUFFIX)
         assert trie.covering_parent("ads.google.com") == "google.com"
 
     def test_covering_parent_none_for_self(self):
         trie = utils.DomainTrie()
-        trie.add("google.com")
+        trie.add("google.com", utils.DomainTrie.SUFFIX)
         assert trie.covering_parent("google.com") is None
 
     def test_covering_parent_none_for_unrelated(self):
         trie = utils.DomainTrie()
-        trie.add("google.com")
+        trie.add("google.com", utils.DomainTrie.SUFFIX)
         assert trie.covering_parent("youtube.com") is None
 
     def test_covering_parent_returns_outermost_marked_ancestor(self):
         trie = utils.DomainTrie()
-        trie.add("com")
-        trie.add("google.com")
+        trie.add("com", utils.DomainTrie.SUFFIX)
+        trie.add("google.com", utils.DomainTrie.SUFFIX)
         assert trie.covering_parent("ads.google.com") == "com"
 
     def test_has_marked_ancestor_includes_self(self):
@@ -155,6 +185,20 @@ class TestDomainTrie:
         assert trie.has_marked_ancestor("google.com") is True
         assert trie.has_marked_ancestor("ads.google.com") is True
         assert trie.has_marked_ancestor("example.org") is False
+
+    def test_suffix_and_exact_marks_are_distinguishable(self):
+        trie = utils.DomainTrie()
+        trie.add("markedsuffix.com", utils.DomainTrie.SUFFIX)
+        trie.add("markedexact.com", utils.DomainTrie.EXACT)
+        assert trie.has_marked_ancestor("a.markedsuffix.com", utils.DomainTrie.SUFFIX) is True
+        assert trie.has_marked_ancestor("a.markedexact.com", utils.DomainTrie.SUFFIX) is False
+        assert trie.has_marked_ancestor("a.markedexact.com", utils.DomainTrie.EXACT) is True
+
+    def test_covering_parent_respects_kind(self):
+        trie = utils.DomainTrie()
+        trie.add("exactonly.com", utils.DomainTrie.EXACT)
+        assert trie.covering_parent("sub.exactonly.com", utils.DomainTrie.SUFFIX) is None
+        assert trie.covering_parent("sub.exactonly.com") == "exactonly.com"
 
     def test_child_does_not_mark_parent(self):
         trie = utils.DomainTrie()
@@ -192,7 +236,7 @@ class TestFlattenIpModes:
         import processor
 
         lines = ["IP-CIDR,x", "  1.2.3.0/24 # note", "10.0.0.0/8"]
-        assert processor.process_ip(lines) == utils.flatten_ip_cidr(lines, extract=True)[0]
+        assert processor.process_ip(lines)[0] == utils.flatten_ip_cidr(lines, extract=True)[0]
 
 
 class TestFlattenIpOrdering:

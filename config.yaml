@@ -41,19 +41,15 @@ merges:
       - "policy/domain/Loyalsoldier/proxy-list.txt"
 
 behavior:
-  # 仅控制同步步骤是否因失败源退出
   strict_mode: false
   release_change_detection: true
   release_keep_days: 3
-  # 跨策略冲突处理: ignore(不检查) | warn(仅告警) | fail(中断)
-  # 注意：当前隐式冲突基线噪声较大，启用 fail 前请先人工核对检测结果。
   conflict_policy: "warn"
+  unrecognized_warn_ratio: 0.10
 
 mihomo:
   kernel_cache_path: ".cache/mihomo-kernel"
   repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-  # 留空则跟随 latest；升级时同步更新下方两个字段
   pinned_version: "v1.19.30"
   asset_name: "mihomo-linux-amd64-v1.19.30.gz"
-  # 用 python scripts/convert_mrs.py --print-kernel-hash 生成
   kernel_sha256: "3e92df24f5e80e86b9cf9183ceb7bb575f0bd132a9dc4081dae42e80f21076ae"
