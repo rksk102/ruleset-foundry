@@ -618,10 +618,17 @@ def main():
         )
         info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
         generate_summary(stats)
-        gh_error(
-            f"同步未产出可用规则（成功 {stats.success}/{len(groups)}），"
-            "拒绝清理与发布；如需接受部分产物请设 behavior.allow_partial=true"
-        )
+        if stats.success == 0:
+            gh_error(
+                f"同步未产出任何可用规则（成功 0/{len(groups)}），拒绝清理与发布。"
+                "请检查 sources.urls 与上游可达性；该状态不受 behavior.allow_partial 影响"
+            )
+        else:
+            gh_error(
+                f"同步被门禁判定为降级（成功 {stats.success}/{len(groups)}），拒绝清理与发布；"
+                "如需接受部分产物请设 behavior.allow_partial=true（或调低 "
+                "behavior.min_source_success_ratio）"
+            )
         sys.exit(1)
 
     clean_orphans(expected_files)
