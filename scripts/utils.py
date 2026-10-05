@@ -116,6 +116,17 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
     return h_all.hexdigest(), count
 
 
+def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs"):
+    """产物聚合哈希，返回 (hash, txt_count, mrs_count)。
+
+    .txt 按正文哈希（忽略元数据行），.mrs 整文件哈希；
+    与 release_handler 的变更检测口径一致，供徽章门控等场景复用。
+    """
+    h1, c1 = dir_hash(txt_dir, "*.txt", skip_comments=True)
+    h2, c2 = dir_hash(mrs_dir, "*.mrs")
+    return f"{h1}|{h2}|{c1}|{c2}", c1, c2
+
+
 def load_last_hash(hash_file="state/release.sha256"):
     hp = Path(hash_file)
     if hp.exists():

@@ -1,9 +1,11 @@
 import os
+import re
 import sys
 import urllib.parse
 
+from config_loader import get
 from logger import error, group_end, group_start, info, success
-from utils import beijing_now
+from utils import beijing_now, combined_products_hash, load_last_hash
 
 REPO_ROOT = os.getcwd()
 DIR_RULES = os.path.join(REPO_ROOT, "merged-rules")
@@ -29,10 +31,32 @@ def format_size(size_bytes):
     return f"{p:.2f} {units[i]}"
 
 
-def get_time_badge():
-    now = beijing_now().strftime("%Y--%m--%d %H:%M")
-    enc_now = urllib.parse.quote(now)
-    return f"https://img.shields.io/badge/Updated-{enc_now}-blue?style={STYLE}&logo=github"
+BADGE_TIME_RE = re.compile(r"Updated-(\d{4}--\d{2}--\d{2}%20\d{2}%3A\d{2})-blue")
+
+
+def get_time_badge(encoded_time=None):
+    if encoded_time is None:
+        encoded_time = urllib.parse.quote(beijing_now().strftime("%Y--%m--%d %H:%M"))
+    return f"https://img.shields.io/badge/Updated-{encoded_time}-blue?style={STYLE}&logo=github"
+
+
+def resolve_badge_time():
+    """产物未变化时沿用 README 中的旧徽章时间，避免无意义提交。"""
+    if not get("behavior", "release_change_detection", default=True):
+        return None
+    try:
+        current, _c1, _c2 = combined_products_hash()
+    except Exception:
+        return None
+    if current != load_last_hash():
+        return None
+    try:
+        with open(README_FILE, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = BADGE_TIME_RE.search(text)
+    return m.group(1) if m else None
 
 
 def scan_files(target_dir):
@@ -99,9 +123,9 @@ def make_section(f, title, desc, files, root_dir):
     return count, total_size
 
 
-def make_page_header():
+def make_page_header(badge_time=None):
     repo_short = REPO_NAME.split("/")[-1]
-    time_badge = get_time_badge()
+    time_badge = get_time_badge(badge_time)
 
     return f"""<div align="center">
 
@@ -171,9 +195,11 @@ def main():
     info(f"  标准规则文件: {len(files_std)}")
     info(f"  MRS 规则文件: {len(files_mrs)}")
 
+    badge_time = resolve_badge_time()
+
     try:
         with open(README_FILE, "w", encoding="utf-8") as f:
-            f.write(make_page_header())
+            f.write(make_page_header(badge_time))
 
             f.write("## 规则列表\n\n")
 

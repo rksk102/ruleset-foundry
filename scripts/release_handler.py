@@ -7,7 +7,7 @@ import zipfile
 
 from config_loader import get
 from logger import error, group_end, group_start, info, section, success, warning
-from utils import beijing_now, dir_hash, load_last_hash, save_last_hash
+from utils import beijing_now, combined_products_hash, load_last_hash, save_last_hash
 
 REPO_ROOT = os.getcwd()
 TARGET_CONFIG = {
@@ -133,10 +133,7 @@ def main():
 
     if CHANGE_DETECTION:
         section("内容变更检测")
-        # .txt 按正文哈希（忽略 # Date: 等元数据）；.mrs 由正文派生，整文件哈希
-        h1, c1 = dir_hash("merged-rules", "*.txt", skip_comments=True)
-        h2, c2 = dir_hash("merged-rules-mrs", "*.mrs")
-        combined_hash = f"{h1}|{h2}|{c1}|{c2}"
+        combined_hash, c1, c2 = combined_products_hash()
 
         if c1 != c2:
             error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
