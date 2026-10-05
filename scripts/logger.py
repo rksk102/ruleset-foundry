@@ -1,5 +1,6 @@
 import logging
 import logging.handlers
+import re
 import sys
 from pathlib import Path
 
@@ -20,9 +21,18 @@ class Colors:
 # 保留最近 N 个日志文件，避免无限增长
 LOG_KEEP_COUNT = 20
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
 _logger = None
 _log_file_handle = None
 _LOG_FILE = None
+
+
+class _StripAnsiFilter(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.msg, str) and "\x1b" in record.msg:
+            record.msg = _ANSI_RE.sub("", record.msg)
+        return True
 
 
 class _BeijingFormatter(logging.Formatter):
@@ -93,6 +103,7 @@ def _init_logger():
         "[%(asctime)s] %(levelname)-8s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
+    _log_file_handle.addFilter(_StripAnsiFilter())
     _logger.addHandler(_log_file_handle)
 
     _cleanup_old_logs()

@@ -11,10 +11,8 @@ import urllib.request
 from pathlib import Path
 
 from config_loader import get
-from logger import error, get_logger, group_end, group_start, info, success, warning
+from logger import error, group_end, group_start, info, success, warning
 from utils import clean_directory
-
-logger = get_logger()
 
 SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")

@@ -2,10 +2,8 @@ import os
 import sys
 import urllib.parse
 
-from logger import error, get_logger, group_end, group_start, info, success
+from logger import error, group_end, group_start, info, success
 from utils import beijing_now
-
-logger = get_logger()
 
 REPO_ROOT = os.getcwd()
 DIR_RULES = os.path.join(REPO_ROOT, "merged-rules")

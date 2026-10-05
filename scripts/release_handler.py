@@ -6,10 +6,8 @@ import sys
 import zipfile
 
 from config_loader import get
-from logger import error, get_logger, group_end, group_start, info, section, success, warning
+from logger import error, group_end, group_start, info, section, success, warning
 from utils import beijing_now, dir_hash, load_last_hash, save_last_hash
-
-logger = get_logger()
 
 REPO_ROOT = os.getcwd()
 TARGET_CONFIG = {

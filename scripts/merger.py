@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from config_loader import get, load_config
-from logger import error, get_logger, group_end, group_start, info, section, success, warning
+from logger import error, group_end, group_start, info, section, success, warning
 from utils import (
     atomic_write_with_header,
     beijing_timestamp,
@@ -12,8 +12,6 @@ from utils import (
     flatten_ip_cidr,
     normalize_path,
 )
-
-logger = get_logger()
 
 CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")

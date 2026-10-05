@@ -8,7 +8,7 @@ from pathlib import Path
 import aiohttp
 import processor
 from config_loader import get
-from logger import debug, get_logger, gh_error, group_end, group_start, info, section, success, warning
+from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     atomic_write,
     beijing_now,
@@ -17,8 +17,6 @@ from utils import (
     normalize_policy,
     normalize_type,
 )
-
-logger = get_logger()
 
 SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
 RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
