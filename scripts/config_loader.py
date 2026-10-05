@@ -118,6 +118,28 @@ def _merge_dict(base, override):
             base[key] = value
 
 
+_PATH_FORBIDDEN_NAMES = {"", ".", "..", "./", "../", "/", "\\"}
+
+
+def _validate_path_value(label, value):
+    text = value.strip()
+    if not text:
+        raise ConfigError(f"{label} 不能为空字符串")
+    if "\0" in value:
+        raise ConfigError(f"{label} 不能包含 NUL 字符")
+    if text.startswith(("/", "\\")):
+        raise ConfigError(f"{label} 必须是相对路径，不能是绝对路径（{value!r}）")
+    if len(text) > 1 and text[1] == ":":
+        raise ConfigError(f"{label} 不能是盘符路径（{value!r}）")
+    normalized = text.replace("\\", "/").strip("/")
+    if normalized in _PATH_FORBIDDEN_NAMES or ".." in normalized.split("/"):
+        raise ConfigError(
+            f"{label} 必须是指向仓库内的子目录/文件，不能是 {value!r}"
+            "（'.'、'..'、绝对路径与盘符会让他处的清理逻辑波及仓库或系统）"
+        )
+    return value
+
+
 def _validate_scalar(section, key, value):
     expected = _TYPES.get((section, key))
     if expected is None:
@@ -131,8 +153,7 @@ def _validate_scalar(section, key, value):
             f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）"
         )
     if expected is not None and expected is str and (section, key) in _PATH_KEYS:
-        if not value.strip():
-            raise ConfigError(f"{section}.{key} 不能为空字符串")
+        _validate_path_value(f"{section}.{key}", value)
     if (section, key) in _POSITIVE_INTS and value <= 0:
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:

@@ -78,27 +78,38 @@ class TestCommandEscaping:
         assert "::error::injected" in out
         assert not any(line.startswith("::error::injected") for line in out.splitlines())
 
-    def test_error_cannot_inject_command(self, monkeypatch, capsys):
+    def test_error_message_stays_readable_and_not_a_command(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
         log.error("ok\r\n::warning::injected")
         out = capsys.readouterr().out
-        assert "%0D%0A::warning::injected" in out
         assert not any(line.startswith("::warning::") for line in out.splitlines())
+        assert log._escape_data("ok\r\n::warning::injected") == "ok%0D%0A::warning::injected"
 
-    def test_info_and_success_escape_newlines(self, monkeypatch, capsys):
+    def test_info_and_success_keep_newlines_unescaped(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
         log.info("a\nb")
         log.success("c\nd")
         out = capsys.readouterr().out
-        assert "a%0Ab" in out
-        assert "c%0Ad" in out
+        assert "a\nb" in out
+        assert "c\nd" in out
+        assert "%0A" not in out
 
-    def test_section_escapes_payload_but_keeps_leading_blank_line(self, monkeypatch, capsys):
+    def test_section_stays_readable(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
-        log.section("标题\n::error::x")
+        log.section("标题\n第二行")
         out = capsys.readouterr().out
         assert out.startswith("\n")
-        assert "标题%0A::error::x" in out
+        assert "标题\n第二行" in out
+        assert "%0A" not in out
+
+    def test_percent_signs_are_not_escaped_in_log_lines(self, monkeypatch, capsys):
+        _reset(monkeypatch, ci=True)
+        log.info("覆盖率 12.0%")
+        log.warning("阈值 50%")
+        out = capsys.readouterr().out
+        assert "12.0%" in out
+        assert "50%" in out
+        assert "%25" not in out
 
 
 class TestConsoleReadability:
@@ -115,12 +126,12 @@ class TestConsoleReadability:
         log.info("进度 50%")
         assert "进度 50%" in capsys.readouterr().out
 
-    def test_ci_console_keeps_escapes(self, monkeypatch, capsys):
+    def test_ci_console_keeps_lines_readable(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
         log.warning("第一行\n第二行")
         out = capsys.readouterr().out
-        assert "第一行%0A第二行" in out
-        assert "第一行\n第二行" not in out
+        assert "第一行\n第二行" in out
+        assert "%0A" not in out
 
 
 class TestLogFile:

@@ -4,10 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import main
-
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = str(REPO / "scripts")

@@ -1,6 +1,5 @@
 import logging
 import logging.handlers
-import os
 import re
 import sys
 from pathlib import Path
@@ -44,7 +43,7 @@ def _render(msg, args):
     text = str(msg)
     if args:
         text = text % args
-    return _escape_data(text)
+    return text
 
 
 class _StripAnsiFilter(logging.Filter):
@@ -116,8 +115,6 @@ def _init_logger():
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter("%(message)s"))
-    if not os.environ.get("GITHUB_ACTIONS"):
-        console.addFilter(_UnescapeFilter())
     _logger.addHandler(console)
 
     _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
@@ -147,14 +144,25 @@ def debug(msg, *args):
     _logger.debug(_render(msg, args))
 
 
+def _defang_command_lines(text):
+    return "\n".join(
+        (" " + line) if line.lstrip().startswith("::") else line
+        for line in text.split("\n")
+    )
+
+
 def warning(msg, *args):
     _init_logger()
-    _logger.warning(f"{Colors.YELLOW}[警告] {_render(msg, args)}{Colors.RESET}")
+    _logger.warning(
+        f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg, args))}{Colors.RESET}"
+    )
 
 
 def error(msg, *args):
     _init_logger()
-    _logger.error(f"{Colors.RED}[错误] {_render(msg, args)}{Colors.RESET}")
+    _logger.error(
+        f"{Colors.RED}[错误] {_defang_command_lines(_render(msg, args))}{Colors.RESET}"
+    )
 
 
 def success(msg, *args):
@@ -183,4 +191,4 @@ def gh_error(msg):
 
 def section(msg):
     _init_logger()
-    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {_escape_data(msg)}{Colors.RESET}")
+    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {msg}{Colors.RESET}")
