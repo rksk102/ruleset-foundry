@@ -47,12 +47,10 @@ def sha256_file(path):
 
 
 def select_kernel_asset(assets, asset_name, pinned_version):
-    """确定性地选择 linux-amd64 内核资产。
+    """选择 linux-amd64 内核资产，返回下载地址或 None。
 
-    1) asset_name 非空：精确匹配；
-    2) 否则在候选 .gz 中排除 go1xx / v1 / v2 / v3 / compatible 变体；
-    3) 再优先文件名形如 mihomo-linux-amd64-<tag>.gz 的默认构建。
-    返回 browser_download_url，找不到返回 None。
+    asset_name 非空时精确匹配；否则排除 go1xx / v1 / v2 / v3 / compatible
+    变体后，优先取 mihomo-linux-amd64-<tag>.gz。
     """
     gz = [a for a in assets if "linux-amd64" in a["name"] and a["name"].endswith(".gz")]
     if asset_name:
@@ -62,7 +60,7 @@ def select_kernel_asset(assets, asset_name, pinned_version):
         return None
 
     def is_variant(name):
-        base = name[:-3]  # 去 .gz
+        base = name[:-3]
         return (
             any(k in base for k in ("-go1", "-go2", "compatible"))
             or "-v1-" in base or "-v2-" in base or "-v3-" in base
@@ -94,7 +92,6 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF"):
 
 
 def _fetch_latest_release_info(headers, max_retries=3):
-    """获取 release 信息，带重试。"""
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -110,7 +107,7 @@ def _fetch_latest_release_info(headers, max_retries=3):
 
 
 def _download_kernel(download_url, headers, max_retries=3):
-    """下载内核到 KERNEL_BIN（覆盖旧文件），带重试。失败时清理残留。"""
+    """下载内核到 KERNEL_BIN，失败时清理残留。"""
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -143,7 +140,7 @@ def _download_kernel(download_url, headers, max_retries=3):
 
 
 def _verify_kernel():
-    """验证内核可运行，返回版本输出字符串；不可用返回 None。"""
+    """内核可运行时返回版本输出，否则 None。"""
     try:
         ver_out = subprocess.check_output([KERNEL_BIN, "-v"], text=True, timeout=10)
         return ver_out.strip()

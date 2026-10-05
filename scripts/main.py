@@ -36,7 +36,7 @@ def build_filepath(task):
 
 
 def plan_groups(tasks):
-    """按输出绝对路径分组。同路径多源将在清洗前合并，避免静默覆盖。"""
+    """按输出绝对路径分组，同路径多源合并清洗，避免静默覆盖。"""
     groups = {}
     for idx, task in enumerate(tasks):
         _, _, _, abs_path = build_filepath(task)
@@ -61,10 +61,9 @@ def plan_groups(tasks):
 
 
 def process_group(group, raw_by_index):
-    """合并组内所有成员的原始规则行后统一清洗写出。
+    """合并组内成员原始行后统一清洗写出，返回 (规则数|None, 错误分组)。
 
-    返回 (规则数|None, {"download": [(url,原因)], "parse": [(url,原因)]})。
-    下载失败与解析失败分开上报，避免严格模式把两者混为一谈。
+    下载与解析失败分开上报，避免严格模式把两者混为一谈。
     """
     all_lines = []
     errors = {"download": [], "parse": []}
@@ -154,7 +153,7 @@ def parse_sources():
 
 
 async def read_capped(stream):
-    """流式读取响应体，超过 MAX_SOURCE_BYTES 时返回 None。"""
+    """流式读取；超过 MAX_SOURCE_BYTES 返回 None。"""
     chunks = []
     total = 0
     async for chunk in stream.iter_chunked(65536):

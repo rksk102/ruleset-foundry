@@ -43,10 +43,7 @@ class _BeijingFormatter(logging.Formatter):
 
 
 def _resolve_log_file():
-    """延迟解析日志目录与文件路径，避免模块导入时即创建目录。
-
-    优先从 config_loader 读取 paths.log_dir，缺失时回退到 "logs"。
-    """
+    """延迟解析日志文件路径，优先读取 config 的 paths.log_dir。"""
     global _LOG_FILE
     if _LOG_FILE is not None:
         return _LOG_FILE
@@ -65,7 +62,6 @@ def _resolve_log_file():
 
 
 def _cleanup_old_logs():
-    """保留最近 LOG_KEEP_COUNT 个日志文件，删除更早的。"""
     try:
         log_file = _resolve_log_file()
         log_dir = log_file.parent

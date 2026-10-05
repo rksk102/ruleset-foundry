@@ -130,7 +130,6 @@ def auto_discover_files(source_dir=None):
 
 
 def load_domains_from_file(filepath):
-    """从规则文件中加载域名集合（跳过注释和空行）。"""
     domains = set()
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
@@ -155,12 +154,10 @@ def resolve_conflict_action(conflict_policy, has_conflicts):
 
 
 def detect_cross_policy_conflicts(merged_dir):
-    """检测跨策略的域名冲突，包括显式冲突和隐式冲突。
+    """检测跨策略域名冲突，返回 (显式冲突, 隐式冲突)。
 
-    显式冲突：同一域名同时出现在多个策略中。
-    隐式冲突：一个策略中的父域名覆盖另一个策略中的子域名
-    （如 google.com 在 policy 中，adservice.google.com 在 block 中，
-    suffix 匹配下 google.com 会覆盖 adservice.google.com）。
+    显式：同一域名出现在多个策略；隐式：某策略的父域名在 suffix 匹配下
+    覆盖另一策略的子域名。ipcidr 目录不参与。
     """
     policy_domains = {}
 
@@ -181,7 +178,6 @@ def detect_cross_policy_conflicts(merged_dir):
     if len(policy_domains) < 2:
         return {}, {}
 
-    # 显式冲突：同一域名出现在多个策略中
     strategies = sorted(policy_domains.keys())
     explicit_conflicts = {}
     for i, s1 in enumerate(strategies):
@@ -190,8 +186,6 @@ def detect_cross_policy_conflicts(merged_dir):
             if overlap:
                 explicit_conflicts[f"{s1} ↔ {s2}"] = sorted(overlap)
 
-    # 隐式冲突：一个策略的父域名覆盖另一个策略的子域名
-    # 为每个策略构建 Trie
     tries = {}
     for strategy, domains in policy_domains.items():
         trie = DomainTrie()
@@ -305,7 +299,6 @@ def main():
         for r in summary_rows:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
-    # 跨策略冲突检测
     explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
 
     conflict_policy = get("behavior", "conflict_policy", default="warn")

@@ -157,7 +157,7 @@ def make_page_header(badge_time=None):
 def make_static_sections():
     """生成与产物无关的静态运维说明。
 
-    必须由生成器输出：README.md 每次都被整体重写，手写追加的尾部会被覆盖。
+    README 每次整体重写，手写追加的尾部会被覆盖，故必须由此处输出。
     """
     return """
 ## 内核版本升级流程（维护者）

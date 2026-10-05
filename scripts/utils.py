@@ -22,11 +22,9 @@ _IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
 
 
 def flatten_ip_cidr(entries, strict=False, extract=False):
-    """解析并合并 CIDR，丢弃默认路由（/0），返回 (列表, 错误列表)。
+    """解析并合并 CIDR，返回 (列表, 错误列表)。
 
-    extract=True 时按行内首个 IP/CIDR 子串解析（规则文本行），否则整串解析；
-    提取规则与历史 process_ip 一致："1.2.3.0/24 # 注释" 可用，
-    但 "IP-CIDR,1.2.3.0/24" 中的 C 会先被匹配而失败。
+    丢弃默认路由（/0）；extract=True 按行内子串提取，否则整串解析；
     输出为 v4 块 + v6 块，块内字典序。
     """
     ipv4_nets = []
@@ -115,12 +113,10 @@ def _hash_file_body(path):
 
 
 def dir_hash(dirpath, pattern="*", skip_comments=False):
-    """计算目录下所有文件的聚合 SHA256。
+    """计算目录下所有文件的聚合 SHA256，返回 (hash_hex, file_count)。
 
-    返回 (hash_hex, file_count)。空目录或不存在时返回 ("", 0)，
-    以便调用方据此跳过 Release（避免对空内容发布"无变化"误判）。
-
-    skip_comments=True 时按规则正文哈希（忽略 # Date: 等易变元数据行）。
+    空目录或不存在时返回 ("", 0)，供调用方跳过发布；
+    skip_comments=True 忽略 # Date: 等易变元数据行。
     """
     p = Path(dirpath)
     if not p.exists():
@@ -143,8 +139,7 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
 def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs"):
     """产物聚合哈希，返回 (hash, txt_count, mrs_count)。
 
-    .txt 按正文哈希（忽略元数据行），.mrs 整文件哈希；
-    与 release_handler 的变更检测口径一致，供徽章门控等场景复用。
+    与 release_handler 变更检测同口径：.txt 按正文哈希，.mrs 整文件哈希。
     """
     h1, c1 = dir_hash(txt_dir, "*.txt", skip_comments=True)
     h2, c2 = dir_hash(mrs_dir, "*.mrs")
@@ -182,8 +177,7 @@ def normalize_type(t):
 
 def get_owner_from_url(url):
     parts = url.split("/")
-    # 标准格式: https://domain/owner/repo/...
-    # parts[0]="https:", parts[1]="", parts[2]="domain", parts[3]="owner"...
+    # 标准格式 https://域名/owner/repo/...：parts[2] 为域名，parts[3] 起为 owner
     if len(parts) < 3:
         return "unknown"
 
@@ -208,8 +202,7 @@ def normalize_path(p):
 class DomainTrie:
     """倒序标签 Trie，用于父子域名关系判定。
 
-    标签遍历顺序与 mihomo ValidAndSplitDomain 一致，因此"父域名覆盖子域名"
-    的判定与 behavior:domain 下 DOMAIN-SUFFIX 的匹配语义相同。
+    遍历顺序与 mihomo ValidAndSplitDomain 一致，判定语义等同 DOMAIN-SUFFIX。
     """
 
     _MARK = object()
@@ -249,10 +242,7 @@ class DomainTrie:
 
 
 def dedup_domain_suffix(domains):
-    """同策略内父子域名去重，返回 (去重后的排序域名列表, 被移除的数量)。
-
-    父域名已覆盖其全部子域名，故子域名规则冗余、可安全移除。
-    """
+    """同策略内父子域名去重，返回 (排序后的域名列表, 被移除的数量)。"""
     if not domains:
         return [], 0
 

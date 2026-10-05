@@ -7,5 +7,3 @@ line-length = 120
 select = ["E4", "E9", "F", "W", "I"]
 ignore = ["E501"]
 
-[lint.per-file-ignores]
-"tests/**" = ["E402"]   # conftest 需在 sys.path 注入后导入
