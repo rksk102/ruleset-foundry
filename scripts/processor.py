@@ -145,9 +145,10 @@ def parse_lines(raw_content):
     return lines
 
 
-def _analyze_and_process_domain(lines):
+def _analyze_and_process_domain(lines, domain_kind="exact"):
     valid_domains = set()
     stats = new_stats()
+    stats["suffix_promoted"] = 0
     ip_check = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 
     prefix_rules = (
@@ -204,6 +205,8 @@ def _analyze_and_process_domain(lines):
                 stats["wildcard"] += 1
                 valid_domains.add(s.lower())
                 continue
+        if domain_kind == 'suffix' and semantic is None and s.startswith('+.'):
+            semantic = 'suffix'
         if s.startswith('+.'):
             semantic = 'suffix'
             s = s[2:]
@@ -236,6 +239,10 @@ def _analyze_and_process_domain(lines):
             if valid and semantic == 'subdomain':
                 stats["subdomain"] += 1
                 valid_domains.add('.' + s)
+                continue
+            if valid and semantic is None and domain_kind == 'suffix':
+                stats["suffix_promoted"] += 1
+                valid_domains.add('+.' + s)
                 continue
             if valid:
                 stats["bare_single_label"] += 1
@@ -273,6 +280,9 @@ def _analyze_and_process_domain(lines):
         elif semantic == 'subdomain':
             stats["subdomain"] += 1
             valid_domains.add('.' + s)
+        elif semantic is None and domain_kind == 'suffix':
+            stats["suffix_promoted"] += 1
+            valid_domains.add('+.' + s)
         else:
             stats["relaxed_exact"] += 1
             valid_domains.add(s)
@@ -280,16 +290,16 @@ def _analyze_and_process_domain(lines):
     return sorted(valid_domains), stats
 
 
-def process_domain_detailed(lines):
-    return _analyze_and_process_domain(lines)
+def process_domain_detailed(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)
 
 
-def analyze_domain(lines):
-    return _analyze_and_process_domain(lines)[1]
+def analyze_domain(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)[1]
 
 
-def process_domain(lines):
-    return _analyze_and_process_domain(lines)[0]
+def process_domain(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)[0]
 
 
 def process_ip(lines):

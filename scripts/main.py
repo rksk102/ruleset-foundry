@@ -157,11 +157,16 @@ def plan_groups(tasks):
             "path": key,
             "policy": task["policy"],
             "type": task["type"],
+            "domain_kind": task.get("domain_kind", "exact"),
             "members": [],
             "sources": [],
         })
         group["members"].append((idx, task))
         group["sources"].append(task["url"])
+        if task.get("domain_kind") != group["domain_kind"]:
+            group["domain_kind"] = "mixed"
+        elif task.get("domain_kind") == "suffix":
+            group["domain_kind"] = "suffix"
 
     conflicts = []
     for key, group in groups.items():
@@ -236,7 +241,19 @@ def process_group(group, raw_by_index):
     if group["type"] == "ipcidr":
         result, _special = _process_ip_group(all_lines)
     else:
-        result, special = processor.process_domain_detailed(all_lines)
+        effective_kind = group.get("domain_kind", "exact")
+        if effective_kind == "mixed":
+            promoted = sum(
+                1 for _i, t in group["members"] if t.get("domain_kind") == "suffix"
+            )
+            warning(
+                f"    同一输出混用精确/后缀语义源（后缀源 {promoted}/"
+                f"{len(group['members'])}），按精确语义处理: {group['path']}"
+            )
+            effective_kind = "exact"
+        result, special = processor.process_domain_detailed(all_lines, effective_kind)
+        if special.get("suffix_promoted"):
+            info(f"    后缀语义源: 提升 {special['suffix_promoted']} 条裸域名为 '+.' 形式")
         for key, label in (
             ("suffix", "后缀规则(+./domain:)已保留 +. 前缀"),
             ("relaxed_exact", "精确规则(full:/host:/裸域名)按精确匹配输出"),
@@ -288,6 +305,7 @@ def parse_sources():
     tasks = []
     current_policy = "policy"
     current_type = "domain"
+    current_domain_kind = "exact"
 
     if not os.path.exists(SOURCES_FILE):
         gh_error(f"文件 {SOURCES_FILE} 未找到！")
@@ -311,11 +329,17 @@ def parse_sources():
             current_type = normalize_type(m_type.group(1))
             continue
 
+        m_kind = re.match(r"^\[domain-kind:(exact|suffix)\]$", line, re.IGNORECASE)
+        if m_kind:
+            current_domain_kind = m_kind.group(1).lower()
+            continue
+
         url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
             tasks.append({
                 "policy": current_policy,
                 "type": current_type,
+                "domain_kind": current_domain_kind,
                 "url": url_match.group(0),
             })
 

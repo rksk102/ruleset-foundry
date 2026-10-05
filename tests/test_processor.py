@@ -3,6 +3,60 @@ import base64
 import processor
 
 
+class TestDomainKind:
+    def test_default_is_exact(self):
+        assert processor.process_domain(["example.com"]) == ["example.com"]
+
+    def test_suffix_kind_promotes_bare_domain(self):
+        assert processor.process_domain(["example.com"], "suffix") == ["+.example.com"]
+
+    def test_suffix_kind_promotes_multi_label_and_single_label(self):
+        assert processor.process_domain(["ads.example.com", "local"], "suffix") == [
+            "+.ads.example.com",
+            "+.local",
+        ]
+
+    def test_suffix_kind_keeps_full_prefix_exact(self):
+        assert processor.process_domain(["full:api.example.com"], "suffix") == ["api.example.com"]
+
+    def test_suffix_kind_keeps_explicit_suffix_unchanged(self):
+        assert processor.process_domain(["domain:example.com"], "suffix") == ["+.example.com"]
+
+    def test_suffix_kind_preserves_wildcard_and_subdomain_forms(self):
+        result = processor.process_domain(["*.example.com", ".sub.example.com"], "suffix")
+        assert result == ["*.example.com", ".sub.example.com"]
+
+    def test_suffix_kind_does_not_promote_explicit_full(self):
+        assert processor.process_domain(["full:api.example.com"], "suffix") == ["api.example.com"]
+
+    def test_suffix_kind_promotes_unmarked_only(self):
+        result, stats = processor.process_domain_detailed(
+            ["a.com", "full:b.com", "host:c.com", "domain:d.com"], "suffix"
+        )
+        assert stats["suffix_promoted"] == 1
+        assert stats["relaxed_exact"] == 2
+        assert stats["suffix"] == 1
+
+    def test_suffix_kind_counts_promotions(self):
+        _result, stats = processor.process_domain_detailed(
+            ["a.com", "b.com", "full:c.com"], "suffix"
+        )
+        assert stats["suffix_promoted"] == 2
+        assert stats["relaxed_exact"] == 1
+
+    def test_exact_kind_counts_no_promotions(self):
+        _result, stats = processor.process_domain_detailed(["a.com"], "exact")
+        assert stats["suffix_promoted"] == 0
+        assert stats["relaxed_exact"] == 1
+
+    def test_suffix_promotion_does_not_drop_entries(self):
+        lines = ["a.com", "b.example.com", "full:c.net", "*.d.org", ".e.io", "f"]
+        exact = set(processor.process_domain(lines, "exact"))
+        suffixed = set(processor.process_domain(lines, "suffix"))
+        assert len(exact) == len(suffixed)
+        assert {x.lstrip("+.") for x in suffixed} == {x.lstrip("+.") for x in exact}
+
+
 class TestDomainCleaning:
     def clean(self, lines):
         return processor.process_domain(lines)
