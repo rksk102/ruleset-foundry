@@ -276,6 +276,9 @@ def process_group(group, raw_by_index):
             errors["parse"].append((task["url"], f"解析失败: {e}"))
 
     if not all_lines:
+        for _idx, task in group["members"]:
+            if raw_by_index.get(_idx) is not None:
+                errors["parse"].append((task["url"], "未解析出任何行（疑似空规则集或格式变更）"))
         return None, errors
 
     if group["type"] == "ipcidr":
@@ -372,9 +375,16 @@ def parse_sources():
                 safe_marker_value(m_type.group(1).strip(), "type"))
             continue
 
-        m_kind = re.match(r"^\[domain-kind:(exact|suffix)\]$", line, re.IGNORECASE)
+        m_kind = re.match(r"^\[domain-kind:(.*)\]$", line)
         if m_kind:
-            current_domain_kind = m_kind.group(1).lower()
+            value = m_kind.group(1).strip().lower()
+            if value not in ("exact", "suffix"):
+                gh_error(
+                    f"非法 [domain-kind:] 标记: {m_kind.group(1)!r}"
+                    "（仅允许 exact | suffix，且标记必须独占一行）"
+                )
+                sys.exit(1)
+            current_domain_kind = value
             continue
 
         url_match = re.search(r"https?://[^\s#]+", line)
