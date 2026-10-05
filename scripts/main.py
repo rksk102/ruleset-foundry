@@ -85,8 +85,7 @@ def process_group(group, raw_by_index):
     if group["type"] == "ipcidr":
         result = processor.process_ip(all_lines)
     else:
-        result = processor.process_domain(all_lines)
-        special = processor.analyze_domain(all_lines)
+        result, special = processor.process_domain_detailed(all_lines)
         for key, label in (
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),

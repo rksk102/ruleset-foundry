@@ -147,6 +147,11 @@ def _analyze_and_process_domain(lines):
     return sorted(valid_domains), stats
 
 
+def process_domain_detailed(lines):
+    """单遍清洗，返回 (结果列表, 特殊行统计)。"""
+    return _analyze_and_process_domain(lines)
+
+
 def analyze_domain(lines):
     """统计特殊行（用于可观测性告警），不改变清洗结果。"""
     return _analyze_and_process_domain(lines)[1]
