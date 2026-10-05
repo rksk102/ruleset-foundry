@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -272,11 +273,103 @@ def write_summary(stats, total_time):
         f.write("\n".join(markdown))
 
 
+def _set_config_field(text, key, value):
+    new_text, count = re.subn(rf'(\b{key}:)\s*"[^"]*"', rf'\1 "{value}"', text, flags=re.M)
+    if count != 1:
+        error(f"  config.yaml 中 {key} 命中 {count} 次，拒绝写入")
+        sys.exit(1)
+    return new_text
+
+
+def _smoke_convert():
+    """用新内核跑一次最小转换，确认 convert-ruleset 可用。"""
+    if not sys.platform.startswith("linux"):
+        warning("  非 Linux 平台，跳过转换冒烟验证")
+        return
+
+    src = KERNEL_CACHE_DIR / "smoke-input.txt"
+    dst = KERNEL_CACHE_DIR / "smoke-output.mrs"
+    src.write_text("smoke-test.com\nexample.org\n", encoding="utf-8")
+    produced = False
+    try:
+        subprocess.run(
+            [KERNEL_BIN, "convert-ruleset", "domain", "text", str(src), str(dst)],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        produced = dst.exists() and dst.stat().st_size > 0
+    except subprocess.CalledProcessError as e:
+        error(f"  内核冒烟转换失败: {(e.stderr or '').strip()}")
+        sys.exit(1)
+    finally:
+        for path in (src, dst):
+            if path.exists():
+                path.unlink()
+
+    if not produced:
+        error("  内核冒烟转换未产出有效文件")
+        sys.exit(1)
+
+
+def bump_config():
+    """检查最新正式版并更新 config.yaml 的钉扎三字段，供 kernel-bump 工作流调用。"""
+    headers = {}
+    if "GH_TOKEN" in os.environ:
+        headers["Authorization"] = f"Bearer {os.environ['GH_TOKEN']}"
+
+    data = _fetch_latest_release_info(headers)
+    tag = data["tag_name"]
+
+    cfg_path = Path("config.yaml")
+    text = cfg_path.read_text(encoding="utf-8")
+    current = re.search(r'pinned_version:\s*"([^"]*)"', text)
+    if current and current.group(1) == tag:
+        info(f"  已是最新正式版 {tag}，无需更新")
+        return
+
+    download_url = select_kernel_asset(data["assets"], "", tag)
+    if not download_url:
+        error(f"  未找到期望资产 mihomo-linux-amd64-{tag}.gz")
+        sys.exit(1)
+
+    asset_name = download_url.rsplit("/", 1)[-1]
+    info(f"  下载并校验 {tag} ...")
+    KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _download_kernel(download_url, headers)
+
+    try:
+        verify_kernel_file(KERNEL_BIN, "")
+    except ValueError as e:
+        error(f"  内核结构校验失败: {e}")
+        sys.exit(1)
+
+    sha = sha256_file(KERNEL_BIN)
+    ver_out = _verify_kernel()
+    if not ver_out or "Mihomo" not in ver_out:
+        error("  内核无法运行，拒绝写入配置")
+        sys.exit(1)
+    _smoke_convert()
+
+    text = _set_config_field(text, "pinned_version", tag)
+    text = _set_config_field(text, "asset_name", asset_name)
+    text = _set_config_field(text, "kernel_sha256", sha)
+    cfg_path.write_text(text, encoding="utf-8")
+    info(f"  已更新 config.yaml: {asset_name} ({sha[:12]}...)")
+
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(f"changed=true\ntag={tag}\n")
+
+
 def main():
     if "--print-kernel-hash" in sys.argv:
         # 跳过哈希强校验，否则旧哈希未清时打印不出新值
         get_latest_mihomo(skip_hash_check=True)
         print(sha256_file(KERNEL_BIN))
+        return
+
+    if "--bump-config" in sys.argv:
+        bump_config()
         return
 
     start_time = time.time()

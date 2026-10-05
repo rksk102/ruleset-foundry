@@ -1,0 +1,35 @@
+name: "Mihomo 内核自动升级"
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kernel-bump-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    name: "检查并升级内核钉扎"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 检查并升级内核钉扎
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/convert_mrs.py --bump-config
+      - name: 提交并推送
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config.yaml
+          git commit -m "chore: mihomo 内核升级到 ${{ steps.bump.outputs.tag }}"
+          git pull --rebase origin ${{ github.ref_name }}
+          git push
