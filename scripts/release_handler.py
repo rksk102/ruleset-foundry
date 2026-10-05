@@ -5,6 +5,7 @@ import subprocess
 import sys
 import zipfile
 
+import manifest
 from config_loader import get
 from logger import error, group_end, group_start, info, section, success, warning
 from utils import beijing_now, combined_products_hash, load_last_hash, save_last_hash
@@ -16,6 +17,102 @@ TARGET_CONFIG = {
 }
 KEEP_DAYS = get("behavior", "release_keep_days", default=3)
 CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
+RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
+MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
+MRS_DIR = get("paths", "mrs_output_dir", default="merged-rules-mrs")
+MANIFEST_NAME = "products.manifest"
+BASELINE_MISSING = "清单基线缺失"
+
+
+def product_dirs():
+    txt_dir = next((d for d, ext in TARGET_CONFIG.items() if ext == ".txt"), MERGED_DIR)
+    mrs_dir = next((d for d, ext in TARGET_CONFIG.items() if ext == ".mrs"), MRS_DIR)
+    return txt_dir, mrs_dir
+
+
+def baseline_files():
+    return (
+        os.path.join(RULESETS_DIR, MANIFEST_NAME),
+        os.path.join(MERGED_DIR, MANIFEST_NAME),
+    )
+
+
+def baseline_required():
+    """同步产物目录存在 = 同轮流水线工作区，此时清单基线必须存在。"""
+    return os.path.isdir(RULESETS_DIR)
+
+
+def merge_product_entries(merge_tasks=None):
+    tasks = get("merges") if merge_tasks is None else merge_tasks
+    entries = set()
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        parts = [task.get(key) for key in ("strategy", "type", "owner", "filename")]
+        if all(isinstance(part, str) and part.strip() for part in parts):
+            entries.add("/".join(part.strip().strip("/").replace("\\", "/") for part in parts))
+    return entries
+
+
+def load_baseline(baseline_paths=None):
+    for path in baseline_paths or baseline_files():
+        entries = manifest.load_manifest(path)
+        if entries:
+            expected = sorted(set(entries) | merge_product_entries())
+            info(f"  清单基线 {path}: {len(entries)} 项，含合并产物共 {len(expected)} 项")
+            return expected
+    return None
+
+
+def check_expected(expected, actual, context):
+    missing, extra = manifest.diff_against(expected, actual)
+    for item in missing[:5]:
+        error(f"    缺失: {item}")
+    for item in extra[:5]:
+        error(f"    多出: {item}")
+    return manifest.verify_matches(expected, actual, context)
+
+
+def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
+    default_txt, default_mrs = product_dirs()
+    txt_dir = txt_dir or default_txt
+    mrs_dir = mrs_dir or default_mrs
+    if require_baseline is None:
+        require_baseline = baseline_required()
+
+    baseline = load_baseline()
+    txt_files = sorted(manifest.collect_files(txt_dir, ".txt"))
+    mrs_files = sorted(manifest.collect_files(mrs_dir, ".mrs"))
+
+    if baseline is None:
+        if require_baseline:
+            raise manifest.ManifestError(
+                f"{BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空"
+                f"（已检查 {' / '.join(baseline_files())}）"
+            )
+        warning(f"  {BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空，跳过绝对基准校验")
+    else:
+        check_expected(baseline, txt_files, f"{txt_dir} 绝对基准校验")
+
+    check_expected(
+        [path[: -len(".txt")] for path in txt_files],
+        [path[: -len(".mrs")] for path in mrs_files],
+        f"{txt_dir} 与 {mrs_dir} 产物逐一对应校验",
+    )
+    return len(baseline) if baseline else None
+
+
+def enforce_products(txt_dir=None, mrs_dir=None):
+    """main() 里不能直接引用 manifest 模块（zip 清单会遮蔽该名字）。"""
+    try:
+        verified = verify_products(txt_dir, mrs_dir)
+    except manifest.ManifestError as e:
+        error(f"  {e}")
+        group_end()
+        sys.exit(1)
+    if verified is not None:
+        info(f"  产物校验通过（{verified} 项）")
+    return verified
 
 
 def run_gh(cmd_list, fail_fast=False):
@@ -155,6 +252,9 @@ def main():
     if CHANGE_DETECTION:
         section("内容变更检测")
         combined_hash, c1, c2 = combined_products_hash()
+
+        txt_dir, mrs_dir = product_dirs()
+        enforce_products(txt_dir, mrs_dir)
 
         if c1 != c2:
             error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
