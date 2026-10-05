@@ -1,6 +1,5 @@
-import pytest
-
 import manifest
+import pytest
 
 
 class TestSaveLoad:

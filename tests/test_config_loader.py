@@ -1,8 +1,7 @@
 import os
 
-import pytest
-
 import config_loader
+import pytest
 
 
 def use_config(work_dir, content=None):

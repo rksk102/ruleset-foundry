@@ -3,10 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import config_loader
-
+import pytest
 
 SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
 
