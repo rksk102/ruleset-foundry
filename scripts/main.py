@@ -22,6 +22,7 @@ SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
 RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
 TIMEOUT = get("network", "timeout_seconds", default=15)
 RETRIES = get("network", "max_retries", default=2)
+MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
 STRICT_MODE = get("behavior", "strict_mode", default=False)
 
 
@@ -155,6 +156,18 @@ def parse_sources():
     return tasks
 
 
+async def read_capped(stream):
+    """流式读取响应体，超过 MAX_SOURCE_BYTES 时返回 None。"""
+    chunks = []
+    total = 0
+    async for chunk in stream.iter_chunked(65536):
+        total += len(chunk)
+        if total > MAX_SOURCE_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def download_one(session, task):
     url = task["url"]
 
@@ -164,7 +177,10 @@ async def download_one(session, task):
                 url, timeout=aiohttp.ClientTimeout(total=TIMEOUT),
             ) as resp:
                 if resp.status == 200:
-                    content = await resp.read()
+                    content = await read_capped(resp.content)
+                    if content is None:
+                        warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {url}")
+                        return (task, None, f"超过 {MAX_SOURCE_BYTES} 字节上限")
                     if not content:
                         warning(f"  空响应: {url}")
                         return (task, None, "空响应")

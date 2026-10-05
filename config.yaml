@@ -1,6 +1,8 @@
 network:
   timeout_seconds: 15
   max_retries: 2
+  # 单个源响应上限，超限按下载失败处理
+  max_source_bytes: 67108864
 
 paths:
   sources_file: "sources.urls"
