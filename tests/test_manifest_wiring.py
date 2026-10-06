@@ -72,7 +72,7 @@ class GhStub:
         if cmd[:2] == ["release", "list"]:
             return "[]"
         if cmd[:2] == ["release", "view"]:
-            return None
+            return "2" if "assets" in cmd else None
         return "ok"
 
     def actions(self):

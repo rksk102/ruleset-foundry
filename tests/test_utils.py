@@ -464,7 +464,7 @@ class TestDedupDomainSuffix:
         assert kept == ["+.google.com"]
         assert removed == 1
 
-    def test_duplicates_dropped(self):
+    def test_single_exact_entry_kept(self):
         kept, removed = utils.dedup_domain_suffix({"google.com"})
         assert kept == ["google.com"]
         assert removed == 0

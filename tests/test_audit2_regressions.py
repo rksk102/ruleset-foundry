@@ -153,6 +153,39 @@ class TestReleaseHandler:
         assert exc.value.code == 1
         assert "没有任何资产" in caplog.text
 
+    def test_unconfirmed_asset_count_is_a_failure(self, monkeypatch, caplog):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=None)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert "无法确认" in caplog.text
+        assert saved == [], "无法确认资产数时不得保存哈希"
+
+    def test_asset_query_is_retried_before_succeeding(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        attempts = []
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=None)
+
+        def flaky(tag):
+            attempts.append(tag)
+            return None if len(attempts) == 1 else 2
+
+        monkeypatch.setattr(release_handler, "release_asset_count", flaky)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        release_handler.main()
+
+        assert len(attempts) == 2, "首次查询失败应重试"
+        assert saved == ["new-hash"]
+
     def test_release_asset_count_parses_gh_output(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd, fail_fast=False: "3")
         assert release_handler.release_asset_count("rules-2026-10-06") == 3

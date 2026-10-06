@@ -277,7 +277,7 @@ class TestNoSilentDrop:
         _out, stats = processor.process_domain_detailed([""])
         assert stats["unrecognized"] == 0
 
-class TestDetailedParity:
+class TestMixedBatch:
     MIXED = (
         "@@exception.com",
         "keyword:kw",
@@ -286,12 +286,13 @@ class TestDetailedParity:
         "normal.com",
     )
 
-    def test_detailed_matches_legacy_wrappers(self):
-        expected_result = domains(self.MIXED)
-        expected_stats = detailed_stats(self.MIXED)
+    def test_mixed_batch_result_and_stats(self):
         result, stats = processor.process_domain_detailed(self.MIXED)
-        assert result == expected_result
-        assert stats == expected_stats
+        assert result == ["anchor.com", "exact.com", "normal.com"]
+        assert stats["relaxed_exact"] == 3
+        assert stats["dropped_exception"] == 1
+        assert stats["dropped_keyword"] == 1
+        assert stats["dropped_exception"] + stats["dropped_keyword"] == len(self.MIXED) - len(result)
 
 
 class TestParseLines:

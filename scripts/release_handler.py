@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import zipfile
 
 import manifest
@@ -23,6 +24,8 @@ CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
 MANIFEST_NAME = "products.manifest"
 BASELINE_MISSING = "清单基线缺失"
 GH_TIMEOUT = 120
+ASSET_CONFIRM_ATTEMPTS = 3
+ASSET_CONFIRM_DELAY = 3
 
 
 def release_asset_count(release_tag):
@@ -31,6 +34,16 @@ def release_asset_count(release_tag):
     if raw is None or not raw.strip().isdigit():
         return None
     return int(raw)
+
+
+def confirm_release_assets(release_tag):
+    for attempt in range(ASSET_CONFIRM_ATTEMPTS):
+        count = release_asset_count(release_tag)
+        if count is not None:
+            return count
+        if attempt + 1 < ASSET_CONFIRM_ATTEMPTS:
+            time.sleep(ASSET_CONFIRM_DELAY)
+    return None
 
 
 def product_dirs():
@@ -186,8 +199,9 @@ def zip_target_files(tag_date):
 
 
 def generate_release_notes(tag_date, tag_time, file_map):
-    txt_count = len(file_map.get("merged-rules", []))
-    mrs_count = len(file_map.get("merged-rules-mrs", []))
+    txt_dir, mrs_dir = product_dirs()
+    txt_count = len(file_map.get(txt_dir, []))
+    mrs_count = len(file_map.get(mrs_dir, []))
     total_count = txt_count + mrs_count
 
     details_md = ""
@@ -215,8 +229,8 @@ def generate_release_notes(tag_date, tag_time, file_map):
 
 | 规则类型 | 来源目录 | 文件数量 | 格式 |
 | :--- | :--- | :---: | :---: |
-| 文本规则 | `merged-rules` | **{txt_count}** | `.txt` |
-| MRS 规则 | `merged-rules-mrs` | **{mrs_count}** | `.mrs` |
+| 文本规则 | `{txt_dir}` | **{txt_count}** | `.txt` |
+| MRS 规则 | `{mrs_dir}` | **{mrs_count}** | `.mrs` |
 | **总计** | - | **{total_count}** | - |
 
 <details>
@@ -295,16 +309,18 @@ def main():
             os.unlink(zip_file)
         sys.exit(1)
 
-    asset_count = release_asset_count(release_tag)
+    asset_count = confirm_release_assets(release_tag)
     if asset_count is None:
-        warning(f"  无法确认 Release {release_tag} 的资产数（gh 调用失败）")
-    elif asset_count == 0:
+        error(f"  Release {release_tag} 的资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
+        if os.path.exists(zip_file):
+            os.unlink(zip_file)
+        sys.exit(1)
+    if asset_count == 0:
         error(f"  Release {release_tag} 发布后没有任何资产（--clobber 会先删后传），判定失败")
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)
-    else:
-        info(f"  已确认 Release 资产数: {asset_count}")
+    info(f"  已确认 Release 资产数: {asset_count}")
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)
@@ -349,8 +365,9 @@ def main():
             f.write("\n### 发布报告\n\n")
             f.write("| 项目 | 值 |\n| :--- | :--- |\n")
             f.write(f"| 发布标签 | `{release_tag}` |\n")
-            f.write(f"| 文本规则 | **{len(file_map.get('merged-rules', []))}** |\n")
-            f.write(f"| MRS 规则 | **{len(file_map.get('merged-rules-mrs', []))}** |\n")
+            summary_txt, summary_mrs = product_dirs()
+            f.write(f"| 文本规则 | **{len(file_map.get(summary_txt, []))}** |\n")
+            f.write(f"| MRS 规则 | **{len(file_map.get(summary_mrs, []))}** |\n")
 
 
 if __name__ == "__main__":

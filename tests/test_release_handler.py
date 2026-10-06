@@ -18,10 +18,11 @@ VIEW_FOUND = json.dumps({"tagName": "rules-x"})
 class GhStub:
     """按子命令返回合理默认值：release list 必须是可解析的 JSON。"""
 
-    def __init__(self, fail_when=None, responses=None):
+    def __init__(self, fail_when=None, responses=None, asset_count="3"):
         self.calls = []
         self.fail_when = fail_when or (lambda cmd: False)
         self.responses = responses or {}
+        self.asset_count = asset_count
 
     def __call__(self, cmd, fail_fast=False):
         self.calls.append(list(cmd))
@@ -33,6 +34,8 @@ class GhStub:
         if key == ("release", "list"):
             return EMPTY_LISTING
         if key == ("release", "view"):
+            if "assets" in cmd:
+                return self.asset_count
             return VIEW_FOUND
         return "ok"
 
@@ -107,14 +110,23 @@ class TestGenerateReleaseNotes:
         assert "merged-rules/a0.txt" in out
         assert "merged-rules/a1.txt" in out
 
+    def test_counts_follow_configured_dirs(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "MERGED_DIR", "txt-out")
+        monkeypatch.setattr(release_handler, "MRS_DIR", "mrs-out")
+        out = release_handler.generate_release_notes(
+            "2026-10-05", "06:12:00",
+            {"txt-out": ["txt-out/a.txt"], "mrs-out": ["mrs-out/b.mrs"]})
+        assert "| 文本规则 | `txt-out` | **1** |" in out
+        assert "| MRS 规则 | `mrs-out` | **1** |" in out
+        assert "**2**" in out
+
     def test_empty_manifest_does_not_crash(self):
         out = release_handler.generate_release_notes("2026-10-05", "00:00:00",
                                                      {"merged-rules": [], "merged-rules-mrs": []})
         assert isinstance(out, str) and out
 
 
-def posix(paths):
-    """zip_target_files 用 os.path.relpath，Windows 上产出反斜杠；断言前归一化。"""
+def posix_paths(paths):
     return [p.replace("\\", "/") for p in paths]
 
 
@@ -142,8 +154,8 @@ class TestZipTargetFiles:
         try:
             zip_name, manifest = release_handler.zip_target_files("2026-10-05")
             assert zip_name == "merged-rules-2026-10-05.zip"
-            assert posix(manifest["merged-rules"]) == ["merged-rules/A/x.txt"]
-            assert posix(manifest["merged-rules-mrs"]) == ["merged-rules-mrs/A/x.mrs"]
+            assert posix_paths(manifest["merged-rules"]) == ["merged-rules/A/x.txt"]
+            assert posix_paths(manifest["merged-rules-mrs"]) == ["merged-rules-mrs/A/x.mrs"]
             with zipfile.ZipFile(zip_name) as z:
                 names = sorted(n.replace("\\", "/") for n in z.namelist())
             assert names == ["merged-rules-mrs/A/x.mrs", "merged-rules/A/x.txt"]
@@ -158,7 +170,7 @@ class TestZipTargetFiles:
         os.chdir(work_dir)
         try:
             _zip_name, manifest = release_handler.zip_target_files("2026-10-05")
-            assert posix(manifest["merged-rules"]) == ["merged-rules/a.txt"]
+            assert posix_paths(manifest["merged-rules"]) == ["merged-rules/a.txt"]
             assert "merged-rules-mrs" not in manifest
         finally:
             self.restore(original, cwd)
