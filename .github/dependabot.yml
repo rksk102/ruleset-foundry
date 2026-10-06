@@ -10,6 +10,14 @@ updates:
       python-dependencies:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      python-dependencies-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
   - package-ecosystem: "github-actions"
     directories:
       - "/"
@@ -22,3 +30,11 @@ updates:
       github-actions:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      github-actions-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"

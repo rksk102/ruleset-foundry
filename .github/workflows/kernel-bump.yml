@@ -23,14 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # 本作业随后会下载并执行 mihomo 内核，不应把 GITHUB_TOKEN 留在 .git/config
           persist-credentials: false
       - name: 设置 Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.13'
       - name: 安装依赖
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
       - name: 检查并升级内核钉扎
         id: bump
         env:
@@ -53,7 +52,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 config.yaml
       - name: 下载 config.yaml
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
