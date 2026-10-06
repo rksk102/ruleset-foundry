@@ -6,8 +6,11 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'config.yaml'
+      - 'sources.urls'
       - 'requirements*.txt'
       - '.ruff.toml'
+      - '.coderabbit.yaml'
+      - 'state/**'
       - '.github/workflows/**'
       - '.github/actions/**'
   pull_request:
@@ -15,8 +18,11 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'config.yaml'
+      - 'sources.urls'
       - 'requirements*.txt'
       - '.ruff.toml'
+      - '.coderabbit.yaml'
+      - 'state/**'
       - '.github/workflows/**'
       - '.github/actions/**'
 
@@ -52,6 +58,19 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check scripts tests
 
+  workflows-lint:
+    name: "工作流静态检查"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -61,4 +80,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python -m pytest tests/ -q
+      - name: pytest（覆盖率门禁 ≥70%）
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python -m pytest tests/ -q --cov=scripts --cov-branch --cov-report=term-missing --cov-fail-under=70

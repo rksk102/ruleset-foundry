@@ -407,7 +407,7 @@ class TestParseSources:
 
     def test_defaults_when_no_markers(self, tmp_path):
         tasks = self.load(tmp_path, "https://github.com/a/b/raw/m/x.txt\n")
-        assert tasks == [{"policy": "policy", "type": "domain",
+        assert tasks == [{"policy": "policy", "type": "domain", "domain_kind": "exact",
                           "url": "https://github.com/a/b/raw/m/x.txt"}]
 
     def test_policy_and_type_markers_apply_to_following_lines(self, tmp_path):

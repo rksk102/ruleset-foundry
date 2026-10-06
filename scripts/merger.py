@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+import manifest
 from config_loader import get, load_config
 from logger import error, group_end, group_start, info, section, success, warning
 from utils import (
@@ -17,10 +18,39 @@ from utils import (
 CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
+MANIFEST_NAME = "products.manifest"
 
 
 def detect_mode(type_str):
     return "IP-CIDR" if "ipcidr" in str(type_str).lower() else "DOMAIN"
+
+
+def merge_product_paths(merge_tasks):
+    paths = set()
+    for task in merge_tasks or []:
+        if not isinstance(task, dict):
+            continue
+        parts = [task.get(key) for key in ("strategy", "type", "owner", "filename")]
+        if all(isinstance(part, str) and part.strip() for part in parts):
+            paths.add("/".join(part.strip().strip("/").replace("\\", "/") for part in parts))
+    return paths
+
+
+def missing_merge_inputs(merge_tasks, base_dir=None):
+    return manifest.merge_inputs(merge_tasks, base_dir or SOURCE_DIR)
+
+
+def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None):
+    out_dir = output_dir or OUTPUT_DIR
+    manifest_file = manifest_file or os.path.join(SOURCE_DIR, MANIFEST_NAME)
+    baseline = manifest.load_manifest(manifest_file)
+    if not baseline:
+        raise manifest.ManifestError(
+            f"清单基线缺失: {manifest_file} 不存在或为空（需先运行 scripts/main.py）"
+        )
+    expected = sorted(set(baseline) | merge_product_paths(merge_tasks))
+    actual = sorted(manifest.collect_files(out_dir, ".txt"))
+    return manifest.verify_matches(expected, actual, f"{out_dir} 绝对基准校验")
 
 
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
@@ -249,6 +279,14 @@ def main():
         error(f"源目录 '{SOURCE_DIR}' 不存在！")
         sys.exit(1)
 
+    if config_tasks:
+        missing_inputs = missing_merge_inputs(config_tasks)
+        if missing_inputs:
+            error(f"合并输入缺失 {len(missing_inputs)} 项（配置合并任务未执行，产物目录未改动）:")
+            for rel in missing_inputs:
+                error(f"    - {rel}")
+            sys.exit(1)
+
     if os.path.exists(OUTPUT_DIR):
         info("  清理输出目录...")
         for path, why in clean_directory(OUTPUT_DIR):
@@ -311,6 +349,12 @@ def main():
             error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
                   f"成功 {stats['success']} + 跳过 {stats['skipped']}")
             sys.exit(1)
+        try:
+            verify_merged_products(config_tasks)
+        except manifest.ManifestError as e:
+            error(f"  {e}")
+            sys.exit(1)
+        info("  合并产物与清单基线一致")
 
     section(f"合并报告 | 成功:{stats['success']} 跳过:{stats['skipped']} 失败:{stats['failed']}")
 

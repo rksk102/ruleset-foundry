@@ -46,6 +46,8 @@ behavior:
   release_keep_days: 3
   conflict_policy: "warn"
   unrecognized_warn_ratio: 0.10
+  min_source_success_ratio: 0.0
+  allow_partial: false
 
 mihomo:
   kernel_cache_path: ".cache/mihomo-kernel"

@@ -5,30 +5,33 @@ import sys
 
 import utils
 
+_SUFFIX_TYPES = {"DOMAIN-SUFFIX", "HOST-SUFFIX"}
+_EXACT_TYPES = {"DOMAIN", "HOST", "FULL"}
+_CIDR_TYPES = {"IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"}
+_UNEXPRESSIBLE_IP_TYPES = {"IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN"}
+_UNSUPPORTED_TYPES = {
+    "DST-IP-CIDR", "DST-IP-ASN", "DST-GEOIP", "SCRIPT",
+    "SRC-PORT-RANGE", "DST-PORT-RANGE",
+}
+_OPAQUE_TYPES = {
+    "DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-WILDCARD",
+    "PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX",
+    "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
+    "RULE-SET", "SUB-RULE", "MATCH", "NETWORK", "DST-PORT", "SRC-PORT",
+    "IN-TYPE", "IN-USER", "IN-NAME", "IN-PORT", "REMATCH-NAME",
+    "UID", "DSCP", "AND", "OR", "NOT", "GEOIP", "GEOSITE", "SRC-GEOIP",
+}
+
+_MIHOMO_RULE_TYPES = (
+    _SUFFIX_TYPES | _EXACT_TYPES | _CIDR_TYPES
+    | _UNEXPRESSIBLE_IP_TYPES | _OPAQUE_TYPES
+)
+
 _RULE_TYPE_RE = re.compile(
-    r'(DOMAIN-SUFFIX|HOST-SUFFIX|DOMAIN|HOST|FULL|DOMAIN-WILDCARD|'
-    r'IP-CIDR6|IP-CIDR|SRC-IP-CIDR|DST-IP-CIDR|IP-SUFFIX|IP-ASN|SRC-IP-ASN|DST-IP-ASN|'
-    r'GEOIP|GEOSITE|SRC-GEOIP|DST-GEOIP|'
-    r'DOMAIN-KEYWORD|DOMAIN-REGEX|PROCESS-NAME|PROCESS-PATH|PROCESS-NAME-REGEX|'
-    r'PROCESS-PATH-REGEX|RULE-SET|SUB-RULE|MATCH|NETWORK|DST-PORT|SRC-PORT|IN-TYPE|'
-    r'IN-USER|IN-NAME|IN-PORT|SRC-PORT-RANGE|DST-PORT-RANGE|SCRIPT)'
+    r'(' + '|'.join(sorted(_MIHOMO_RULE_TYPES | _UNSUPPORTED_TYPES, key=len, reverse=True)) + r')'
     r'\s*,\s*(.*)$',
     re.IGNORECASE,
 )
-
-_SUFFIX_TYPES = {"DOMAIN-SUFFIX", "HOST-SUFFIX"}
-_EXACT_TYPES = {"DOMAIN", "HOST", "FULL"}
-_IP_TYPES = {
-    "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR", "DST-IP-CIDR", "IP-SUFFIX",
-    "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN",
-}
-_OPAQUE_TYPES = {
-    "DOMAIN-KEYWORD", "DOMAIN-REGEX", "PROCESS-NAME", "PROCESS-PATH",
-    "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX", "RULE-SET", "SUB-RULE", "MATCH",
-    "NETWORK", "DST-PORT", "SRC-PORT", "IN-TYPE", "IN-USER", "IN-NAME", "IN-PORT",
-    "SRC-PORT-RANGE", "DST-PORT-RANGE", "SCRIPT", "GEOIP", "GEOSITE",
-    "SRC-GEOIP", "DST-GEOIP", "DOMAIN-WILDCARD",
-}
 
 
 def classify_rule_line(line):
@@ -44,11 +47,17 @@ def classify_rule_line(line):
         return "suffix", payload, type_name
     if type_name in _EXACT_TYPES:
         return "exact", payload, type_name
-    if type_name in _IP_TYPES:
+    if type_name in _CIDR_TYPES:
         return "ip", payload, type_name
-    if type_name in _OPAQUE_TYPES:
-        return "opaque", payload, type_name
-    return None, None, None
+    return "opaque", payload, type_name
+
+
+def ipcidr_drop_reason(type_name):
+    if type_name in _UNEXPRESSIBLE_IP_TYPES:
+        return f"mihomo 的 {type_name} 无法用 ipcidr 规则集表达（载荷不是 CIDR）"
+    if type_name in _UNSUPPORTED_TYPES:
+        return f"mihomo 不支持 {type_name}，无法用 ipcidr 规则集表达"
+    return f"{type_name} 不是 IP 规则，无法用 ipcidr 规则集表达"
 
 
 def new_stats():
@@ -95,8 +104,30 @@ def explicit_base64_decode(text):
         pass
     return text
 
+def _yaml_payload_lines(content):
+    try:
+        import yaml
+    except Exception:
+        return None
+    try:
+        data = yaml.safe_load(content)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("payload", "rules"):
+        value = data.get(key)
+        if isinstance(value, list) and all(isinstance(x, str) for x in value):
+            return [x.strip() for x in value if x.strip()]
+    return None
+
+
 def parse_lines(raw_content):
     content = explicit_base64_decode(raw_content)
+    yaml_lines = _yaml_payload_lines(content)
+    if yaml_lines is not None:
+        return yaml_lines
+
     lines = []
 
     in_payload = False
@@ -145,9 +176,10 @@ def parse_lines(raw_content):
     return lines
 
 
-def _analyze_and_process_domain(lines):
+def _analyze_and_process_domain(lines, domain_kind="exact"):
     valid_domains = set()
     stats = new_stats()
+    stats["suffix_promoted"] = 0
     ip_check = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 
     prefix_rules = (
@@ -204,6 +236,8 @@ def _analyze_and_process_domain(lines):
                 stats["wildcard"] += 1
                 valid_domains.add(s.lower())
                 continue
+        if domain_kind == 'suffix' and semantic is None and s.startswith('+.'):
+            semantic = 'suffix'
         if s.startswith('+.'):
             semantic = 'suffix'
             s = s[2:]
@@ -236,6 +270,10 @@ def _analyze_and_process_domain(lines):
             if valid and semantic == 'subdomain':
                 stats["subdomain"] += 1
                 valid_domains.add('.' + s)
+                continue
+            if valid and semantic is None and domain_kind == 'suffix':
+                stats["suffix_promoted"] += 1
+                valid_domains.add('+.' + s)
                 continue
             if valid:
                 stats["bare_single_label"] += 1
@@ -273,6 +311,9 @@ def _analyze_and_process_domain(lines):
         elif semantic == 'subdomain':
             stats["subdomain"] += 1
             valid_domains.add('.' + s)
+        elif semantic is None and domain_kind == 'suffix':
+            stats["suffix_promoted"] += 1
+            valid_domains.add('+.' + s)
         else:
             stats["relaxed_exact"] += 1
             valid_domains.add(s)
@@ -280,20 +321,41 @@ def _analyze_and_process_domain(lines):
     return sorted(valid_domains), stats
 
 
-def process_domain_detailed(lines):
-    return _analyze_and_process_domain(lines)
+def process_domain_detailed(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)
 
 
-def analyze_domain(lines):
-    return _analyze_and_process_domain(lines)[1]
+def analyze_domain(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)[1]
 
 
-def process_domain(lines):
-    return _analyze_and_process_domain(lines)[0]
+def process_domain(lines, domain_kind="exact"):
+    return _analyze_and_process_domain(lines, domain_kind)[0]
+
+
+def process_ip_detailed(lines):
+    candidates = []
+    stats = new_stats()
+    for line in lines:
+        kind, payload, type_name = classify_rule_line(line)
+        if kind is None:
+            candidates.append(line)
+            continue
+        if kind == "ip":
+            if payload:
+                candidates.append(payload)
+            else:
+                stats["unrecognized"] += 1
+            continue
+        stats["dropped_rule_type"][type_name] = \
+            stats["dropped_rule_type"].get(type_name, 0) + 1
+
+    result, errors = utils.flatten_ip_cidr(candidates, extract=True)
+    return result, errors, stats
 
 
 def process_ip(lines):
-    result, errors = utils.flatten_ip_cidr(lines, extract=True)
+    result, errors, _stats = process_ip_detailed(lines)
     return result, errors
 
 def main():
@@ -313,7 +375,12 @@ def main():
     lines = parse_lines(content)
 
     if mode == 'ipcidr':
-        result, errors = process_ip(lines)
+        result, errors, stats = process_ip_detailed(lines)
+        for type_name, count in sorted(stats["dropped_rule_type"].items()):
+            print(f"# 丢弃 {type_name} 规则 {count} 行: {ipcidr_drop_reason(type_name)}",
+                  file=sys.stderr)
+        if stats.get("unrecognized"):
+            print(f"# 丢弃空载荷规则: {stats['unrecognized']} 行", file=sys.stderr)
         for bad, why in errors:
             print(f"# 丢弃无效 CIDR: {bad} -> {why}", file=sys.stderr)
     else:

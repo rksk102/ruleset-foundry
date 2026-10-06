@@ -60,6 +60,7 @@ jobs:
         with:
           name: rulesets
           path: rulesets/
+          digest-mismatch: error
       - name: 运行合并
         id: merge
         if: steps.dl-rulesets.outcome == 'success'
@@ -81,6 +82,9 @@ jobs:
     needs: merge-rules
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # 本作业随后会下载并执行 mihomo 内核，不应把 GITHUB_TOKEN 留在 .git/config
+          persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
@@ -92,6 +96,7 @@ jobs:
         with:
           name: merged-rules
           path: merged-rules/
+          digest-mismatch: error
       - name: 缓存 Mihomo 内核（恢复）
         if: steps.dl-merged.outcome == 'success'
         id: kernel-cache
@@ -106,7 +111,6 @@ jobs:
         if: steps.dl-merged.outcome == 'success'
         id: convert
         env:
-          GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
       - name: 缓存 Mihomo 内核（保存）
@@ -136,6 +140,14 @@ jobs:
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
         run: rm -rf merged-rules merged-rules-mrs
+      - name: 下载 rulesets 产物（提供产物清单基线）
+        id: dl-rulesets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        continue-on-error: true
+        with:
+          name: rulesets
+          path: rulesets/
+          digest-mismatch: error
       - name: 下载 merged-rules 产物
         id: dl-merged
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -143,6 +155,7 @@ jobs:
         with:
           name: merged-rules
           path: merged-rules/
+          digest-mismatch: error
       - name: 下载 merged-rules-mrs 产物
         id: dl-mrs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -150,6 +163,7 @@ jobs:
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
+          digest-mismatch: error
       - name: 生成 README
         if: steps.dl-merged.outcome == 'success'
         env:
@@ -220,6 +234,11 @@ jobs:
           fi
       - name: 校验制品下载完整性
         if: steps.dl-merged.outcome != 'success' || steps.dl-mrs.outcome != 'success'
+        env:
+          MERGED_OUTCOME: ${{ steps.dl-merged.outcome }}
+          MERGED_CONCLUSION: ${{ steps.dl-merged.conclusion }}
+          MRS_OUTCOME: ${{ steps.dl-mrs.outcome }}
+          MRS_CONCLUSION: ${{ steps.dl-mrs.conclusion }}
         run: |
-          echo "::error::制品下载不完整: merged-rules=${{ steps.dl-merged.outcome }}, merged-rules-mrs=${{ steps.dl-mrs.outcome }}"
+          echo "::error::制品下载不完整: merged-rules(outcome=${MERGED_OUTCOME} conclusion=${MERGED_CONCLUSION}) merged-rules-mrs(outcome=${MRS_OUTCOME} conclusion=${MRS_CONCLUSION}) run_id=${{ github.run_id }}"
           exit 1

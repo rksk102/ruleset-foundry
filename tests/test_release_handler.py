@@ -119,7 +119,7 @@ def posix(paths):
 
 
 class TestZipTargetFiles:
-    def isolate(self, tmp_path):
+    def isolate(self, work_dir):
         """REPO_ROOT 必须是相对路径：zip 的相对名由它算出来。"""
         original = (release_handler.REPO_ROOT, release_handler.TARGET_CONFIG)
         release_handler.REPO_ROOT = ""
@@ -130,15 +130,15 @@ class TestZipTargetFiles:
         release_handler.REPO_ROOT, release_handler.TARGET_CONFIG = original
         os.chdir(cwd)
 
-    def test_packs_matching_extensions_only(self, tmp_path):
+    def test_packs_matching_extensions_only(self, work_dir):
         cwd = os.getcwd()
-        original = self.isolate(tmp_path)
-        (tmp_path / "merged-rules" / "A").mkdir(parents=True)
-        (tmp_path / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
-        (tmp_path / "merged-rules" / "A" / "skip.md").write_text("y", encoding="utf-8")
-        (tmp_path / "merged-rules-mrs" / "A").mkdir(parents=True)
-        (tmp_path / "merged-rules-mrs" / "A" / "x.mrs").write_text("z", encoding="utf-8")
-        os.chdir(tmp_path)
+        original = self.isolate(work_dir)
+        (work_dir / "merged-rules" / "A").mkdir(parents=True)
+        (work_dir / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
+        (work_dir / "merged-rules" / "A" / "skip.md").write_text("y", encoding="utf-8")
+        (work_dir / "merged-rules-mrs" / "A").mkdir(parents=True)
+        (work_dir / "merged-rules-mrs" / "A" / "x.mrs").write_text("z", encoding="utf-8")
+        os.chdir(work_dir)
         try:
             zip_name, manifest = release_handler.zip_target_files("2026-10-05")
             assert zip_name == "merged-rules-2026-10-05.zip"
@@ -150,12 +150,12 @@ class TestZipTargetFiles:
         finally:
             self.restore(original, cwd)
 
-    def test_missing_dir_skipped_not_fatal(self, tmp_path):
+    def test_missing_dir_skipped_not_fatal(self, work_dir):
         cwd = os.getcwd()
-        original = self.isolate(tmp_path)
-        (tmp_path / "merged-rules").mkdir()
-        (tmp_path / "merged-rules" / "a.txt").write_text("x", encoding="utf-8")
-        os.chdir(tmp_path)
+        original = self.isolate(work_dir)
+        (work_dir / "merged-rules").mkdir()
+        (work_dir / "merged-rules" / "a.txt").write_text("x", encoding="utf-8")
+        os.chdir(work_dir)
         try:
             _zip_name, manifest = release_handler.zip_target_files("2026-10-05")
             assert posix(manifest["merged-rules"]) == ["merged-rules/a.txt"]
@@ -163,11 +163,11 @@ class TestZipTargetFiles:
         finally:
             self.restore(original, cwd)
 
-    def test_no_files_exits_nonzero(self, tmp_path):
+    def test_no_files_exits_nonzero(self, work_dir):
         cwd = os.getcwd()
-        original = self.isolate(tmp_path)
-        (tmp_path / "merged-rules").mkdir()
-        os.chdir(tmp_path)
+        original = self.isolate(work_dir)
+        (work_dir / "merged-rules").mkdir()
+        os.chdir(work_dir)
         try:
             try:
                 release_handler.zip_target_files("2026-10-05")
@@ -257,7 +257,7 @@ class TestPublishRelease:
 class TestMainOrchestration:
     """真正调用 main()，而不是在测试里复刻它的逻辑。"""
 
-    def setup_env(self, tmp_path):
+    def setup_env(self, work_dir):
         cwd = os.getcwd()
         original = (release_handler.REPO_ROOT, release_handler.TARGET_CONFIG,
                     release_handler.CHANGE_DETECTION, release_handler.KEEP_DAYS)
@@ -265,11 +265,11 @@ class TestMainOrchestration:
         release_handler.TARGET_CONFIG = {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"}
         release_handler.CHANGE_DETECTION = True
         release_handler.KEEP_DAYS = 3
-        (tmp_path / "merged-rules" / "A").mkdir(parents=True)
-        (tmp_path / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
-        (tmp_path / "merged-rules-mrs" / "A").mkdir(parents=True)
-        (tmp_path / "merged-rules-mrs" / "A" / "x.mrs").write_text("y", encoding="utf-8")
-        os.chdir(tmp_path)
+        (work_dir / "merged-rules" / "A").mkdir(parents=True)
+        (work_dir / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
+        (work_dir / "merged-rules-mrs" / "A").mkdir(parents=True)
+        (work_dir / "merged-rules-mrs" / "A" / "x.mrs").write_text("y", encoding="utf-8")
+        os.chdir(work_dir)
         return cwd, original
 
     def teardown_env(self, cwd, original):
@@ -277,8 +277,8 @@ class TestMainOrchestration:
             release_handler.CHANGE_DETECTION, release_handler.KEEP_DAYS = original
         os.chdir(cwd)
 
-    def test_publishes_when_hash_changed(self, tmp_path):
-        cwd, original = self.setup_env(tmp_path)
+    def test_publishes_when_hash_changed(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
         stub = GhStub(responses={"release": "ok"})
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
@@ -299,8 +299,8 @@ class TestMainOrchestration:
             release_handler.save_last_hash = original_save
             self.teardown_env(cwd, original)
 
-    def test_skips_when_hash_unchanged(self, tmp_path):
-        cwd, original = self.setup_env(tmp_path)
+    def test_skips_when_hash_unchanged(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
         stub = GhStub()
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
@@ -314,9 +314,9 @@ class TestMainOrchestration:
             release_handler.load_last_hash = original_load
             self.teardown_env(cwd, original)
 
-    def test_aborts_when_product_counts_differ(self, tmp_path):
+    def test_aborts_when_product_counts_differ(self, work_dir):
         """txt 与 mrs 数量不一致说明有空产物漂移，必须失败退出。"""
-        cwd, original = self.setup_env(tmp_path)
+        cwd, original = self.setup_env(work_dir)
         stub = GhStub()
         original_hash = release_handler.combined_products_hash
         release_handler.combined_products_hash = lambda: ("h", 3, 2)
@@ -332,8 +332,8 @@ class TestMainOrchestration:
             release_handler.combined_products_hash = original_hash
             self.teardown_env(cwd, original)
 
-    def test_failed_publish_exits_and_removes_zip(self, tmp_path):
-        cwd, original = self.setup_env(tmp_path)
+    def test_failed_publish_exits_and_removes_zip(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
         # release 的动作动词在 cmd[1]
         stub = GhStub(fail_when=lambda cmd: len(cmd) > 1 and cmd[1] in ("create", "upload", "edit"),
                       responses={("release", "view"): None})
@@ -359,14 +359,15 @@ class TestMainOrchestration:
             release_handler.save_last_hash = original_save
             self.teardown_env(cwd, original)
 
-    def test_prunes_old_releases_and_keeps_current(self, tmp_path):
-        cwd, original = self.setup_env(tmp_path)
+    def test_prunes_old_releases_and_keeps_current(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
         now_iso = release_handler.beijing_now().strftime("%Y-%m-%d")
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": f"rules-{now_iso}", "createdAt": old},
             {"tagName": "rules-1999-01-01", "createdAt": old},
+            {"tagName": "v1.0.0", "createdAt": old},
         )
         stub = GhStub(responses={("release", "list"): listing})
         original_hash = release_handler.combined_products_hash
@@ -381,15 +382,77 @@ class TestMainOrchestration:
             assert "release delete rules-1999-01-01 --yes" in flat
             assert f"release delete rules-{now_iso}" not in flat, "当天标签不得被删"
             assert "git/refs/tags/rules-1999-01-01" in flat, "删除 release 后应同时删 tag"
+            assert "v1.0.0" not in flat, "非 rules- 前缀的 Release 一律不得触碰"
         finally:
             release_handler.combined_products_hash = original_hash
             release_handler.load_last_hash = original_load
             release_handler.save_last_hash = original_save
             self.teardown_env(cwd, original)
 
-    def test_step_summary_written(self, tmp_path):
-        cwd, original = self.setup_env(tmp_path)
-        summary = tmp_path / "summary.md"
+    def test_prune_never_touches_manual_releases(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        old = (release_handler.beijing_now() - datetime.timedelta(days=30)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        listing = release_listing(
+            {"tagName": "v1.0.0", "createdAt": old},
+            {"tagName": "v1.2.3-rc1", "createdAt": old},
+            {"tagName": "manual-notes", "createdAt": old},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: None
+        try:
+            run_with_stub(stub, release_handler.main)
+            flat = " ".join(stub.commands())
+            assert "delete" not in flat, f"人工 Release 不得被删: {flat}"
+            assert "git/refs/tags" not in flat
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
+    def test_prune_delete_failure_is_not_fatal(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        listing = release_listing(
+            {"tagName": "rules-1999-01-01", "createdAt": old},
+            {"tagName": "rules-1999-01-02", "createdAt": old},
+        )
+        stub = GhStub(fail_when=lambda cmd: len(cmd) > 1 and cmd[1] == "delete",
+                      responses={("release", "list"): listing})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        saved = []
+        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: saved.append(h)
+        try:
+            try:
+                run_with_stub(stub, release_handler.main)
+            except SystemExit as e:
+                raise AssertionError(f"单个删除失败不得中断脚本: {e}")
+            flat = " ".join(stub.commands())
+            assert flat.count("release delete") == 2, "首个删除失败后仍应继续清理其余旧 Release"
+            assert "git/refs/tags" not in flat, "Release 删除失败时不得继续删 tag"
+            assert saved == ["new"], "清理失败不得跳过 state/release.sha256 的写入"
+            zip_name = f"merged-rules-{release_handler.beijing_now().strftime('%Y-%m-%d')}.zip"
+            assert not os.path.exists(zip_name), "清理失败后 main() 仍应执行到收尾"
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
+    def test_step_summary_written(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        summary = work_dir / "summary.md"
         prior = os.environ.get("GITHUB_STEP_SUMMARY")
         os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
         stub = GhStub()

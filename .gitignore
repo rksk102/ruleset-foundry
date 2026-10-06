@@ -26,6 +26,10 @@ debug.log
 .mimosa/
 .ruff_cache/
 .pytest_cache/
+.coverage
+pytest-cache-files-*/
 
 docs/
 .tools/
+
+.dsh-meow/

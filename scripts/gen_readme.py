@@ -156,7 +156,7 @@ def make_page_header(badge_time=None):
 
 
 def make_static_sections():
-    return """
+    return r"""
 ## 内核版本升级流程（维护者）
 
 1. 运行 `python scripts/convert_mrs.py --print-kernel-hash`（会下载并打印解压后二进制 sha256）。
@@ -167,7 +167,7 @@ def make_static_sections():
 ## 规则优先级与消费方式
 
 策略优先级固定为 `block > direct > policy`；在代理客户端中按此顺序引用 rule-provider。
-本仓库提供 `.txt`（通用）与 `.mrs`（Mihomo 专用）两种格式，路径一一对应。
+本仓库提供 `.txt`（mihomo `behavior: domain` 文本）与 `.mrs`（Mihomo 专用二进制）两种格式，路径一一对应。
 
 产物由 CI 每日生成，**不进入 git 历史**，统一发布在本仓库的 `artifacts` 分支上。
 上表所有下载链接均指向该分支；请按链接原样引用，不要改用 `main` 分支。
@@ -202,16 +202,48 @@ def make_static_sections():
 
 ### 裸域名的语义取决于上游，本仓库不做猜测
 
-上游对「裸域名」的约定**并不统一**，本仓库按「裸域名 = 精确匹配」处理：
+上游对「裸域名」的约定**并不统一**，默认按「裸域名 = 精确匹配」处理：
 
 - `MetaCubeX/meta-rules-dat` 的 `geo/geosite/*.list`：**同一文件内**裸行与 `+.` 行并存，
-  裸行是维护者有意保留的「精确命中」（例如 `ai.google.dev`），因此按精确处理是**正确**的。
+  裸行是维护者有意保留的「精确命中」（例如 `ai.google.dev`），按精确处理是**正确**的。
 - `v2rayfly/domain-list-community`（`v2ray-rules-dat` 的上游）规范说明
   `domain:` 前缀可省略，裸行编译为 **sub-domain** 规则，即**后缀**语义。
-  这类源目前会按精确处理，覆盖面偏窄。
+  这类纯 DLC 系源若按精确处理，会漏掉其全部子域，必须在 `sources.urls` 中显式标注。
 
-若你需要把某个纯 DLC 系源按后缀解释，请在 `sources.urls` 中为该源显式标注
-（见仓库 `config.yaml` 的说明），不要依赖自动猜测。
+### 源级语义标记（`sources.urls`）
+
+`sources.urls` 支持三种独占一行的标记，**按出现顺序作用于其后的所有 URL**（可反复切换）：
+
+| 标记 | 作用 | 缺省值 |
+| :--- | :--- | :--- |
+| `[policy:...]` | 输出策略目录：含 `reject`/`block`/`deny`/`ads`/`adblock` → `block`；含 `direct`/`bypass`/`no-proxy` → `direct`；含 `proxy`/`gfw` → `policy` | `policy` |
+| `[type:...]` | 输出类型目录：含 `ip`/`cidr` → `ipcidr`，否则 `domain` | `domain` |
+| `[domain-kind:exact\|suffix]` | 该源**裸域名**的匹配语义 | `exact` |
+
+`domain-kind` 的两种取值：
+
+- `exact`：裸行 `d` 输出为 `d`，即**仅该主机名**（与 mihomo `behavior: domain` 的默认语义一致）。
+- `suffix`：裸行 `d` 输出为 `+.d`，即**域及其全部子域**。
+
+使用约束：
+
+- `suffix` **只对上游语义确为「裸行 = 域及其全部子域」的纯文本列表标注**，不要凭猜测添加——
+  标注会把该源全部裸行的匹配面扩大到所有子域。
+- 标记只影响**没有显式前缀**的裸行：`full:` / `host:` 仍按精确处理，`domain:` / `domain-suffix:` /
+  `+.d` / `.d` / `*.d` 等写法保持原有语义，标记不会改写它们。
+- 标记行必须独占一行（`[domain-kind:exact|suffix]`、`[policy:...]`、`[type:...]` 均可反复出现）；
+  `#` 开头的整行是注释。
+
+当前已标注 `[domain-kind:suffix]` 的源（均为 DLC 系纯文本列表）：
+
+| 策略 | 源 |
+| :--- | :--- |
+| `block`（拒绝） | `v2ray-rules-dat/release/reject-list.txt`、`win-extra.txt`、`win-spy.txt` |
+| `direct` | `v2ray-rules-dat/release/direct-list.txt` |
+| `policy`（代理） | `v2ray-rules-dat/release/proxy-list.txt`、`gfw.txt` |
+
+标注方式：在 `sources.urls` 中把 `[domain-kind:suffix]` 写到目标 URL 之前（同组内写一次即可，
+其后的 URL 都继承该语义），提 PR 由 CI 校验后生效。
 
 ## 发布去重语义
 
@@ -223,6 +255,29 @@ def make_static_sections():
 `behavior.conflict_policy` 支持 `ignore | warn | fail`，默认 `warn`。
 `fail` 仅作为"新增源时的临时验收开关"：当前隐式冲突基线噪声较大（约 1.2 万条），
 直接启用 `fail` 会中断发布；启用前请先人工核对冲突检测结果。
+
+## 许可与上游署名
+
+- **本仓库的脚本与工作流**（`scripts/`、`tests/`、`.github/`、`config.yaml` 等）以 **MIT** 许可发布，见 [LICENSE](LICENSE)。
+- **规则产物**（`artifacts` 分支上的 `.txt` / `.mrs`）是对下列上游数据的下载、清洗与合并。
+  上游仓库**均声明 GPL-3.0**（依据 GitHub API `license.spdx_id`）：
+
+| 上游仓库 | 许可 | 本仓库使用的源 |
+| :--- | :--- | :--- |
+| [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat) | GPL-3.0 | `geo/geosite/*.list`、`geo/geoip/cn.list` |
+| [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) | GPL-3.0 | `release/*.txt`（DLC 系列表） |
+| [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules) | GPL-3.0 | `release/*.txt` |
+| [DustinWin/ruleset_geodata](https://github.com/DustinWin/ruleset_geodata) | GPL-3.0 | `mihomo-ruleset/*.list` |
+
+- MIT 仅覆盖本仓库的**脚本代码**，不改变上游内容的许可。再分发本仓库产物（包括以 rule-provider
+  URL 形式公开引用）时，请自行确认满足上游 GPL-3.0 的署名与许可要求。
+- 规则内容由上游维护者判断，本仓库只做格式转换与合并，**不保证**其准确性、完整性或时效性；
+  使用本仓库产物产生的任何后果由使用者自行承担。
+
+## 安全
+
+本项目会从 GitHub Releases 下载并**执行** mihomo 内核二进制（仅用于把规则集编译为 `.mrs`），
+信任边界与漏洞报告渠道见 [SECURITY.md](SECURITY.md)。
 
 """
 
@@ -246,7 +301,10 @@ def main():
 
             count_std, size_std = make_section(
                 f, "基础规则集合",
-                "适用于 Clash Premium / Clash Verge / Sing-box 等通用格式 (.txt)",
+                "面向 mihomo (Clash.Meta) 内核：按 `behavior: domain` 加载 `.txt`，"
+                "含 `+.d` / `.d` 等 mihomo 专属前缀语义；"
+                "Clash Premium、Sing-box 等其它内核不能直接消费 `.txt`，"
+                "`.mrs` 更是 mihomo 专用二进制格式",
                 files_std, DIR_RULES,
             )
 

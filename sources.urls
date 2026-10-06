@@ -1,31 +1,41 @@
-# 每行一个 URL；[policy:xxx]/[type:xxx] 为分组标记
+# 每行一个 URL；[policy:xxx]/[type:xxx]/[domain-kind:exact|suffix] 为分组标记
+# domain-kind 默认 exact（裸域名=精确匹配，与 mihomo behavior:domain 一致）
+# 仅对上游语义为“裸行=域及其全部子域”的纯文本列表显式标注 suffix，不要凭猜测添加
+# 同一 URL 只能标注一种 domain-kind：两种 kind 落到同一输出会判为 mixed 并回落 exact
 [policy:reject]
 [type:domain]
+[domain-kind:exact]
 https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
+https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
+[domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-extra.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.txt
-https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 
 
 [policy:direct]
 [type:domain]
+[domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
+[domain-kind:suffix]
+https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
 
 [policy:policy]
 [type:domain]
+[domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
+https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
+[domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
-https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
 
 [policy:direct]
 [type:ipcidr]
+[domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
