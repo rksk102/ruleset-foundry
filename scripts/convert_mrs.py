@@ -1,3 +1,4 @@
+import contextlib
 import gzip
 import hashlib
 import io
@@ -28,6 +29,15 @@ KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihom
 KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
 VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
 MAX_KERNEL_BYTES = 100 * 1024 * 1024
+CONVERT_TIMEOUT = 120
+
+
+def ensure_kernel_platform():
+    if sys.platform.startswith("linux"):
+        return
+    error("  内核准备需要执行 Linux 版 mihomo（mihomo -v）做可运行性校验；"
+          "请在 Linux/WSL 上运行，或交给 CI 的 kernel-bump 工作流")
+    sys.exit(1)
 
 
 def ensure_config_usable():
@@ -113,11 +123,12 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF", require_sh
     return actual
 
 
-def _fetch_latest_release_info(max_retries=3):
+def _fetch_latest_release_info(max_retries=3, pinned=None):
+    version = PINNED_VERSION if pinned is None else pinned
     last_err = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(release_api_url(PINNED_VERSION, REPO_API))
+            req = urllib.request.Request(release_api_url(version, REPO_API))
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
@@ -150,14 +161,15 @@ def _download_kernel(download_url, expected_digest=None, max_retries=3):
                     buf.write(chunk)
 
                 actual_digest = digest.hexdigest()
-                if expected_digest:
-                    want = expected_digest.split(":", 1)[-1].strip().lower()
-                    if actual_digest != want:
-                        raise ValueError(
-                            f"内核资产摘要不匹配：期望 {want}，实际 {actual_digest}"
-                        )
-                else:
-                    warning("  资产未提供 digest，跳过压缩流校验（仅依赖解压后哈希）")
+                if not expected_digest:
+                    raise ValueError(
+                        "资产未提供 digest，拒绝在无压缩流校验的情况下使用该内核"
+                    )
+                want = expected_digest.split(":", 1)[-1].strip().lower()
+                if actual_digest != want:
+                    raise ValueError(
+                        f"内核资产摘要不匹配：期望 {want}，实际 {actual_digest}"
+                    )
 
                 buf.seek(0)
                 with gzip.GzipFile(fileobj=buf) as gz:
@@ -211,10 +223,8 @@ def get_latest_mihomo(skip_hash_check=False):
                     verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=True)
                 except ValueError as e:
                     warning(f"  缓存内核校验失败，将重新下载: {e}")
-                    try:
+                    with contextlib.suppress(OSError):
                         os.unlink(KERNEL_BIN)
-                    except OSError:
-                        pass
                 else:
                     ver_out = _verify_kernel()
                     if ver_out and "Mihomo" in ver_out:
@@ -228,7 +238,7 @@ def get_latest_mihomo(skip_hash_check=False):
 
         info(f"  下载内核: {asset['url']}")
         if not asset["digest"]:
-            warning("  上游未提供资产 digest，压缩流校验将被跳过")
+            raise ValueError("上游未提供资产 digest，拒绝下载（无法锚定压缩流完整性）")
         KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         _download_kernel(asset["url"], expected_digest=asset["digest"])
 
@@ -290,7 +300,7 @@ def get_rule_type(path_parts):
 
 def has_valid_content(filepath):
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             for line in f:
                 content = line.strip()
                 if content and not content.startswith("#"):
@@ -327,7 +337,8 @@ def write_summary(stats, total_time):
 
 
 def _set_config_field(text, key, value):
-    new_text, count = re.subn(rf'(\b{key}:)\s*"[^"]*"', rf'\1 "{value}"', text, flags=re.M)
+    new_text, count = re.subn(rf'(\b{key}:)\s*(?:"[^"]*"|\S+)', rf'\1 "{value}"',
+                              text, flags=re.M)
     if count != 1:
         error(f"  config.yaml 中 {key} 命中 {count} 次，拒绝写入")
         sys.exit(1)
@@ -335,10 +346,6 @@ def _set_config_field(text, key, value):
 
 
 def _smoke_convert():
-    if not sys.platform.startswith("linux"):
-        warning("  非 Linux 平台，跳过转换冒烟验证")
-        return
-
     src = KERNEL_CACHE_DIR / "smoke-input.txt"
     dst = KERNEL_CACHE_DIR / "smoke-output.mrs"
     src.write_text("smoke-test.com\nexample.org\n", encoding="utf-8")
@@ -363,7 +370,7 @@ def _smoke_convert():
 
 
 def bump_config():
-    data = _fetch_latest_release_info()
+    data = _fetch_latest_release_info(pinned="")
     tag = data["tag_name"]
 
     cfg_path = Path("config.yaml")
@@ -412,6 +419,7 @@ def bump_config():
 
 
 def main():
+    ensure_kernel_platform()
     ensure_config_usable()
 
     if "--print-kernel-hash" in sys.argv:
@@ -468,9 +476,14 @@ def main():
 
         cmd = [KERNEL_BIN, "convert-ruleset", rule_type, "text", src_path, dst_path]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True,
+                           timeout=CONVERT_TIMEOUT)
             success(f"  {prefix} {rel_path} -> MRS")
             stats["success"] += 1
+        except subprocess.TimeoutExpired:
+            error(f"  {prefix} {rel_path}")
+            error(f"      L 转换超时（>{CONVERT_TIMEOUT}s）")
+            stats["failed"] += 1
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr.strip() if e.stderr else "未知错误"
             error(f"  {prefix} {rel_path}")

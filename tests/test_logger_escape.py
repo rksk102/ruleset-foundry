@@ -42,16 +42,6 @@ class TestEscapeData:
         assert log._escape_data(12) == "12"
 
 
-class TestUnescapeData:
-
-    def test_round_trip(self):
-        for text in ["50%", "a\rb", "a\nb", "%0A", "%25", "多行\n文本 100%", ""]:
-            assert log._unescape_data(log._escape_data(text)) == text
-
-    def test_single_pass_does_not_redecode(self):
-        assert log._unescape_data("%250A") == "%0A"
-
-
 class TestCommandEscaping:
 
     def test_gh_error_escapes_newlines(self, capsys):
@@ -72,7 +62,6 @@ class TestCommandEscaping:
         assert not any(line.strip() == "::endgroup::" for line in out.splitlines())
 
     def test_warning_cannot_inject_command_even_after_trim(self, monkeypatch, capsys):
-        """The runner trims leading whitespace, so indenting is not a defence."""
         _reset(monkeypatch, ci=True)
         log.warning("ok\n::error::injected\n   ::add-mask::SECRET")
         out = capsys.readouterr().out

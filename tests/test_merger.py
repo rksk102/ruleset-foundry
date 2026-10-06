@@ -160,7 +160,6 @@ class TestDetectCrossPolicyConflicts:
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
     def test_explicit_conflict_across_prefix_forms(self, tmp_path):
-        """`+.d` 与裸 `d` 是同一域名，必须判为显式冲突。"""
         explicit, _implicit = self.build(tmp_path, {
             "block/domain/A/x.txt": "+.same.example.com\n",
             "policy/domain/A/y.txt": "same.example.com\n",
@@ -168,7 +167,6 @@ class TestDetectCrossPolicyConflicts:
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
     def test_implicit_conflict_suffix_parent_covers_child(self, tmp_path):
-        """只有父策略的 `+.` 后缀条目才覆盖子策略条目。"""
         _explicit, implicit = self.build(tmp_path, {
             "policy/domain/A/proxy.txt": "+.google.com\n",
             "block/domain/A/ads.txt": "ads.google.com\n",
@@ -183,7 +181,6 @@ class TestDetectCrossPolicyConflicts:
         assert implicit == {"policy(父) → block(子)": [(".ads.google.com", "google.com")]}
 
     def test_bare_parent_does_not_cover_child(self, tmp_path):
-        """裸域名是精确匹配，不构成隐式冲突。"""
         _explicit, implicit = self.build(tmp_path, {
             "policy/domain/A/proxy.txt": "google.com\n",
             "block/domain/A/ads.txt": "ads.google.com\n",
@@ -191,7 +188,6 @@ class TestDetectCrossPolicyConflicts:
         assert implicit == {}
 
     def test_subdomain_parent_does_not_cover_child(self, tmp_path):
-        """`.d` 只匹配子域且不含 d 自身，不能覆盖 `+.` 之外的条目。"""
         _explicit, implicit = self.build(tmp_path, {
             "policy/domain/A/proxy.txt": ".google.com\n",
             "block/domain/A/ads.txt": ".ads.google.com\n",

@@ -23,12 +23,24 @@ class TestIsTrustedHost:
             "https://codeload.github.com/a/b/tar.gz/x",
             "https://gist.githubusercontent.com/u/i/raw/x",
             "https://github.com",
-            "https://user.github.io/repo/x.txt",
         ]:
             assert main.is_trusted_host(url) is True, url
 
+    def test_user_content_hosts_are_not_trusted(self):
+        for url in [
+            "https://user.github.io/repo/x.txt",
+            "https://anything.githubassets.com/x.txt",
+        ]:
+            assert main.is_trusted_host(url) is False, url
+
+    def test_plaintext_http_is_not_trusted(self):
+        for url in [
+            "http://raw.githubusercontent.com/a/b/x.txt",
+            "http://github.com/a/b",
+        ]:
+            assert main.is_trusted_host(url) is False, url
+
     def test_third_party_cdn_never_trusted(self):
-        """jsdelivr 能当来源，但不是 GitHub 控制的域名，token 不得发给它。"""
         assert main.is_trusted_host("https://cdn.jsdelivr.net/gh/a/b@m/x.list") is False
         assert main.is_trusted_host("https://ghproxy.net/x") is False
 
@@ -42,7 +54,6 @@ class TestIsTrustedHost:
             assert main.is_trusted_host(url) is False, url
 
     def test_suffix_confusion_rejected(self):
-        """必须按标签边界匹配，notgithub.com / github.com.evil.com 均不可信。"""
         for url in [
             "https://notgithub.com/x",
             "https://github.com.evil.com/x",
@@ -60,6 +71,25 @@ class TestIsTrustedHost:
 
     def test_case_insensitive(self):
         assert main.is_trusted_host("https://GitHub.COM/a/b") is True
+
+
+class TestProductPathStability:
+
+    def test_displayable_chars_survive(self):
+        task = {
+            "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/"
+                   "geo/geosite/category-ai-!cn.list",
+            "policy": "policy",
+            "type": "domain",
+            "domain_kind": "exact",
+        }
+        owner, name, rel, _abs_path = main.build_filepath(task)
+        assert (owner, name) == ("MetaCubeX", "category-ai-!cn.txt")
+        assert rel.as_posix() == "policy/domain/MetaCubeX/category-ai-!cn.txt"
+
+    def test_separators_and_reserved_chars_still_cleaned(self):
+        assert main.clean_path_component("a/b\\c:d*e?f", "x") == "a_b_c_d_e_f"
+        assert main.clean_path_component("..", "x") == "x"
 
 
 class TestAuthHeaders:
@@ -87,6 +117,14 @@ class TestAuthHeaders:
         try:
             assert main.auth_headers("https://example.com/x") is None
             assert main.auth_headers("https://ghproxy.net/https://raw.githubusercontent.com/a/b") is None
+        finally:
+            self.restore(original)
+
+    def test_token_withheld_from_plaintext_and_user_content(self):
+        original = self.with_token()
+        try:
+            assert main.auth_headers("http://raw.githubusercontent.com/a/b/x") is None
+            assert main.auth_headers("https://someone.github.io/x") is None
         finally:
             self.restore(original)
 
@@ -135,19 +173,17 @@ class TestParseRetryAfter:
         assert main.parse_retry_after(str(main.MAX_RETRY_AFTER + 1000), 5) == main.MAX_RETRY_AFTER
 
     def test_negative_rejected_as_non_decimal(self):
-        """'-5' 非十进制数字串，日期解析亦失败 -> 回退 default（由退避逻辑接管）。"""
         assert main.parse_retry_after("-5", 5) == 5
         assert main.parse_retry_after("  -5  ", 5) == 5
 
     def test_unicode_digits_rejected(self):
-        """全角数字 isdecimal() 为真但 isascii() 为假，必须回退默认值。"""
         assert main.parse_retry_after("３０", 7) == 7
 
     def test_http_date_parsed(self):
         import datetime
         from email.utils import format_datetime
 
-        when = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=20)
+        when = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=20)
         parsed = main.parse_retry_after(format_datetime(when), 5)
         assert 15 <= parsed <= 21
 
@@ -175,7 +211,6 @@ class TestSourceRepoSlug:
         assert main.source_repo_slug("https://codeload.github.com/a/b/tar.gz/main") == "a__b"
 
     def test_github_io_uses_first_two_path_segments(self):
-        """'github' 分支先于 '.github.io' 后缀匹配，取路径前两段。"""
         assert main.source_repo_slug("https://user.github.io/a/b/x.txt") == "a__b"
         assert main.source_repo_slug("https://user.github.io/repo/x.txt") == "repo__x.txt"
 
@@ -197,13 +232,11 @@ class TestSourceRepoSlug:
         assert main.source_repo_slug("https://example.com/a/b.txt") == "example_com"
 
     def test_empty_when_path_lacks_repo_segment(self):
-        """白名单主机但路径不足两段时返回空串；调用方用 owner 兜底。"""
         assert main.source_repo_slug("https://github.com/onlyone") == ""
         assert main.source_repo_slug("https://raw.githubusercontent.com/") == ""
         assert main.source_repo_slug("https://cdn.jsdelivr.net/") == ""
 
     def test_hostname_fallback_never_empty(self):
-        """非白名单主机一律返回非空（回退为主机名）。"""
         for url in ["https://example.com/x", "https://mirror.example.org/a/b",
                     "https://ghproxy.net/https://raw.githubusercontent.com/a/b"]:
             assert main.source_repo_slug(url) != "", url
@@ -257,7 +290,6 @@ class TestCollidingOutputPaths:
             "Loyalsoldier__clash-rules", "Loyalsoldier__v2ray-rules-dat"]
 
     def test_mirror_host_spoofing_flagged(self):
-        """镜像主机伪装成同一 owner 也必须被识别为冲突来源。"""
         plan = self.posix_plan(main.colliding_output_paths([
             self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
             self.task("https://raw.githubusercontent.com/Loyalsoldier/other/main/gfw.txt"),
@@ -310,7 +342,6 @@ class TestBuildFilepath:
         assert taken == {key("policy/domain/o/x.txt"): "o__r"}
 
     def test_same_slug_does_not_trigger_disambiguation(self):
-        """同来源重复出现时不应无谓加下划线。"""
         task = self.task("https://github.com/o/r/raw/m/x.txt")
         taken = {key("policy/domain/o__r/x.txt"): "o__r"}
         plan = {key("policy/domain/o/x.txt"): ["o__r"]}
@@ -335,7 +366,6 @@ class TestPlanGroups:
         assert len(groups[0]["members"]) == 2
 
     def test_same_owner_different_repos_split_to_avoid_overwrite(self):
-        """同 owner、同文件名但不同仓库内容不同，必须拆开，否则互相覆盖。"""
         groups = main.plan_groups([
             self.task("https://github.com/o/r/raw/m/x.txt"),
             self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
@@ -358,7 +388,6 @@ class TestPlanGroups:
         ]
 
     def test_every_group_has_unique_output_path(self):
-        """任意输入下输出路径不得重复，否则后写覆盖先写。"""
         tasks = [
             self.task("https://github.com/o/r/raw/m/x.txt"),
             self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
@@ -455,7 +484,6 @@ class TestParseSources:
         assert len(tasks) == 1
 
     def test_marker_regex_anchored(self, tmp_path):
-        """标记必须独占整行；行内出现不应被当作标记。"""
         tasks = self.load(tmp_path, "前缀 [policy:block] 后缀\nhttps://github.com/a/b/raw/m/x.txt\n")
         assert tasks[0]["policy"] == "policy"
 
@@ -473,7 +501,6 @@ class TestParseSources:
             main.SOURCES_FILE = original
 
     def test_real_sources_file_is_parseable(self):
-        """仓库自带的 sources.urls 必须能被解析出任务。"""
         tasks = main.parse_sources()
         assert len(tasks) > 5
         for t in tasks:

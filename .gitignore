@@ -8,6 +8,7 @@ venv/
 
 .cache/
 logs/
+*.log
 *.zip
 
 rulesets/
@@ -21,7 +22,6 @@ mihomo
 
 .DS_Store
 Thumbs.db
-debug.log
 
 .mimosa/
 .ruff_cache/
@@ -29,7 +29,6 @@ debug.log
 .coverage
 pytest-cache-files-*/
 
-docs/
 .tools/
 
 .dsh-meow/

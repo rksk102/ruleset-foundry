@@ -1,6 +1,6 @@
 name: "Dependabot 自动合并"
 
-on:
+on:  # zizmor: ignore[dangerous-triggers] 仅调用 gh pr merge，不检出/执行不受信代码
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -36,6 +36,13 @@ jobs:
             *) echo "非 Dependabot 分支（$HEAD_BRANCH），跳过"; exit 0 ;;
           esac
 
+          case "$HEAD_BRANCH" in
+            *-major*)
+              echo "大版本分组（$HEAD_BRANCH）需人工审核，跳过自动合并"
+              exit 0
+              ;;
+          esac
+
           pr="$PR_NUMBER"
           if [ -z "$pr" ] || [ "$pr" = "null" ]; then
             pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" \
@@ -55,5 +62,5 @@ jobs:
           fi
 
           echo "CI 已通过（head_sha=$HEAD_SHA），合并 PR #$pr"
-          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --merge \
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --merge \
             --match-head-commit "$HEAD_SHA"

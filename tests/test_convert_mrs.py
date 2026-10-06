@@ -144,7 +144,6 @@ class TestDownloadKernelDigest:
         ok, err = self._run(work_dir, "sha256:" + "0" * 64)
         assert ok is False
         assert "摘要不匹配" in str(err)
-        # _run 把 KERNEL_BIN 设为 work_dir/k/kernel，断言路径必须与之一致
         kernel = work_dir / "k" / "kernel"
         assert not kernel.exists(), f"校验失败不得落盘，但 {kernel} 存在"
 
@@ -173,9 +172,10 @@ class TestDownloadKernelDigest:
         ok, _err = self._run(work_dir, "sha512:" + "0" * 128)
         assert ok is False, "未知算法必须响亮失败，不得静默通过"
 
-    def test_empty_digest_skips_compressed_check(self, work_dir):
-        ok, _ = self._run(work_dir, "")
-        assert ok is True
+    def test_empty_digest_is_refused(self, work_dir):
+        ok, err = self._run(work_dir, "")
+        assert ok is False, "上游未提供 digest 时必须拒绝下载，不得降级为仅校验解压后哈希"
+        assert "digest" in str(err)
 
     def test_compressed_stream_size_capped(self, work_dir):
         import os as _os
@@ -286,7 +286,7 @@ class TestBumpConfig:
         try:
             if fake_fetch:
                 convert_mrs._fetch_latest_release_info = (
-                    lambda max_retries=3: {"tag_name": tag, "assets": assets}
+                    lambda max_retries=3, pinned=None: {"tag_name": tag, "assets": assets}
                 )
             os.chdir(work_dir)
             convert_mrs.bump_config()
@@ -328,7 +328,7 @@ class TestBumpConfigExactAsset:
         (work_dir / "config.yaml").write_text(self.CONFIG, encoding="utf-8")
         monkeypatch.setattr(
             convert_mrs, "_fetch_latest_release_info",
-            lambda max_retries=3: {"tag_name": tag, "assets": assets},
+            lambda max_retries=3, pinned=None: {"tag_name": tag, "assets": assets},
         )
         monkeypatch.chdir(work_dir)
         convert_mrs.bump_config()
@@ -430,3 +430,47 @@ class TestConfigGuard:
         cfg.write_text('mihomo:\n  pinned_version: "v1"\n', encoding="utf-8")
         monkeypatch.setattr(config_loader, "_CONFIG_FILE", cfg)
         convert_mrs.ensure_config_usable()
+
+
+class TestBumpQueriesLatest:
+
+    def test_bump_fetches_latest_not_the_pinned_tag(self, monkeypatch, work_dir):
+        seen = []
+
+        def fake_fetch(max_retries=3, pinned=None):
+            seen.append(pinned)
+            raise RuntimeError("stop-after-recording")
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
+        monkeypatch.chdir(work_dir)
+        (work_dir / "config.yaml").write_text(
+            'mihomo:\n  pinned_version: "v1.19.30"\n  asset_name: "a.gz"\n'
+            '  kernel_sha256: "00"\n', encoding="utf-8")
+        with pytest.raises(RuntimeError):
+            convert_mrs.bump_config()
+        assert seen == [""], "bump 路径必须用 /latest（pinned=\"\"）"
+
+    def test_latest_url_differs_from_pinned_url(self):
+        assert convert_mrs.release_api_url("", "https://api.github.com/x") == \
+            "https://api.github.com/x/latest"
+        assert convert_mrs.release_api_url("v1", "https://api.github.com/x") == \
+            "https://api.github.com/x/tags/v1"
+
+    def test_bump_actually_requests_the_latest_url(self, monkeypatch, work_dir):
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.full_url)
+            raise RuntimeError("stop-after-recording")
+
+        monkeypatch.setattr(convert_mrs.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(convert_mrs.time, "sleep", lambda _s: None)
+        monkeypatch.chdir(work_dir)
+        (work_dir / "config.yaml").write_text(
+            'mihomo:\n  pinned_version: "v1.19.30"\n  asset_name: "a.gz"\n'
+            '  kernel_sha256: "00"\n', encoding="utf-8")
+        with pytest.raises(RuntimeError):
+            convert_mrs.bump_config()
+        assert seen, "bump 路径没有发出任何请求"
+        assert seen[0].endswith("/releases/latest"), seen[0]
+        assert "/tags/" not in seen[0]

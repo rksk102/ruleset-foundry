@@ -3,7 +3,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -43,19 +43,22 @@ MANIFEST_FILE = RULESETS_DIR / "products.manifest"
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
+UNRECOGNIZED_MIN_LINES = 20
+
 AUTH_HOST_SUFFIXES = (
     "githubusercontent.com",
     "github.com",
-    "githubassets.com",
-    "github.io",
 )
 
 
 def is_trusted_host(url):
     try:
-        host = (urlsplit(url).hostname or "").lower()
+        parts = urlsplit(url)
     except ValueError:
         return False
+    if parts.scheme != "https":
+        return False
+    host = (parts.hostname or "").lower()
     if not host:
         return False
     return any(host == sfx or host.endswith("." + sfx) for sfx in AUTH_HOST_SUFFIXES)
@@ -82,8 +85,8 @@ def parse_retry_after(value, default):
         if when is None:
             return default
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        seconds = int((when - datetime.now(timezone.utc)).total_seconds())
+            when = when.replace(tzinfo=UTC)
+        seconds = int((when - datetime.now(UTC)).total_seconds())
     return max(0, min(seconds, MAX_RETRY_AFTER))
 
 
@@ -108,7 +111,7 @@ def source_repo_slug(url):
 
 
 _SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_UNSAFE_COMPONENT_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]")
+_UNSAFE_COMPONENT_CHARS_RE = re.compile(r'[/\\:*?"<>|#%@\s\x00-\x1f\x7f]')
 
 
 def safe_marker_value(value, label):
@@ -315,12 +318,15 @@ def process_group(group, raw_by_index):
         if unrecognized:
             ratio = unrecognized / len(all_lines)
             warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
-            if ratio >= UNRECOGNIZED_WARN_RATIO:
+            if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
                 errors["parse"].append((
                     group["path"],
                     f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
                     f"（{unrecognized}/{len(all_lines)}），疑似上游格式变更",
                 ))
+            elif ratio >= UNRECOGNIZED_WARN_RATIO:
+                warning(f"    占比超阈值但未识别行只有 {unrecognized} 行"
+                        f"（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
 
     if not result:
         for _idx, task in group["members"]:
@@ -355,7 +361,7 @@ def parse_sources():
         gh_error(f"文件 {SOURCES_FILE} 未找到！")
         sys.exit(1)
 
-    with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+    with open(SOURCES_FILE, encoding="utf-8") as f:
         content = f.read().lstrip("\ufeff")
 
     for line in content.splitlines():
@@ -459,7 +465,7 @@ async def download_one(session, task):
                 backoff_budget -= delay
                 await asyncio.sleep(delay)
 
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
             if attempt == RETRIES:
                 warning(f"  下载失败 [{attempt+1}/{RETRIES+1}]: {url} -> {e}")
                 return (task, None, f"{type(e).__name__}: {e}")
@@ -478,7 +484,7 @@ async def download_all(tasks):
         results = await asyncio.gather(*coros, return_exceptions=True)
 
     normalized = []
-    for task, result in zip(tasks, results):
+    for task, result in zip(tasks, results, strict=True):
         if isinstance(result, BaseException):
             normalized.append((task, None, f"{type(result).__name__}: {result}"))
         else:
@@ -492,7 +498,7 @@ def clean_orphans(expected_files):
         group_end()
         return
 
-    actual_files = set(str(p) for p in RULESETS_DIR.rglob("*.txt"))
+    actual_files = {str(p) for p in RULESETS_DIR.rglob("*.txt") if p.is_file()}
     expected_set = set(str(f) for f in expected_files)
 
     removed = 0
@@ -508,6 +514,26 @@ def clean_orphans(expected_files):
 
     info(f"  共清理 {removed} 个孤儿文件")
     group_end()
+
+
+def finalize_products(expected_files):
+    clean_orphans(expected_files)
+
+    produced = manifest.collect_files(RULESETS_DIR)
+    expected_rel = {
+        str(Path(p).relative_to(RULESETS_DIR)).replace("\\", "/") for p in expected_files
+    }
+    if produced != expected_rel:
+        gh_error(
+            f"产物清单与磁盘不一致：缺失 {sorted(expected_rel - produced)}，"
+            f"多出 {sorted(produced - expected_rel)}"
+            "（若为 Windows 本地运行，请检查路径的大小写与结尾点号是否被文件系统规范化）"
+        )
+        sys.exit(1)
+
+    manifest.save_manifest(MANIFEST_FILE, produced)
+    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
+    return produced
 
 
 def generate_summary(stats):
@@ -594,9 +620,6 @@ def main():
         label = f"[{group['policy']}/{group['type']}] {Path(group['path']).name}"
         success(f"  {label} -> {count} 条规则")
 
-    produced = manifest.collect_files(RULESETS_DIR)
-    info(f"  本轮产出 {len(produced)} 项（清单将在通过门禁后写入）")
-
     degraded = stats.success == 0
     if not degraded and groups:
         ratio = stats.success / len(groups)
@@ -640,10 +663,8 @@ def main():
             )
         sys.exit(1)
 
-    manifest.save_manifest(MANIFEST_FILE, produced)
-    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
+    finalize_products(expected_files)
 
-    clean_orphans(expected_files)
     generate_summary(stats)
 
     if STRICT_MODE and (stats.download_errors or stats.parse_errors):

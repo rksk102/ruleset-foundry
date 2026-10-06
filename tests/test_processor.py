@@ -5,34 +5,39 @@ import sys
 import processor
 
 
+def domains(lines, kind="exact"):
+    return processor.process_domain_detailed(lines, kind)[0]
+
+
+def detailed_stats(lines, kind="exact"):
+    return processor.process_domain_detailed(lines, kind)[1]
+
+
 class TestDomainKind:
     def test_default_is_exact(self):
-        assert processor.process_domain(["example.com"]) == ["example.com"]
+        assert domains(["example.com"]) == ["example.com"]
 
     def test_suffix_kind_promotes_bare_domain(self):
-        assert processor.process_domain(["example.com"], "suffix") == ["+.example.com"]
+        assert domains(["example.com"], "suffix") == ["+.example.com"]
 
     def test_suffix_kind_promotes_multi_label_and_single_label(self):
-        assert processor.process_domain(["ads.example.com", "local"], "suffix") == [
+        assert domains(["ads.example.com", "local"], "suffix") == [
             "+.ads.example.com",
             "+.local",
         ]
 
     def test_suffix_kind_keeps_full_prefix_exact(self):
-        assert processor.process_domain(["full:api.example.com"], "suffix") == ["api.example.com"]
+        assert domains(["full:api.example.com"], "suffix") == ["api.example.com"]
 
     def test_suffix_kind_keeps_explicit_suffix_unchanged(self):
-        assert processor.process_domain(["domain:example.com"], "suffix") == ["+.example.com"]
+        assert domains(["domain:example.com"], "suffix") == ["+.example.com"]
 
     def test_suffix_kind_preserves_wildcard_and_subdomain_forms(self):
-        result = processor.process_domain(["*.example.com", ".sub.example.com"], "suffix")
+        result = domains(["*.example.com", ".sub.example.com"], "suffix")
         assert result == ["*.example.com", ".sub.example.com"]
 
-    def test_suffix_kind_does_not_promote_explicit_full(self):
-        assert processor.process_domain(["full:api.example.com"], "suffix") == ["api.example.com"]
-
     def test_suffix_kind_promotes_unmarked_only(self):
-        result, stats = processor.process_domain_detailed(
+        _result, stats = processor.process_domain_detailed(
             ["a.com", "full:b.com", "host:c.com", "domain:d.com"], "suffix"
         )
         assert stats["suffix_promoted"] == 1
@@ -53,15 +58,15 @@ class TestDomainKind:
 
     def test_suffix_promotion_does_not_drop_entries(self):
         lines = ["a.com", "b.example.com", "full:c.net", "*.d.org", ".e.io", "f"]
-        exact = set(processor.process_domain(lines, "exact"))
-        suffixed = set(processor.process_domain(lines, "suffix"))
+        exact = set(domains(lines, "exact"))
+        suffixed = set(domains(lines, "suffix"))
         assert len(exact) == len(suffixed)
         assert {x.lstrip("+.") for x in suffixed} == {x.lstrip("+.") for x in exact}
 
 
 class TestDomainCleaning:
     def clean(self, lines):
-        return processor.process_domain(lines)
+        return domains(lines)
 
     def test_plain_domain_kept_as_exact(self):
         assert self.clean(["example.com"]) == ["example.com"]
@@ -107,7 +112,6 @@ class TestDomainCleaning:
         assert self.clean(["0.0.0.0 ads.example.com"]) == ["ads.example.com"]
 
     def test_leading_dot_is_subdomain_only(self):
-        """`.d` 是「仅子域，不含 apex」，与 `+.d` 匹配集不同，必须区分。"""
         result, stats = processor.process_domain_detailed([".ads.example.com"])
         assert result == [".ads.example.com"]
         assert stats["subdomain"] == 1
@@ -222,7 +226,7 @@ class TestClassicalRuleTypes:
 
 class TestNoSilentDrop:
 
-    DROPPED_SHAPES = [
+    DROPPED_SHAPES = (
         "@@||white.example.com^",
         "keyword:tracker",
         r"regexp:^ads\.",
@@ -236,7 +240,7 @@ class TestNoSilentDrop:
         "trailing.com.",
         "-bad.com",
         "has space.com",
-    ]
+    )
 
     def test_every_dropped_shape_is_counted(self):
         unaccounted = []
@@ -273,21 +277,22 @@ class TestNoSilentDrop:
         _out, stats = processor.process_domain_detailed([""])
         assert stats["unrecognized"] == 0
 
-class TestDetailedParity:
-    MIXED = [
+class TestMixedBatch:
+    MIXED = (
         "@@exception.com",
         "keyword:kw",
         "full:exact.com",
         "||anchor.com^",
         "normal.com",
-    ]
+    )
 
-    def test_detailed_matches_legacy_wrappers(self):
-        expected_result = processor.process_domain(self.MIXED)
-        expected_stats = processor.analyze_domain(self.MIXED)
+    def test_mixed_batch_result_and_stats(self):
         result, stats = processor.process_domain_detailed(self.MIXED)
-        assert result == expected_result
-        assert stats == expected_stats
+        assert result == ["anchor.com", "exact.com", "normal.com"]
+        assert stats["relaxed_exact"] == 3
+        assert stats["dropped_exception"] == 1
+        assert stats["dropped_keyword"] == 1
+        assert stats["dropped_exception"] + stats["dropped_keyword"] == len(self.MIXED) - len(result)
 
 
 class TestParseLines:
@@ -348,7 +353,7 @@ class TestProcessIp:
 
 class TestDecodeHelpers:
     def test_safe_decode_utf8(self):
-        assert processor.safe_decode("域名.com".encode("utf-8")) == "域名.com"
+        assert processor.safe_decode("域名.com".encode()) == "域名.com"
 
     def test_safe_decode_garbage_returns_something_via_latin1(self):
         assert processor.safe_decode(b"\xff\xfe") != ""
@@ -360,7 +365,7 @@ class TestDecodeHelpers:
 
 class TestRuleTypeTable:
 
-    DOCUMENTED = [
+    DOCUMENTED = (
         "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD", "DOMAIN-REGEX",
         "GEOSITE", "GEOIP", "SRC-GEOIP",
         "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN",
@@ -368,7 +373,7 @@ class TestRuleTypeTable:
         "PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
         "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX", "UID", "NETWORK", "DSCP",
         "RULE-SET", "SUB-RULE", "AND", "OR", "NOT", "MATCH",
-    ]
+    )
 
     def test_documented_mihomo_types_are_recognized(self):
         for name in self.DOCUMENTED:

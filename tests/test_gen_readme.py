@@ -28,7 +28,6 @@ class TestFormatSize:
         assert gen_readme.format_size(4_529_923) == "4.32 MB"
 
     def test_does_not_exceed_last_unit(self):
-        """超出 GB 时仍以 GB 表示，不越界索引 units。"""
         out = gen_readme.format_size(1024 ** 5)
         assert out.endswith(" GB")
 
@@ -116,7 +115,6 @@ class TestWriteTableRows:
         full = "merged-rules/block/domain/Owner/a.txt"
         assert f"{gen_readme.BASE_RAW}/{full}" in row
         assert f"{gen_readme.BASE_JSDELIVR}/{full}" in row
-        # BASE_GHPROXY 自身已包含 BASE_RAW，不要再拼一次
         assert f"{gen_readme.BASE_GHPROXY}/{full}" in row
         assert gen_readme.BASE_GHPROXY.endswith(gen_readme.BASE_RAW)
         assert "/artifacts" in gen_readme.BASE_RAW
@@ -171,7 +169,7 @@ class TestResolveBadgeTime:
         original_hash = gen_readme.combined_products_hash
         original_last = gen_readme.load_last_hash
         gen_readme.README_FILE = str(tmp_path / "absent.md")
-        gen_readme.combined_products_hash = lambda: ("h", 1, 1)
+        gen_readme.combined_products_hash = lambda *a, **k: ("h", 1, 1)
         gen_readme.load_last_hash = lambda: "h"
         try:
             assert gen_readme.resolve_badge_time() is None
@@ -187,7 +185,7 @@ class TestResolveBadgeTime:
         original_hash = gen_readme.combined_products_hash
         original_last = gen_readme.load_last_hash
         gen_readme.README_FILE = str(readme)
-        gen_readme.combined_products_hash = lambda: ("same", 1, 1)
+        gen_readme.combined_products_hash = lambda *a, **k: ("same", 1, 1)
         gen_readme.load_last_hash = lambda: "same"
         try:
             assert gen_readme.resolve_badge_time() == "2026--01--02%2003%3A04"
@@ -203,7 +201,7 @@ class TestResolveBadgeTime:
         original_hash = gen_readme.combined_products_hash
         original_last = gen_readme.load_last_hash
         gen_readme.README_FILE = str(readme)
-        gen_readme.combined_products_hash = lambda: ("new", 1, 1)
+        gen_readme.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         gen_readme.load_last_hash = lambda: "old"
         try:
             assert gen_readme.resolve_badge_time() is None
@@ -257,7 +255,6 @@ class TestMakePageHeader:
         assert gen_readme.BADGE_TIME_RE.search(html)
 
     def test_all_links_point_at_artifacts_branch(self):
-        """页头里的徽章与链接不得回退到 main/master。"""
         html = gen_readme.make_page_header("2026--01--02%2003%3A04")
         assert gen_readme.ARTIFACTS_BRANCH == "artifacts"
         assert not re.search(r"/(main|master)(/|\?|\"|$)", html)
@@ -314,7 +311,6 @@ class TestMain:
 
 class TestOutputSemantics:
     def test_bare_and_prefixed_forms_stay_distinct_in_readme_table(self, tmp_path):
-        """README 表格只是链接与大小，不参与语义处理；确认静态说明与产物写法一致。"""
         rules = tmp_path / "merged-rules"
         write(rules / "block" / "A" / "x.txt",
               "+.a.com\n.a.com\na.com\n*.a.com\n")

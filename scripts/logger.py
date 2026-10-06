@@ -10,12 +10,9 @@ from utils import beijing_now
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
-    DIM = "\033[2m"
     GREEN = "\033[32m"
     RED = "\033[31m"
     YELLOW = "\033[33m"
-    CYAN = "\033[36m"
-    BLUE = "\033[94m"
     MAGENTA = "\033[95m"
 
 LOG_KEEP_COUNT = 20
@@ -23,8 +20,6 @@ LOG_KEEP_COUNT = 20
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _ESCAPE_RE = re.compile(r"[%\r\n]")
 _ESCAPE_MAP = {"%": "%25", "\r": "%0D", "\n": "%0A"}
-_UNESCAPE_RE = re.compile(r"%25|%0D|%0A")
-_UNESCAPE_MAP = {"%25": "%", "%0D": "\r", "%0A": "\n"}
 
 _logger = None
 _log_file_handle = None
@@ -33,10 +28,6 @@ _LOG_FILE = None
 
 def _escape_data(value):
     return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], str(value))
-
-
-def _unescape_data(value):
-    return _UNESCAPE_RE.sub(lambda m: _UNESCAPE_MAP[m.group(0)], str(value))
 
 
 def _render(msg, args):
@@ -50,14 +41,6 @@ class _StripAnsiFilter(logging.Filter):
     def filter(self, record):
         if isinstance(record.msg, str) and "\x1b" in record.msg:
             record.msg = _ANSI_RE.sub("", record.msg)
-        return True
-
-
-class _UnescapeFilter(logging.Filter):
-    def filter(self, record):
-        if isinstance(record.msg, str):
-            record.msg = _unescape_data(record.msg)
-            record.args = ()
         return True
 
 
@@ -129,11 +112,6 @@ def _init_logger():
     _cleanup_old_logs()
 
 
-def get_logger():
-    _init_logger()
-    return _logger
-
-
 def info(msg, *args):
     _init_logger()
     _logger.info(_render(msg, args))
@@ -145,9 +123,6 @@ def debug(msg, *args):
 
 
 def _defang_command_lines(text):
-    # The runner trims leading whitespace before matching "::" (actions/runner
-    # ActionCommand.TryParseV2 does message.TrimStart()), so indenting is not a
-    # defence. Escape the colons instead: "%3A%3A" never matches the prefix.
     return "\n".join(
         ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line
         for line in text.split("\n")

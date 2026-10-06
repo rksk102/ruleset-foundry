@@ -1,5 +1,6 @@
 import base64
 import binascii
+import ipaddress
 import re
 import sys
 
@@ -52,6 +53,31 @@ def classify_rule_line(line):
     return "opaque", payload, type_name
 
 
+def _is_ip_literal(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _valid_wildcard(value):
+    if value.endswith('.') or value.startswith('*.') is False or any(c.isspace() for c in value):
+        return False
+    if '/' in value:
+        return False
+    labels = value.split('.')
+    if len(labels) < 2 or labels[0] != '*':
+        return False
+    for label in labels[1:]:
+        if label == '*':
+            continue
+        if not label or label[0] == '-' or label[-1] == '-' or not all(
+                c.isalnum() or c in '-_' for c in label):
+            return False
+    return True
+
+
 def ipcidr_drop_reason(type_name):
     if type_name in _UNEXPRESSIBLE_IP_TYPES:
         return f"mihomo 的 {type_name} 无法用 ipcidr 规则集表达（载荷不是 CIDR）"
@@ -85,11 +111,10 @@ def safe_decode(binary_data):
     return ""
 
 def is_text_data(text):
-    if '\0' in text: return False
-    non_printable = sum(1 for c in text if not c.isprintable() and c not in '\r\n\t')
-    if len(text) > 0 and (non_printable / len(text)) > 0.3:
+    if '\0' in text:
         return False
-    return True
+    non_printable = sum(1 for c in text if not c.isprintable() and c not in '\r\n\t')
+    return not (text and non_printable / len(text) > 0.3)
 
 def explicit_base64_decode(text):
     s = text.replace('\n', '').replace('\r', '').strip()
@@ -180,7 +205,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
     valid_domains = set()
     stats = new_stats()
     stats["suffix_promoted"] = 0
-    ip_check = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
 
     prefix_rules = (
         ('domain-suffix:', 'suffix'),
@@ -229,20 +253,19 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             continue
 
         s = s.strip()
-        # `*.d` 与 `*.*.d` 保持原样：`*` 只匹配一级且不含 apex，剥掉会改变匹配集
         if re.match(r'^\*\.', s):
-            s = re.sub(r'\s+', '', s)
-            if not s.endswith('.') and '*' in s:
-                stats["wildcard"] += 1
-                valid_domains.add(s.lower())
+            if not _valid_wildcard(s):
+                stats["unrecognized"] += 1
                 continue
+            stats["wildcard"] += 1
+            valid_domains.add(s.lower())
+            continue
         if domain_kind == 'suffix' and semantic is None and s.startswith('+.'):
             semantic = 'suffix'
         if s.startswith('+.'):
             semantic = 'suffix'
             s = s[2:]
         elif s.startswith('.'):
-            # `.d` 是「仅子域，不含 apex」，与 `+.d` 不同；保留前导点
             semantic = 'subdomain'
             s = s.lstrip('.')
 
@@ -255,10 +278,17 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if '^' in s: s = s.replace('^', '')
         s = re.sub(r'^(\+\.)', '', s)
         if '/' in s: s = s.split('/')[0]
-        if ':' in s: s = s.split(':')[0]
+        s = s.strip('[]')
+        if ':' in s:
+            head, _, port = s.rpartition(':')
+            if port.isdigit() and '.' in head:
+                s = head
 
         s = s.strip().lower()
         if not s:
+            stats["unrecognized"] += 1
+            continue
+        if _is_ip_literal(s):
             stats["unrecognized"] += 1
             continue
         if '.' not in s:
@@ -285,9 +315,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             stats["unrecognized"] += 1
             continue
         if '*' in s:
-            stats["unrecognized"] += 1
-            continue
-        if ip_check.match(s):
             stats["unrecognized"] += 1
             continue
         if s.startswith('.') or s.endswith('.') or '..' in s:
@@ -323,14 +350,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
 
 def process_domain_detailed(lines, domain_kind="exact"):
     return _analyze_and_process_domain(lines, domain_kind)
-
-
-def analyze_domain(lines, domain_kind="exact"):
-    return _analyze_and_process_domain(lines, domain_kind)[1]
-
-
-def process_domain(lines, domain_kind="exact"):
-    return _analyze_and_process_domain(lines, domain_kind)[0]
 
 
 def process_ip_detailed(lines):

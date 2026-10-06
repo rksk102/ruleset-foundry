@@ -147,7 +147,10 @@ def _validate_scalar(section, key, value):
     if isinstance(value, bool) and expected is not bool:
         raise ConfigError(f"{section}.{key} 期望 {expected.__name__}，实际 bool（{value!r}）")
     if expected is float and isinstance(value, int):
-        return value
+        try:
+            value = float(value)
+        except OverflowError as e:
+            raise ConfigError(f"{section}.{key} 数值超出 float 范围（{value!r}）") from e
     if not isinstance(value, expected):
         raise ConfigError(
             f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）"
@@ -197,7 +200,7 @@ def load_config():
                 "请运行 pip install -r requirements.txt"
             )
         try:
-            with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(_CONFIG_FILE, encoding="utf-8") as f:
                 user_data = yaml.safe_load(f)
         except yaml.YAMLError as e:
             raise ConfigError(f"配置文件 {_CONFIG_FILE} YAML 语法错误: {e}") from e
@@ -214,10 +217,16 @@ def load_config():
         _merge_dict(cfg, user_data)
 
     for section, values in cfg.items():
-        if section == "merges" or not isinstance(values, dict):
+        if section == "merges":
             continue
+        if not isinstance(values, dict):
+            raise ConfigError(
+                f"配置节 {section!r} 必须是映射，实际 {type(values).__name__}"
+            )
         for key, value in values.items():
-            _validate_scalar(section, key, value)
+            if (section, key) not in _TYPES:
+                raise ConfigError(f"未知配置项: {section}.{key}（请检查拼写）")
+            values[key] = _validate_scalar(section, key, value)
     _validate_merges(cfg.get("merges"))
 
     if os.getenv("STRICT_MODE"):

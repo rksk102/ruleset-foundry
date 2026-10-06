@@ -34,118 +34,68 @@ reviews:
     - "!**/__pycache__/**"
     - "!**/*.pyc"
     - "!*.zip"
-    - "!docs/**"
     - "!.gitignore"
     - "!.mimosa/**"
 
   path_instructions:
     - path: "scripts/processor.py"
       instructions: |
-        本文件把上游规则文本清洗成 mihomo `behavior: domain` 规则集格式。审查时以此为准：
-
-        - 输出格式有四种含义，匹配集互不相同，不可互换：
-          `+.d` = d 及其全部子域；`.d` = 仅子域（不含 apex）；裸 `d` = 仅主机名 d；
-          `*.d` = 恰好一级子域（不含 apex）。把 `.d` 剥成裸域名会把匹配集从
-          "全部子域" 移到 "仅 apex"，属严重缺陷。
-        - `*.d`、`*.*.d` 是 mihomo 合法通配符语法，必须原样透传，不得丢弃或改写。
-        - 任何被丢弃的行都必须落入 new_stats() 的某个具名计数器。新增丢弃分支而
-          未计数，属于缺陷，请指出。
-        - classical 规则（DOMAIN-SUFFIX,/DOMAIN,/IP-CIDR,/GEOIP, 等）必须在
-          域名清洗**之前**由 classify_rule_line 路由——清洗会先按 ':' '/' ' ' 切分，
-        之后无法还原。
-        - `DOMAIN-KEYWORD,` / `domain-regex:` 之类负载绝不能被当作域名输出，否则
-          会向上游规则集注入假域名。
-        - 清洗保持单遍；为新增分支引入二次遍历或非预编译正则会抵消既有的性能优化。
+        规则集四种写法匹配集不同，不可互换：`+.d`=d 及全部子域；`.d`=仅子域；裸 `d`=仅主机名；
+        `*.d`=恰一级子域（`*` 必须独占整个标签）。`*.d`/`*.*.d` 须原样透传。
+        任何被丢弃的行必须落入 new_stats() 的具名计数器。
+        classical 规则必须先经 classify_rule_line 路由，再进域名清洗。
+        `DOMAIN-KEYWORD,`/`regexp:` 之类负载不得当作域名输出。
 
     - path: "scripts/utils.py"
       instructions: |
-        - DomainTrie 区分 SUFFIX(`+.d`)、SUBDOMAIN(`.d`)、EXACT(`d`) 三种标记。
-          只有 SUFFIX 具备覆盖能力：它涵盖 `.d`、裸 `d` 及其子级写法。
-          `.d` 与裸 `d` 匹配集不相交，不得互相删除。
-          判定必须用 has_marked_ancestor（含自身）；covering_parent 只返回严格
-          祖先，会漏掉同名 `+.d`。
-        - clean_directory 返回未清理条目列表供调用方告警。改回静默 `except: pass`
-          属于回归。
-        - flatten_ip_cidr 丢弃默认路由（/0）是有意为之。
+        DomainTrie 的 SUFFIX(`+.d`)/SUBDOMAIN(`.d`)/EXACT(`d`) 语义见 processor 说明；
+        只有 SUFFIX 有覆盖能力，`.d` 与裸 `d` 匹配集不相交。
+        判定用 has_marked_ancestor（含自身），covering_parent 只返回严格祖先。
+        clean_directory 必须返回未清理条目；flatten_ip_cidr 丢弃 /0 是有意为之。
 
     - path: "scripts/main.py"
       instructions: |
-        - 进程组内所有输出都必须是「原子写 + 已注册来源」；任何路径都不允许因失败
-          而静默消失。
-        - 未识别/丢弃行占比超过 unrecognized_warn_ratio 时必须记入 parse_errors；
-          移除该门禁属于回归。
-        - Authorization 头只能发给 is_trusted_host 白名单内的 GitHub 系主机。
-          放宽该白名单会造成 token 泄漏，属严重缺陷。
-        - 重试必须尊重 Retry-After 并受 MAX_RETRY_AFTER 封顶与退避总预算约束；
-          等待必须在 `async with` 之外，否则占用 per-host 连接名额。
-        - 408/425/429/5xx 可重试；其余 4xx 不可重试。
-        - 输出路径跨来源冲突必须消歧，且消歧结果不得与既有路径撞车。
+        产物必须「原子写 + 登记来源」，任何路径都不得静默消失。
+        未识别行占比超过 unrecognized_warn_ratio 且达到绝对下限时必须记入 parse_errors。
+        Authorization 只发给 is_trusted_host 白名单内的 GitHub 系主机。
+        重试须尊重 Retry-After 并受 MAX_RETRY_AFTER 与退避预算封顶；408/425/429/5xx 可重试，
+        其余 4xx 不可；等待不得占用 per-host 连接名额。
+        输出路径跨来源冲突必须消歧且不与既有路径撞车。
 
     - path: "scripts/convert_mrs.py"
       instructions: |
-        - 内核二进制在执行前必须完成校验：压缩流比对 asset.digest，解压后比对
-          kernel_sha256。任何「无哈希也可执行」的路径都是缺陷。
-        - verify_kernel_file 的 require_sha=True 表示哈希缺失即拒绝。不得削弱为
-          仅校验 ELF magic 后继续执行。
+        内核执行前必须完成校验：压缩流比对 asset.digest（digest 来自 GitHub API 对该资产的记录，
+        即独立锚点；压缩流既已对上，解压后内容即被传递性锚定）、解压后比对 config.yaml 里 pin 的
+        kernel_sha256。「无哈希也可执行」属缺陷，require_sha=True 不得被削弱。
+        --bump-config 首次引入新版本时尚无 pin 可对，此时禁止用刚算出的哈希自我比对；
+        新哈希写入 config.yaml 后经 kernel-bump PR 人工评审，下一次运行才走固定哈希路径。
+        转换子进程必须有超时，失败必须让本轮退出码非零。
 
     - path: "scripts/merger.py"
       instructions: |
-        - 合并去重遵循 scripts/utils.py 的 SUFFIX/EXACT 语义。
-        - 产物头部必须透传全部来源 URL（`# Sources:`），这是溯源依据。
-        - 产出数量硬校验（成功+跳过 != 期望即失败）不得移除。
+        合并去重遵循上述 SUFFIX/EXACT 语义；产物头部必须透传全部 `# Sources:`。
+        产出数量硬校验（成功+跳过 != 期望即失败）不得移除；
+        合并结果为空、或合并任务与自动透传输出同路径，必须 fail-closed。
 
     - path: "scripts/release_handler.py"
       instructions: |
-        - Release 标签为 rules-YYYY-MM-DD；同日重复运行是原地更新，不是新建。
-        - gh CLI 不可用时必须显式失败，不得静默继续。
+        Release 标签为 rules-YYYY-MM-DD，同日重复运行是原地更新。
+        gh CLI 不可用时必须显式失败；发布后必须确认 Release 至少有一个资产。
+        产物校验不依赖 release_change_detection 开关。
 
     - path: "tests/**"
       instructions: |
-        - 断言必须与 mihomo `behavior: domain` 的真实语义一致：`+.d` 是域+子域，
-          `.d` 是仅子域，裸 `d` 是仅主机名。断言裸 `d` 覆盖子域、或断言 `.d`
-          覆盖 apex，都属于错误测试。
-        - 断言不得引用不存在的路径（例如 _run 把 KERNEL_BIN 设在 tmp_path/k/，
-          断言就应检查 tmp_path/k/kernel）。永远为真的断言等于没有断言。
-        - TestNoSilentDrop 是性质测试：任何被丢弃的行都必须命中具名计数器。
-          新增丢弃行为时应同步扩展该测试。
-        - 需要 tmp 目录的测试直接用 pytest 的 tmp_path，不要自建临时目录。
+        断言必须与实现语义一致，且不得引用不存在的路径；永远为真的断言等于没有断言。
+        需要临时目录时优先用 conftest 的 work_dir fixture。
+        新增丢弃行为应同步扩展 TestNoSilentDrop。
 
     - path: ".github/workflows/**"
       instructions: |
-        - 所有第三方 action 必须钉到 40 位 commit SHA，并保留同行 `# vX.Y.Z`
-          版本标注（Dependabot 依据该标注维护版本号，删除会导致更新失去版本号）。
-        - 执行下载来的二进制（如 mihomo 内核）的 job 不得同时持有
-          contents: write；写权限必须拆分到独立 job。
-        - gh pr merge 必须带 --match-head-commit 绑定 CI 已验证的 SHA，并对其
-          空值 fail-closed（空值等于完全不校验）。
-        - 不得向 main 提交 merged-rules/ 或 merged-rules-mrs/；产物只推 artifacts 分支。
-        - 表达式（${{ }}）应经 env: 中转后再进 run:，避免脚本注入。
-
-    - path: ".github/actions/**"
-      instructions: |
-        复合 Action 同样受第三方 action 钉扎与版本标注约束。注意 Dependabot 默认
-        扫不到本目录，修改此处钉扎时需人工确认版本。
-
-    - path: "config.yaml"
-      instructions: |
-        - merged_output_dir / mrs_output_dir 是指向生成产物的路径，已被 gitignore，
-          不得从 .gitignore 移除。
-        - mihomo.asset_name 指向 GOAMD64=v3 构建（需 AVX2）；kernel_sha256 是解压后
-          ELF 的哈希，与 release 的 asset.digest（压缩流）不是同一对象。
-        - behavior.conflict_policy 与 unrecognized_warn_ratio 影响流水线门禁，
-          收紧前需确认不会误伤。
-
-    - path: "sources.urls"
-      instructions: |
-        - 每行一个 URL；[policy:xxx] / [type:xxx] 为分组标记，会决定输出的策略目录。
-        - 同一 (policy, type) 下不同仓库的同名文件会被消歧为 owner__repo 目录；
-          新增源前先确认不会与既有源产生输出路径碰撞。
-        - 已发布产物的 URL 由这些源决定，改动会影响下游用户。
-
-    - path: "scripts/purge-artifacts-history.ps1"
-      instructions: |
-        这是仓库外使用的一次性历史清理脚本。若它出现在本仓库中，本身就是问题——
-        它带着 force-push main 的能力，不应纳入版本控制。
+        第三方 action 必须钉 40 位 commit SHA 并保留同行 `# vX.Y.Z`（Dependabot 依赖该标注）；
+        docker:// 镜像按 digest 固定。
+        执行下载来的二进制的 job 不得同时持有 contents: write。
+        gh pr merge 必须带 --match-head-commit 且对空值 fail-closed。
+        不得向 main 提交 merged-rules/ 或 merged-rules-mrs/。
 
   tools:
     # CI 已用受控的 .ruff.toml 自行 lint，此处关闭以免重复且口径不一

@@ -19,8 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  group: default-branch-write
+  cancel-in-progress: false
 
 jobs:
   sync-rules:
@@ -29,6 +29,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
@@ -51,6 +53,8 @@ jobs:
     needs: sync-rules
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 下载 rulesets 产物
@@ -83,7 +87,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # 本作业随后会下载并执行 mihomo 内核，不应把 GITHUB_TOKEN 留在 .git/config
           persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
@@ -132,10 +135,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     needs: convert-mrs
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 README/state
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
       - name: 清空旧产物
@@ -175,8 +179,7 @@ jobs:
           ARTIFACTS_BRANCH: artifacts
         run: |
           set -euo pipefail
-          # 在独立 worktree 中操作：orphan 提交需要清空工作区，若在主工作区执行
-          # 会删掉刚生成的 README.md，导致后续 README 提交步骤无内容可提交。
+          # 独立 worktree：orphan 提交会清空工作区，不能在主工作区执行
           WT="$(mktemp -d)"
           git worktree add --detach "$WT"
           (
