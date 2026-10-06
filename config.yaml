@@ -52,6 +52,6 @@ behavior:
 mihomo:
   kernel_cache_path: ".cache/mihomo-kernel"
   repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-  pinned_version: "v1.19.30"
-  asset_name: "mihomo-linux-amd64-v1.19.30.gz"
-  kernel_sha256: "3e92df24f5e80e86b9cf9183ceb7bb575f0bd132a9dc4081dae42e80f21076ae"
+  pinned_version: "v1.19.32"
+  asset_name: "mihomo-linux-amd64-v1.19.32.gz"
+  kernel_sha256: "3122d100e8177501776109f1a6253a694611627cf4d7c7ec82705855cf8626a8"
