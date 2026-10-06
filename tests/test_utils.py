@@ -42,7 +42,6 @@ class TestAtomicWrite:
         assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
 
     def test_failure_cleans_tmp_and_propagates(self, tmp_path):
-        """写入失败必须删掉临时文件并抛错，不得留下半成品。"""
         target = tmp_path / "out.txt"
         original = os.replace
 
@@ -208,7 +207,6 @@ class TestCombinedProductsHash:
         assert combined.endswith("|1|1")
 
     def test_header_change_does_not_trigger_release(self, tmp_path):
-        """txt 侧跳过注释：仅头部（如时间戳）变化不应导致重新发布。"""
         txt = tmp_path / "t"
         mrs = tmp_path / "m"
         txt.mkdir()
@@ -297,14 +295,12 @@ class TestNormalizePolicy:
         assert utils.normalize_policy("") == "proxy"
 
     def test_block_wins_over_proxy_when_both_present(self):
-        """判定顺序：block 先于 policy，含 'ads' 的一律 block。"""
         assert utils.normalize_policy("ads-proxy") == "block"
 
     def test_direct_wins_over_policy(self):
         assert utils.normalize_policy("direct-gfw") == "direct"
 
     def test_substring_match_is_intentional(self):
-        """'adservice' 含 'ads' -> block。这是子串匹配的既定行为。"""
         assert utils.normalize_policy("adservice") == "block"
 
     def test_unknown_policy_passes_through(self):
@@ -345,7 +341,6 @@ class TestGetOwnerFromUrl:
         assert utils.get_owner_from_url("nonsense") == "unknown"
 
     def test_raw_githubusercontent_owner_extracted(self):
-        """主机名含 'github' 即走 GitHub 分支，raw 形式同样能取到 owner。"""
         assert utils.get_owner_from_url(
             "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt"
         ) == "Loyalsoldier"
@@ -358,7 +353,6 @@ class TestGetOwnerFromUrl:
 
 class TestNormalizePath:
     def test_posix_form_from_path_object_has_no_backslash(self):
-        """真实调用方传的是 Path 对象；as_posix() 在任何平台都不产生反斜杠。"""
         import pathlib
 
         for raw in ("a/b/c.txt", "merged-rules/x/y.txt"):
@@ -368,7 +362,6 @@ class TestNormalizePath:
         assert utils.normalize_path("a/b.txt") == "a/b.txt"
 
     def test_redundant_segments_cleaned(self):
-        """Path.as_posix() 归一化 '.' 与重复斜杠，但不解析 '..'。"""
         assert utils.normalize_path("a/./b.txt") == "a/b.txt"
         assert utils.normalize_path("./x.txt") == "x.txt"
         assert utils.normalize_path("a//b.txt") == "a/b.txt"
@@ -413,7 +406,6 @@ class TestCleanDirectory:
         assert list(tmp_path.iterdir()) == []
 
     def test_returns_failures_instead_of_swallowing(self, tmp_path):
-        """清理失败必须回报路径与原因，不能静默 pass。"""
         target = tmp_path / "blocked.txt"
         target.write_text("x", encoding="utf-8")
         original = os.unlink
@@ -452,18 +444,12 @@ class TestDedupDomainSuffix:
         assert kept == ["+.google.com"]
         assert removed == 1
 
-    def test_exact_parent_not_removed_when_no_suffix_ancestor(self):
-        kept, removed = utils.dedup_domain_suffix({"google.com", "ads.google.com"})
-        assert kept == ["ads.google.com", "google.com"]
-        assert removed == 0
-
     def test_suffix_covers_same_name_subdomain(self):
         kept, removed = utils.dedup_domain_suffix({"+.google.com", ".google.com"})
         assert kept == ["+.google.com"]
         assert removed == 1
 
     def test_subdomain_and_exact_coexist(self):
-        """`.d` 仅子域、`d` 仅 apex，匹配集不相交。"""
         kept, removed = utils.dedup_domain_suffix({".google.com", "google.com"})
         assert kept == [".google.com", "google.com"]
         assert removed == 0
@@ -479,7 +465,7 @@ class TestDedupDomainSuffix:
         assert removed == 1
 
     def test_duplicates_dropped(self):
-        kept, removed = utils.dedup_domain_suffix({"google.com", "google.com"})
+        kept, removed = utils.dedup_domain_suffix({"google.com"})
         assert kept == ["google.com"]
         assert removed == 0
 

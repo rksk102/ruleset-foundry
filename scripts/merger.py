@@ -69,7 +69,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
             missing_files.append(rel_input)
             continue
 
-        with open(full_src_path, "r", encoding="utf-8") as f:
+        with open(full_src_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -106,9 +106,8 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     opt_count = len(final_list)
 
-    if mode == "IP-CIDR" and not final_list:
-        warning(f"    未解析出任何 CIDR，跳过任务: {filename}")
-        return None
+    if not final_list:
+        raise ValueError(f"合并结果为空（0 条规则），拒绝写出只有表头的产物: {filename}")
 
     count_desc = f"{opt_count} (Raw: {raw_count})"
     if dedup_removed > 0:
@@ -143,7 +142,7 @@ def auto_discover_files(source_dir=None):
     if not os.path.exists(root_dir):
         return []
 
-    for root, dirs, files in os.walk(root_dir):
+    for root, _dirs, files in os.walk(root_dir):
         for file in files:
             if file.startswith(".") or not file.endswith(".txt"):
                 continue
@@ -170,7 +169,7 @@ def auto_discover_files(source_dir=None):
 
 def load_domains_from_file(filepath):
     domains = set()
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -227,7 +226,6 @@ def detect_cross_policy_conflicts(merged_dir):
     explicit_conflicts = {}
     for i, s1 in enumerate(strategies):
         for s2 in strategies[i + 1:]:
-            # 按裸域名比较：`+.a.com` 与 `a.com` 指的是同一域名
             left = {bare(d) for d in policy_domains[s1]}
             right = {bare(d) for d in policy_domains[s2]}
             overlap = left & right
@@ -238,7 +236,6 @@ def detect_cross_policy_conflicts(merged_dir):
     for strategy, domains in policy_domains.items():
         trie = DomainTrie()
         for domain in domains:
-            # 必须区分 `+.d` 与裸 `d`：前者才具备覆盖子域的能力
             trie.add(bare(domain), kind_of(domain))
         tries[strategy] = trie
 
@@ -250,7 +247,6 @@ def detect_cross_policy_conflicts(merged_dir):
             key = f"{parent_strategy}(父) → {child_strategy}(子)"
             items = []
             for domain in sorted(child_domains):
-                # 只有父策略的 `+.` 后缀条目才真正覆盖子策略条目
                 ancestor = parent_trie.covering_parent(bare(domain), DomainTrie.SUFFIX)
                 if ancestor:
                     items.append((domain, ancestor))
@@ -287,6 +283,14 @@ def main():
                 error(f"    - {rel}")
             sys.exit(1)
 
+    auto_tasks = auto_discover_files()
+    overlap = sorted(merge_product_paths(config_tasks) & merge_product_paths(auto_tasks))
+    if overlap:
+        for rel in overlap:
+            error(f"合并任务与自动透传输出同一路径: {rel}")
+        error("请改用不同的 owner/filename，或把该路径从 merges.inputs 中移除")
+        sys.exit(1)
+
     if os.path.exists(OUTPUT_DIR):
         info("  清理输出目录...")
         for path, why in clean_directory(OUTPUT_DIR):
@@ -317,11 +321,10 @@ def main():
                     stats["skipped"] += 1
             except Exception as e:
                 stats["failed"] += 1
-                error_logs.append(f"配置任务 '{fname}': {str(e)}")
+                error_logs.append(f"配置任务 '{fname}': {e!s}")
                 warning(f"  [失败] {fname}: {e}")
         group_end()
 
-    auto_tasks = auto_discover_files()
     if auto_tasks:
         group_start(f"自动发现透传 ({len(auto_tasks)})")
         for t in auto_tasks:
@@ -339,7 +342,7 @@ def main():
                     stats["skipped"] += 1
             except Exception as e:
                 stats["failed"] += 1
-                error_logs.append(f"自动任务 '{t['filename']}': {str(e)}")
+                error_logs.append(f"自动任务 '{t['filename']}': {e!s}")
                 warning(f"  [失败] {t['filename']}: {e}")
         group_end()
 

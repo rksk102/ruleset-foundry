@@ -11,23 +11,30 @@ from logger import error, group_end, group_start, info, section, success, warnin
 from utils import beijing_now, combined_products_hash, load_last_hash, save_last_hash
 
 REPO_ROOT = os.getcwd()
-TARGET_CONFIG = {
-    "merged-rules": ".txt",
-    "merged-rules-mrs": ".mrs",
-}
-KEEP_DAYS = get("behavior", "release_keep_days", default=3)
-CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
 RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
 MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
 MRS_DIR = get("paths", "mrs_output_dir", default="merged-rules-mrs")
+TARGET_CONFIG = {
+    MERGED_DIR: ".txt",
+    MRS_DIR: ".mrs",
+}
+KEEP_DAYS = get("behavior", "release_keep_days", default=3)
+CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
 MANIFEST_NAME = "products.manifest"
 BASELINE_MISSING = "清单基线缺失"
+GH_TIMEOUT = 120
+
+
+def release_asset_count(release_tag):
+    raw = run_gh(["release", "view", release_tag, "--json", "assets",
+                  "--jq", '[.assets[] | select(.state == "uploaded")] | length'])
+    if raw is None or not raw.strip().isdigit():
+        return None
+    return int(raw)
 
 
 def product_dirs():
-    txt_dir = next((d for d, ext in TARGET_CONFIG.items() if ext == ".txt"), MERGED_DIR)
-    mrs_dir = next((d for d, ext in TARGET_CONFIG.items() if ext == ".mrs"), MRS_DIR)
-    return txt_dir, mrs_dir
+    return MERGED_DIR, MRS_DIR
 
 
 def baseline_files():
@@ -103,7 +110,6 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
 
 
 def enforce_products(txt_dir=None, mrs_dir=None):
-    """main() 里不能直接引用 manifest 模块（zip 清单会遮蔽该名字）。"""
     try:
         verified = verify_products(txt_dir, mrs_dir)
     except manifest.ManifestError as e:
@@ -117,8 +123,15 @@ def enforce_products(txt_dir=None, mrs_dir=None):
 
 def run_gh(cmd_list, fail_fast=False):
     try:
-        result = subprocess.run(["gh"] + cmd_list, capture_output=True, text=True, check=True)
+        result = subprocess.run(["gh", *cmd_list], capture_output=True, text=True,
+                                check=True, timeout=GH_TIMEOUT)
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        if fail_fast:
+            error(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
+            sys.exit(1)
+        warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
+        return None
     except subprocess.CalledProcessError as e:
         if fail_fast:
             error(f"  GH CLI 失败: {e.stderr.strip()}")
@@ -172,13 +185,13 @@ def zip_target_files(tag_date):
     return zip_name, file_manifest
 
 
-def generate_release_notes(tag_date, tag_time, manifest):
-    txt_count = len(manifest.get("merged-rules", []))
-    mrs_count = len(manifest.get("merged-rules-mrs", []))
+def generate_release_notes(tag_date, tag_time, file_map):
+    txt_count = len(file_map.get("merged-rules", []))
+    mrs_count = len(file_map.get("merged-rules-mrs", []))
     total_count = txt_count + mrs_count
 
     details_md = ""
-    for folder, files in manifest.items():
+    for folder, files in file_map.items():
         if files:
             ext = TARGET_CONFIG.get(folder, "")
             icon = "[TXT]" if "txt" in ext else "[MRS]"
@@ -241,7 +254,7 @@ def publish_release(release_tag, zip_file, title, notes, exists):
 def main():
     group_start("处理发布")
 
-    utc_now = datetime.datetime.now(datetime.timezone.utc)
+    utc_now = datetime.datetime.now(datetime.UTC)
     now_bj = beijing_now()
     tag_date = now_bj.strftime("%Y-%m-%d")
     tag_time = now_bj.strftime("%H:%M:%S")
@@ -249,28 +262,30 @@ def main():
 
     info(f"目标发布标签: {release_tag}")
 
+    section("产物校验")
+    txt_dir, mrs_dir = product_dirs()
+    combined_hash, c1, c2 = combined_products_hash(txt_dir, mrs_dir)
+
+    enforce_products(txt_dir, mrs_dir)
+
+    if c1 != c2:
+        error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
+        group_end()
+        sys.exit(1)
+
     if CHANGE_DETECTION:
-        section("内容变更检测")
-        combined_hash, c1, c2 = combined_products_hash()
-
-        txt_dir, mrs_dir = product_dirs()
-        enforce_products(txt_dir, mrs_dir)
-
-        if c1 != c2:
-            error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
-            group_end()
-            sys.exit(1)
-
         publish, why = should_publish(combined_hash, load_last_hash(), True)
         info(f"  {why} ({c1 + c2} 个文件)")
         if not publish:
             group_end()
             return
+    else:
+        info(f"  变更检测已关闭，直接发布 ({c1 + c2} 个文件)")
 
-    zip_file, manifest = zip_target_files(tag_date)
+    zip_file, file_map = zip_target_files(tag_date)
 
     info("生成发布说明...")
-    notes = generate_release_notes(tag_date, tag_time, manifest)
+    notes = generate_release_notes(tag_date, tag_time, file_map)
     exists = bool(run_gh(["release", "view", release_tag]))
     info(f"{'更新' if exists else '创建'} Release {release_tag}...")
 
@@ -279,6 +294,17 @@ def main():
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)
+
+    asset_count = release_asset_count(release_tag)
+    if asset_count is None:
+        warning(f"  无法确认 Release {release_tag} 的资产数（gh 调用失败）")
+    elif asset_count == 0:
+        error(f"  Release {release_tag} 发布后没有任何资产（--clobber 会先删后传），判定失败")
+        if os.path.exists(zip_file):
+            os.unlink(zip_file)
+        sys.exit(1)
+    else:
+        info(f"  已确认 Release 资产数: {asset_count}")
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)
@@ -323,8 +349,8 @@ def main():
             f.write("\n### 发布报告\n\n")
             f.write("| 项目 | 值 |\n| :--- | :--- |\n")
             f.write(f"| 发布标签 | `{release_tag}` |\n")
-            f.write(f"| 文本规则 | **{len(manifest.get('merged-rules', []))}** |\n")
-            f.write(f"| MRS 规则 | **{len(manifest.get('merged-rules-mrs', []))}** |\n")
+            f.write(f"| 文本规则 | **{len(file_map.get('merged-rules', []))}** |\n")
+            f.write(f"| MRS 规则 | **{len(file_map.get('merged-rules-mrs', []))}** |\n")
 
 
 if __name__ == "__main__":

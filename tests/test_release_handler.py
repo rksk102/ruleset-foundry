@@ -255,7 +255,6 @@ class TestPublishRelease:
 
 
 class TestMainOrchestration:
-    """真正调用 main()，而不是在测试里复刻它的逻辑。"""
 
     def setup_env(self, work_dir):
         cwd = os.getcwd()
@@ -284,15 +283,16 @@ class TestMainOrchestration:
         original_load = release_handler.load_last_hash
         saved = []
         original_save = release_handler.save_last_hash
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: "old"
         release_handler.save_last_hash = lambda h: saved.append(h)
         try:
             run_with_stub(stub, release_handler.main)
             assert saved == ["new"], "发布成功后应保存新哈希"
-            assert not os.path.exists("merged-rules-2026-10-05.zip") or True
+            assert not [f for f in os.listdir(".") if f.startswith("merged-rules-")
+                        and f.endswith(".zip")], "发布后应删除临时 zip"
         except SystemExit as e:
-            raise AssertionError(f"main() 不应退出: {e}")
+            raise AssertionError(f"main() 不应退出: {e}") from e
         finally:
             release_handler.combined_products_hash = original_hash
             release_handler.load_last_hash = original_load
@@ -304,7 +304,7 @@ class TestMainOrchestration:
         stub = GhStub()
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
-        release_handler.combined_products_hash = lambda: ("same", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("same", 1, 1)
         release_handler.load_last_hash = lambda: "same"
         try:
             run_with_stub(stub, release_handler.main)
@@ -315,11 +315,10 @@ class TestMainOrchestration:
             self.teardown_env(cwd, original)
 
     def test_aborts_when_product_counts_differ(self, work_dir):
-        """txt 与 mrs 数量不一致说明有空产物漂移，必须失败退出。"""
         cwd, original = self.setup_env(work_dir)
         stub = GhStub()
         original_hash = release_handler.combined_products_hash
-        release_handler.combined_products_hash = lambda: ("h", 3, 2)
+        release_handler.combined_products_hash = lambda *a, **k: ("h", 3, 2)
         try:
             try:
                 run_with_stub(stub, release_handler.main)
@@ -334,14 +333,13 @@ class TestMainOrchestration:
 
     def test_failed_publish_exits_and_removes_zip(self, work_dir):
         cwd, original = self.setup_env(work_dir)
-        # release 的动作动词在 cmd[1]
         stub = GhStub(fail_when=lambda cmd: len(cmd) > 1 and cmd[1] in ("create", "upload", "edit"),
                       responses={("release", "view"): None})
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
         saved = []
         original_save = release_handler.save_last_hash
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda h: saved.append(h)
         try:
@@ -373,7 +371,7 @@ class TestMainOrchestration:
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
         original_save = release_handler.save_last_hash
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda h: None
         try:
@@ -402,7 +400,7 @@ class TestMainOrchestration:
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
         original_save = release_handler.save_last_hash
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda h: None
         try:
@@ -430,14 +428,14 @@ class TestMainOrchestration:
         original_load = release_handler.load_last_hash
         original_save = release_handler.save_last_hash
         saved = []
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda h: saved.append(h)
         try:
             try:
                 run_with_stub(stub, release_handler.main)
             except SystemExit as e:
-                raise AssertionError(f"单个删除失败不得中断脚本: {e}")
+                raise AssertionError(f"单个删除失败不得中断脚本: {e}") from e
             flat = " ".join(stub.commands())
             assert flat.count("release delete") == 2, "首个删除失败后仍应继续清理其余旧 Release"
             assert "git/refs/tags" not in flat, "Release 删除失败时不得继续删 tag"
@@ -459,7 +457,7 @@ class TestMainOrchestration:
         original_hash = release_handler.combined_products_hash
         original_load = release_handler.load_last_hash
         original_save = release_handler.save_last_hash
-        release_handler.combined_products_hash = lambda: ("new", 1, 1)
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda h: None
         try:
@@ -480,7 +478,6 @@ class TestMainOrchestration:
 
 class TestRunGhErrorHandling:
     def test_oserror_exits_nonzero(self):
-        """gh 未安装时抛 OSError，必须显式失败而不是静默继续。"""
         import subprocess
 
         def boom(*a, **k):
@@ -511,7 +508,6 @@ class TestConstants:
         }
 
     def test_keep_days_within_list_limit(self):
-        """release list 取 50 条，清理窗口不能超过该上限。"""
         assert release_handler.KEEP_DAYS * 2 <= 50
 
     def test_beijing_offset_is_utc8(self):

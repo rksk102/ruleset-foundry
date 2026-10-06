@@ -1,5 +1,6 @@
 import os
 
+import main
 import manifest
 import merger
 import pytest
@@ -31,6 +32,35 @@ def build_products(root, txt_entries, mrs_entries=None, manifest_entries=None,
     if manifest_file:
         entries = txt_entries if manifest_entries is None else manifest_entries
         write(root / "rulesets" / "products.manifest", "\n".join(entries) + "\n")
+
+
+class TestFinalizeProducts:
+
+    def _prepare(self, work_dir, monkeypatch, names, stale):
+        root = work_dir / "rulesets"
+        for rel in names + stale:
+            write(root / rel, "a.example\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
+        monkeypatch.setattr(main, "MANIFEST_FILE", root / "products.manifest")
+        return root, [root / rel for rel in names]
+
+    def test_stale_file_is_cleaned_and_never_recorded(self, work_dir, monkeypatch):
+        root, expected = self._prepare(
+            work_dir, monkeypatch, ["block/domain/Owner/a.txt"], ["sync-summary.txt"])
+        produced = main.finalize_products(expected)
+        assert produced == {"block/domain/Owner/a.txt"}
+        assert not (root / "sync-summary.txt").exists()
+        assert (root / "products.manifest").read_text(encoding="utf-8").split() == [
+            "block/domain/Owner/a.txt"]
+
+    def test_manifest_mismatch_fails_closed(self, work_dir, monkeypatch, capsys):
+        _root, expected = self._prepare(
+            work_dir, monkeypatch, ["block/domain/Owner/a.txt"], ["sync-summary.txt"])
+        monkeypatch.setattr(main, "clean_orphans", lambda _files: None)
+        with pytest.raises(SystemExit) as exc:
+            main.finalize_products(expected)
+        assert exc.value.code == 1
+        assert "产物清单与磁盘不一致" in capsys.readouterr().out
 
 
 class GhStub:
@@ -149,9 +179,8 @@ class TestReleaseBaseline:
     def test_verify_products_raises_without_baseline(self, work_dir):
         rulesets, merges = self.sample()
         build_products(work_dir, rulesets + merges, manifest_file=False)
-        with ReleaseRun(work_dir):
-            with pytest.raises(manifest.ManifestError) as exc:
-                release_handler.verify_products()
+        with ReleaseRun(work_dir), pytest.raises(manifest.ManifestError) as exc:
+            release_handler.verify_products()
         assert release_handler.BASELINE_MISSING in str(exc.value)
 
     def test_missing_product_is_fatal(self, work_dir, caplog):
@@ -181,14 +210,13 @@ class TestReleaseBaseline:
     def test_mrs_products_must_match_one_to_one(self, work_dir):
         rulesets, merges = self.sample()
         txt = rulesets[:2] + merges
-        mrs = mrs_of([rulesets[0]] + merges)
+        mrs = mrs_of([rulesets[0], *merges])
         build_products(work_dir, txt, mrs, manifest_entries=rulesets[:2])
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
             assert run.stub.calls == []
-        with ReleaseRun(work_dir):
-            with pytest.raises(manifest.ManifestError) as exc:
-                release_handler.verify_products()
+        with ReleaseRun(work_dir), pytest.raises(manifest.ManifestError) as exc:
+            release_handler.verify_products()
         assert "逐一对应" in str(exc.value)
 
     def test_consistent_products_pass_and_publish(self, work_dir):
@@ -214,7 +242,7 @@ class TestReleaseBaseline:
     def test_pair_check_still_applies_without_baseline(self, work_dir):
         rulesets, merges = self.sample()
         txt = rulesets[:2] + merges
-        build_products(work_dir, txt, mrs_of([rulesets[0]] + merges),
+        build_products(work_dir, txt, mrs_of([rulesets[0], *merges]),
                        manifest_file=False, rulesets_dir=False)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1

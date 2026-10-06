@@ -1,6 +1,8 @@
 import asyncio
+from datetime import UTC
 
 import main
+import pytest
 
 
 class FakeStream:
@@ -74,7 +76,7 @@ class TestDownloadCap:
         assert err == "空响应"
 
     def test_non_text_response_reported(self):
-        _task, content, err = download(["a\0b\0c".encode()])
+        _task, content, err = download([b"a\0b\0c"])
         assert content is None
         assert err == "非文本响应"
 
@@ -107,20 +109,9 @@ class TestRetryPolicy:
         _s, _r, slept = self.retry_with(404)
         assert slept == []
 
-    def test_408_is_retried(self):
-        _s, _r, slept = self.retry_with(408)
-        assert len(slept) == 2
-
-    def test_425_is_retried(self):
-        _s, _r, slept = self.retry_with(425)
-        assert len(slept) == 2
-
-    def test_429_is_retried(self):
-        _s, _r, slept = self.retry_with(429)
-        assert len(slept) == 2
-
-    def test_503_is_retried(self):
-        _s, _r, slept = self.retry_with(503)
+    @pytest.mark.parametrize("status", [408, 425, 429, 503])
+    def test_retryable_status_is_retried(self, status):
+        _s, _r, slept = self.retry_with(status)
         assert len(slept) == 2
 
     def test_retry_after_seconds_honoured(self):
@@ -136,10 +127,10 @@ class TestRetryPolicy:
         assert slept == []
 
     def test_retry_after_http_date(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from email.utils import format_datetime
 
-        when = datetime.now(timezone.utc) + timedelta(seconds=20)
+        when = datetime.now(UTC) + timedelta(seconds=20)
         _s, _r, slept = self.retry_with(429, {"Retry-After": format_datetime(when)})
         assert all(15 <= s <= 21 for s in slept), slept
 
@@ -246,17 +237,24 @@ class TestProcessGroupUnrecognizedGate:
             main.atomic_write = original
 
     def test_classical_file_now_produces_rules(self):
-        raw = "DOMAIN-SUFFIX,a.com\nDOMAIN-SUFFIX,b.com\n".encode()
+        raw = b"DOMAIN-SUFFIX,a.com\nDOMAIN-SUFFIX,b.com\n"
         count, errors = self.run_group(raw)
         assert count == 2
         assert errors["parse"] == []
 
-    def test_high_unrecognized_ratio_flagged(self):
-        lines = [f"bad line {i}" for i in range(5)] + ["good.com"]
+    def test_large_unrecognized_count_flagged(self):
+        lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count == 1
         assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+    def test_small_sample_ratio_only_warns(self):
+        lines = [f"bad line {i}" for i in range(5)] + ["good.com"]
+        raw = ("\n".join(lines) + "\n").encode()
+        count, errors = self.run_group(raw)
+        assert count == 1
+        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
 
     def test_low_unrecognized_ratio_not_flagged(self):
         lines = ["bad line"] + [f"good{i}.com" for i in range(50)]

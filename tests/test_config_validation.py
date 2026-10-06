@@ -142,6 +142,35 @@ class TestConfigValidation:
         assert out.startswith("OK")
         assert '"merges": 1' in out
 
+    def test_int_for_float_is_range_checked(self, work_dir):
+        write_cfg(work_dir, BASE + "  unrecognized_warn_ratio: 5\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "unrecognized_warn_ratio" in out
+
+    def test_negative_int_ratio_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE + "  min_source_success_ratio: -1\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+
+    def test_huge_int_ratio_is_config_error_not_traceback(self, work_dir):
+        write_cfg(work_dir, BASE + "  unrecognized_warn_ratio: 1" + "0" * 400 + "\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "float" in out
+
+    def test_unknown_section_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE + "behaviour:\n  strict_mode: true\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "behaviour" in out
+
+    def test_unknown_key_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE + "  allow_particals: true\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "allow_particals" in out
+
 
 class TestPyYamlMissing:
     def test_missing_pyyaml_is_hard_error(self, work_dir):

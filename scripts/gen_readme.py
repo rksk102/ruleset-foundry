@@ -8,12 +8,10 @@ from logger import error, group_end, group_start, info, success
 from utils import beijing_now, combined_products_hash, load_last_hash
 
 REPO_ROOT = os.getcwd()
-DIR_RULES = os.path.join(REPO_ROOT, "merged-rules")
-DIR_MRS = os.path.join(REPO_ROOT, "merged-rules-mrs")
+DIR_RULES = os.path.join(REPO_ROOT, get("paths", "merged_output_dir", default="merged-rules"))
+DIR_MRS = os.path.join(REPO_ROOT, get("paths", "mrs_output_dir", default="merged-rules-mrs"))
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
-BRANCH_NAME = os.getenv("GITHUB_REF_NAME", "main")
-# 规则产物不进 git 历史，由常驻的 artifacts 分支对外分发
 ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH", "artifacts")
 BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{ARTIFACTS_BRANCH}"
 BASE_GHPROXY = f"https://ghproxy.net/{BASE_RAW}"
@@ -46,13 +44,13 @@ def resolve_badge_time():
     if not get("behavior", "release_change_detection", default=True):
         return None
     try:
-        current, _c1, _c2 = combined_products_hash()
+        current, _c1, _c2 = combined_products_hash(DIR_RULES, DIR_MRS)
     except Exception:
         return None
     if current != load_last_hash():
         return None
     try:
-        with open(README_FILE, "r", encoding="utf-8") as f:
+        with open(README_FILE, encoding="utf-8") as f:
             text = f.read()
     except OSError:
         return None
@@ -159,22 +157,59 @@ def make_static_sections():
     return r"""
 ## 内核版本升级流程（维护者）
 
-1. 运行 `python scripts/convert_mrs.py --print-kernel-hash`（会下载并打印解压后二进制 sha256）。
-2. 在 mihomo 官方 Release 页面核对 `pinned_version` 与资产名。
-3. 更新 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段。
+内核由 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段钉扎；
+`kernel-bump.yml` 每周一自动跟随最新正式版（即 `python scripts/convert_mrs.py --bump-config`），
+正常情况下无需手工操作。手工升级时**必须先改前两个字段、最后再算哈希**：
+
+1. 在 mihomo 官方 Release 页面确认目标 tag 与资产名（如 `mihomo-linux-amd64-v1.19.32.gz`）。
+2. 先改 `config.yaml` 的 `pinned_version` 与 `asset_name`（`kernel_sha256` 暂留旧值）。
+3. 再运行 `python scripts/convert_mrs.py --print-kernel-hash`：它会按新的 pin 下载该资产，
+   打印解压后二进制的 sha256，用该输出覆盖 `kernel_sha256`。
 4. 提 PR，由 CI（pytest + ruff）验证后合并。
+
+> 第 3 步需要执行下载到的内核（`mihomo -v`）来确认可运行，因此只在 Linux 上可用；
+> Windows/macOS 请用 WSL 或交给 CI。顺序颠倒会拿到**旧资产**的哈希，下一次流水线会以
+> 「内核哈希不匹配」失败。
 
 ## 规则优先级与消费方式
 
 策略优先级固定为 `block > direct > policy`；在代理客户端中按此顺序引用 rule-provider。
-本仓库提供 `.txt`（mihomo `behavior: domain` 文本）与 `.mrs`（Mihomo 专用二进制）两种格式，路径一一对应。
+
+**每种产物都要按实际格式声明 `behavior` 与 `format`。** mihomo 的 `format` 默认是 `yaml`：
+`.txt` 漏写它会被当 YAML 解析，静默得到一个**零规则**且不报错的规则集；`.mrs` 漏写则会直接报
+`file must have a payload field`（二进制格式不匹配时不会静默通过）。
+
+| 产物 | `behavior` | `format` |
+| :--- | :--- | :--- |
+| `merged-rules/<策略>/domain/**/*.txt` | `domain` | `text` |
+| `merged-rules/<策略>/ipcidr/**/*.txt` | `ipcidr` | `text` |
+| `merged-rules-mrs/**/*.mrs` | 与同名 `.txt` 相同 | `mrs` |
+
+```yaml
+rule-providers:
+  block:
+    type: http
+    behavior: domain          # domain 目录用 behavior: domain，ipcidr 目录用 behavior: ipcidr
+    format: text              # .txt 必须显式声明，默认值 yaml 会解析成零规则
+    url: "https://raw.githubusercontent.com/rksk102/mihomo-rule-library/artifacts/merged-rules/block/domain/Loyalsoldier/reject.txt"
+    path: ./ruleset/block.txt
+    interval: 86400
+  block-mrs:
+    type: http
+    behavior: domain
+    format: mrs               # .mrs 专用二进制格式
+    url: "https://raw.githubusercontent.com/rksk102/mihomo-rule-library/artifacts/merged-rules-mrs/block/domain/Loyalsoldier/reject.mrs"
+    path: ./ruleset/block.mrs
+    interval: 86400
+```
 
 产物由 CI 每日生成，**不进入 git 历史**，统一发布在本仓库的 `artifacts` 分支上。
 上表所有下载链接均指向该分支；请按链接原样引用，不要改用 `main` 分支。
 
 ## 规则格式与匹配语义（重要）
 
-`.txt` 产物按 **mihomo `behavior: domain` 规则集**格式生成，四种写法的匹配范围各不相同：
+`merged-rules/**/domain/*.txt` 按 **mihomo `behavior: domain` + `format: text` 规则集**格式生成，
+四种写法的匹配范围各不相同：
 
 | 写法 | 匹配 `example.com` | 匹配 `www.example.com` | 匹配 `a.b.example.com` |
 | :--- | :---: | :---: | :---: |
@@ -191,14 +226,17 @@ def make_static_sections():
 - 裸 `d` 是**仅该主机名**
 - `*` 只匹配**恰好一级**，不匹配 apex
 
-因此请务必用 `behavior: domain` 引用 `.txt`。若用其它 behavior，`+.` 与 `.` 行会被当作字面域名而失效。
+因此请务必用 `behavior: domain` **且** `format: text` 引用这类 `.txt`：换成其它 behavior，
+`+.` 与 `.` 行会被当作字面域名而失效；漏写 `format` 则按默认的 `yaml` 解析，整份规则集变成
+零规则且不报错。
 
 > 以上依据 mihomo 源码 `component/trie/domain_set.go` 与其官方测试
 > `component/trie/domain_set_test.go`（`.example.com` 对 apex 断言为 false，
 > `+.example.org` 对 apex 断言为 true）。部分第三方文档把 `.d` 描述为包含 apex，
 > 与实现不符，请以本表为准。
 
-`.mrs` 由 `.txt` 编译而来，语义完全一致，无需额外配置。
+`.mrs` 由 `.txt` 编译而来，语义完全一致，但**必须显式声明 `format: mrs`**（默认的 `yaml`
+不会识别该二进制格式）。
 
 ### 裸域名的语义取决于上游，本仓库不做猜测
 

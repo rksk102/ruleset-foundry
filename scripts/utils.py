@@ -97,7 +97,7 @@ def file_sha256(filepath):
 
 def _hash_file_body(path):
     h = hashlib.sha256()
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             s = line.strip()
             if not s or s.startswith("#"):
@@ -186,11 +186,7 @@ def normalize_path(p):
 
 
 class DomainTrie:
-    """倒序标签 Trie，判定父子域名关系。
-
-    SUFFIX 为 `+.d`（域及全部子域），SUBDOMAIN 为 `.d`（仅子域），EXACT 为 `d`（仅该主机名）。
-    只有 SUFFIX 能覆盖其他条目。
-    """
+    """倒序标签 Trie；SUFFIX=`+.d`、SUBDOMAIN=`.d`、EXACT=裸 `d`，只有 SUFFIX 能覆盖别的条目。"""
 
     SUFFIX = 1
     SUBDOMAIN = 2
@@ -207,12 +203,10 @@ class DomainTrie:
 
     def _walk(self, domain):
         node = self._root
-        matched = 0
-        for part in reversed(domain.split(".")):
+        for matched, part in enumerate(reversed(domain.split(".")), 1):
             if part not in node:
                 return
             node = node[part]
-            matched += 1
             yield matched, node
 
     def has_marked_ancestor(self, domain, kind=None):
@@ -237,14 +231,6 @@ class DomainTrie:
 
 
 def dedup_domain_suffix(domains):
-    """同策略内父子域名去重，返回 (排序后的列表, 被移除的数量)。
-
-    条目写法与其匹配集：
-      `+.d` 域及其全部子域（最宽）
-      `.d`  仅子域，不含 apex
-      `d`   仅主机名 d
-    只有 `+.` 前缀具备覆盖能力：它同时涵盖 `.d` 与 `d`，也涵盖二者的子级写法。
-    """
     if not domains:
         return [], 0
 
@@ -264,7 +250,6 @@ def dedup_domain_suffix(domains):
         else:
             kind = DomainTrie.EXACT
 
-        # `+.p` 是唯一能覆盖其他条目的形态
         if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
             removed += 1
             continue

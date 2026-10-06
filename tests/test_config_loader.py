@@ -35,7 +35,6 @@ class TestMergeDict:
         assert base == {"a": 1, "b": 2}
 
     def test_nested_merged_not_replaced(self):
-        """未提及的兄弟键必须保留，否则用户局部配置会清空整段默认值。"""
         base = {"net": {"timeout": 15, "retries": 2}}
         config_loader._merge_dict(base, {"net": {"timeout": 30}})
         assert base == {"net": {"timeout": 30, "retries": 2}}
@@ -173,7 +172,6 @@ class TestGet:
             reset_config()
 
     def test_traversing_through_scalar_returns_default(self, work_dir):
-        """对非 dict 继续取键不能抛异常。"""
         use_config(work_dir)
         try:
             assert config_loader.get("network", "timeout_seconds", "deeper", default=9) == 9
