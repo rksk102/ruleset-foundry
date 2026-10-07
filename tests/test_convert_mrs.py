@@ -722,9 +722,15 @@ class TestBumpConfigSuccess:
             "url": "https://example.com/kernel.gz",
             "digest": "sha256:" + "c" * 64,
         })
-        monkeypatch.setattr(convert_mrs, "_download_kernel",
-                            lambda url, expected_digest=None: None)
-        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "d" * 64)
+        downloads = []
+        monkeypatch.setattr(
+            convert_mrs, "_download_kernel",
+            lambda url, expected_digest=None: downloads.append((url, expected_digest)))
+        verifications = []
+        monkeypatch.setattr(
+            convert_mrs, "verify_kernel_file",
+            lambda path, expected_sha, *a, **k: verifications.append(
+                (str(path), expected_sha)) or "d" * 64)
         monkeypatch.setattr(convert_mrs, "sha256_file", lambda path: "e" * 64)
         monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v9.9.9")
         monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda: None)
@@ -738,3 +744,5 @@ class TestBumpConfigSuccess:
         assert 'asset_name: "mihomo-linux-amd64-v9.9.9.gz"' in text
         assert f'kernel_sha256: "{"e" * 64}"' in text
         assert gh_output.read_text(encoding="utf-8") == "changed=true\ntag=v9.9.9\n"
+        assert downloads == [("https://example.com/kernel.gz", "sha256:" + "c" * 64)]
+        assert verifications == [(str(work_dir / "cache" / "mihomo"), "")]
