@@ -5,7 +5,6 @@ import pytest
 
 
 def use_config(work_dir, content=None):
-    """把模块级缓存与配置文件路径指向临时目录，必要时写入配置内容。"""
     config_loader._CONFIG = None
     path = work_dir / "config.yaml"
     if content is not None:
@@ -15,7 +14,6 @@ def use_config(work_dir, content=None):
 
 
 def reset_config():
-    """还原模块级状态，避免测试之间互相污染。"""
     import pathlib
 
     config_loader._CONFIG = None

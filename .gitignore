@@ -10,6 +10,7 @@ venv/
 logs/
 *.log
 *.zip
+*.tmp
 
 rulesets/
 
@@ -22,13 +23,20 @@ mihomo
 
 .DS_Store
 Thumbs.db
+desktop.ini
 
 .mimosa/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
 .coverage
+.coverage.*
+coverage.xml
+htmlcov/
 pytest-cache-files-*/
 
 .tools/
 
 .dsh-meow/
+
+AUDIT-REPORT*.md

@@ -17,7 +17,6 @@ def mrs_of(entries):
 
 
 def repo_merge_paths():
-    """config.yaml 里的合并产物路径（release_handler 会把它并入清单基线）。"""
     return sorted(release_handler.merge_product_entries(release_handler.get("merges")))
 
 
