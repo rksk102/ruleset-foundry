@@ -91,7 +91,6 @@
 </details>
 
 
-
 ## 内核版本升级流程（维护者）
 
 内核由 `config.yaml` 的 `mihomo.pinned_version` / `kernel_sha256` 两字段钉扎（资产名按
