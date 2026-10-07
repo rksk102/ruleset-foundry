@@ -91,6 +91,7 @@
 </details>
 
 
+
 ## 内核版本升级流程（维护者）
 
 内核由 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段钉扎；
@@ -295,17 +296,31 @@ rule-providers:
 
 本地环境要求 Python 3.13（CI 使用 `ubuntu-latest` + 3.13）：
 
+Linux/macOS：
+
 ```bash
 uv venv .venv --python 3.13
-uv pip install --require-hashes -r requirements-dev.lock --python .venv/Scripts/python.exe
-# Linux/macOS 用 .venv/bin/python；依赖锁定在 requirements*.lock，改依赖请用 uv pip compile 重新生成
+uv pip install --require-hashes -r requirements-dev.lock --python .venv/bin/python
 
 export PYTHONPATH=$PWD/scripts
+.venv/bin/python -m pytest tests/ -q --cov=scripts --cov-branch --cov-fail-under=70
+.venv/bin/ruff check scripts tests
+.venv/bin/zizmor --min-severity medium .github/
+```
+
+Windows（PowerShell）：
+
+```powershell
+uv venv .venv --python 3.13
+uv pip install --require-hashes -r requirements-dev.lock --python .venv/Scripts/python.exe
+
+$env:PYTHONPATH = "$PWD/scripts"
 .venv/Scripts/python.exe -m pytest tests/ -q --cov=scripts --cov-branch --cov-fail-under=70
 .venv/Scripts/ruff.exe check scripts tests
 .venv/Scripts/zizmor.exe --min-severity medium .github/
 ```
 
+依赖锁定在 `requirements*.lock`（含哈希）；改依赖请用 `uv pip compile … --generate-hashes` 重新生成。
 工作流的静态检查（CI 的 `workflows-lint`）使用 `rhysd/actionlint`，本地可跑
 `docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`。
 内核相关路径（`scripts/convert_mrs.py` 的下载与校验）需要 Linux 才能执行真实内核，
