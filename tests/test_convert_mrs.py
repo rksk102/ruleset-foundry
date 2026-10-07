@@ -1,5 +1,6 @@
 import inspect
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -492,3 +493,248 @@ class TestBumpQueriesLatest:
         assert seen, "bump 路径没有发出任何请求"
         assert seen[0].endswith("/releases/latest"), seen[0]
         assert "/tags/" not in seen[0]
+
+
+class TestGetLatestMihomo:
+
+    def setup_kernel(self, monkeypatch, work_dir, *, cached_version=None):
+        cache = work_dir / "kernel"
+        bin_path = cache / "mihomo"
+        version_file = cache / "version.txt"
+        monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", cache)
+        monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(bin_path))
+        monkeypatch.setattr(convert_mrs, "VERSION_FILE", version_file)
+        monkeypatch.setattr(convert_mrs, "EXPECTED_SHA", "a" * 64)
+        monkeypatch.setattr(convert_mrs, "PINNED_VERSION", "v1.2.3")
+        monkeypatch.setattr(convert_mrs, "ASSET_NAME", "mihomo-linux-amd64-v1.2.3.gz")
+        for name in ("info", "warning", "error", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+        cache.mkdir(parents=True, exist_ok=True)
+        if cached_version is not None:
+            version_file.write_text(cached_version, encoding="utf-8")
+            bin_path.write_bytes(b"\x7fELF")
+        return bin_path, version_file
+
+    def release(self, tag="v1.2.3"):
+        return {"tag_name": tag, "assets": [asset("mihomo-linux-amd64-v1.2.3.gz")]}
+
+    def downloaded(self, monkeypatch, bin_path):
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, name, pinned: {
+            "name": "mihomo-linux-amd64-v1.2.3.gz",
+            "url": "https://example.com/kernel.gz",
+            "digest": "sha256:" + "b" * 64,
+        })
+        monkeypatch.setattr(
+            convert_mrs, "_download_kernel",
+            lambda url, expected_digest=None: bin_path.write_bytes(b"\x7fELF"))
+
+    def test_cache_hit_reuses_kernel_without_download(self, monkeypatch, work_dir):
+        _bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: self.release())
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        downloads = []
+        monkeypatch.setattr(convert_mrs, "_download_kernel",
+                            lambda *a, **k: downloads.append(True))
+
+        convert_mrs.get_latest_mihomo()
+
+        assert downloads == []
+
+    def test_broken_cache_is_replaced_by_download(self, monkeypatch, work_dir):
+        bin_path, version_file = self.setup_kernel(
+            monkeypatch, work_dir, cached_version="v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: self.release())
+        self.downloaded(monkeypatch, bin_path)
+        verifications = []
+
+        def fake_verify(path, expected_sha, require_sha=False):
+            verifications.append(require_sha)
+            if len(verifications) == 1:
+                raise ValueError("缓存损坏")
+            return "a" * 64
+
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+
+        convert_mrs.get_latest_mihomo()
+
+        assert verifications == [True, True]
+        assert version_file.read_text(encoding="utf-8") == "v1.2.3"
+
+    def test_fresh_download_installs_kernel(self, monkeypatch, work_dir):
+        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: self.release())
+        self.downloaded(monkeypatch, bin_path)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+
+        convert_mrs.get_latest_mihomo()
+
+        assert version_file.read_text(encoding="utf-8") == "v1.2.3"
+
+    def test_post_download_sha_mismatch_exits(self, monkeypatch, work_dir):
+        bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: self.release())
+        self.downloaded(monkeypatch, bin_path)
+
+        def fake_verify(*_a, **_k):
+            raise ValueError("内核哈希不匹配")
+
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+
+    def test_fetch_failure_degrades_to_verified_cache(self, monkeypatch, work_dir):
+        self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+
+        def fake_fetch(*_a, **_k):
+            raise RuntimeError("网络不可用")
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+
+        convert_mrs.get_latest_mihomo()
+
+    def test_fetch_failure_without_usable_cache_exits(self, monkeypatch, work_dir):
+        self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+
+        def fake_fetch(*_a, **_k):
+            raise RuntimeError("网络不可用")
+
+        def fake_verify(*_a, **_k):
+            raise ValueError("缓存校验失败")
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+
+    def test_missing_asset_exits(self, monkeypatch, work_dir):
+        self.setup_kernel(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: {"tag_name": "v1.2.3", "assets": []})
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda *a, **k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+
+    def test_platform_guard_exits_off_linux(self, monkeypatch):
+        monkeypatch.setattr(convert_mrs.sys, "platform", "win32")
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.ensure_kernel_platform()
+
+        assert exc.value.code == 1
+
+    def test_print_kernel_hash_mode(self, monkeypatch, work_dir, capsys):
+        seen = []
+        monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo",
+                            lambda skip_hash_check=False: seen.append(skip_hash_check))
+        monkeypatch.setattr(convert_mrs, "sha256_file", lambda path: "f" * 64)
+        monkeypatch.setattr(convert_mrs, "KERNEL_BIN", "kernel")
+        monkeypatch.setattr(sys, "argv", ["convert_mrs.py", "--print-kernel-hash"])
+
+        convert_mrs.main()
+
+        assert seen == [True]
+        assert "f" * 64 in capsys.readouterr().out
+
+
+class TestSmokeConvert:
+
+    def prepare(self, monkeypatch, work_dir):
+        monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", work_dir)
+        monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(work_dir / "mihomo"))
+        for name in ("info", "warning", "error", "success", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+
+    def test_success_cleans_up_temp_files(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_text("mrs", encoding="utf-8")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        convert_mrs._smoke_convert()
+
+        assert not (work_dir / "smoke-input.txt").exists()
+        assert not (work_dir / "smoke-output.mrs").exists()
+
+    def test_kernel_failure_exits(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+
+        def fake_run(cmd, **_kwargs):
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs._smoke_convert()
+
+        assert exc.value.code == 1
+
+    def test_missing_output_exits(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs.subprocess, "run", lambda cmd, **k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs._smoke_convert()
+
+        assert exc.value.code == 1
+
+
+class TestBumpConfigSuccess:
+
+    def test_full_bump_writes_pin_and_outputs(self, monkeypatch, work_dir):
+        cfg = work_dir / "config.yaml"
+        cfg.write_text(
+            'pinned_version: "v1.0.0"\n'
+            'asset_name: "mihomo-linux-amd64-v1.0.0.gz"\n'
+            'kernel_sha256: "old"\n',
+            encoding="utf-8",
+        )
+        gh_output = work_dir / "gh_output.txt"
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setenv("GITHUB_OUTPUT", str(gh_output))
+        monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", work_dir / "cache")
+        monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(work_dir / "cache" / "mihomo"))
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
+                            lambda *a, **k: {"tag_name": "v9.9.9", "assets": []})
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, name, pinned: {
+            "name": "mihomo-linux-amd64-v9.9.9.gz",
+            "url": "https://example.com/kernel.gz",
+            "digest": "sha256:" + "c" * 64,
+        })
+        monkeypatch.setattr(convert_mrs, "_download_kernel",
+                            lambda url, expected_digest=None: None)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "d" * 64)
+        monkeypatch.setattr(convert_mrs, "sha256_file", lambda path: "e" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v9.9.9")
+        monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda: None)
+        for name in ("info", "warning", "error", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+
+        convert_mrs.bump_config()
+
+        text = cfg.read_text(encoding="utf-8")
+        assert 'pinned_version: "v9.9.9"' in text
+        assert 'asset_name: "mihomo-linux-amd64-v9.9.9.gz"' in text
+        assert f'kernel_sha256: "{"e" * 64}"' in text
+        assert gh_output.read_text(encoding="utf-8") == "changed=true\ntag=v9.9.9\n"
