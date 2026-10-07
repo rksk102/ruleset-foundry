@@ -95,6 +95,7 @@ reviews:
       instructions: |
         第三方 action 必须钉 40 位 commit SHA 并保留同行 `# vX.Y.Z`（Dependabot 依赖该标注）；
         docker:// 镜像按 digest 固定。
+          本仓库动作引用暂不使用 `$/` 自仓库语法（actionlint 1.7.12 尚不支持），待上游支持后再切换。
         执行下载来的二进制的 job 不得同时持有 contents: write。
         gh pr merge 必须带 --match-head-commit 且对空值 fail-closed。
         不得向 main 提交 merged-rules/ 或 merged-rules-mrs/。
