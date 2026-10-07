@@ -19,6 +19,7 @@ CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
 MANIFEST_NAME = "products.manifest"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def detect_mode(type_str):
@@ -61,12 +62,19 @@ def _ensure_within(base_dir, target_path, what):
     return target
 
 
+def _ensure_repo_anchored(label, path):
+    target = Path(path).resolve()
+    if target != REPO_ROOT and REPO_ROOT not in target.parents:
+        error(f"{label}不在仓库内，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
+        sys.exit(1)
+
+
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
     _ensure_within(OUTPUT_DIR, full_output_dir, "合并输出")
-    _ensure_within(OUTPUT_DIR, full_output_file, "合并输出")
+    _ensure_within(full_output_dir, full_output_file, "合并输出")
     combined_rules = set()
     files_read_count = 0
     source_urls = []
@@ -273,6 +281,8 @@ def detect_cross_policy_conflicts(merged_dir):
 
 def main():
     section("规则合并器")
+    _ensure_repo_anchored("源目录", SOURCE_DIR)
+    _ensure_repo_anchored("输出目录", OUTPUT_DIR)
 
     stats = {"success": 0, "skipped": 0, "failed": 0}
     error_logs = []

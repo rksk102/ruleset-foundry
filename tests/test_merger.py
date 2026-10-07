@@ -1,3 +1,5 @@
+import tempfile
+
 import merger
 import pytest
 
@@ -159,6 +161,7 @@ class TestProcessTaskLogic:
         write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\n")
         output = tmp_path / "merged"
         output.mkdir(parents=True)
+        escaped = (output / ".." / ".." / ".." / "domain" / "PWNED.txt").resolve()
 
         def run():
             merger.process_task_logic("../../..", "domain", "Owner", "../PWNED.txt",
@@ -166,7 +169,22 @@ class TestProcessTaskLogic:
 
         with pytest.raises(ValueError):
             self.use_dirs(source, output, run)
-        assert not (tmp_path / "PWNED.txt").exists()
+        assert not escaped.exists()
+
+    def test_filename_traversal_rejected_without_writing(self, tmp_path):
+        source = tmp_path / "rulesets"
+        write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\n")
+        output = tmp_path / "merged"
+        owner_dir = output / "block" / "domain" / "Owner"
+        escaped = (owner_dir / ".." / "escape.txt").resolve()
+
+        def run():
+            merger.process_task_logic("block", "domain", "Owner", "../escape.txt",
+                                      ["block/domain/A/one.txt"], "x")
+
+        with pytest.raises(ValueError):
+            self.use_dirs(source, output, run)
+        assert not escaped.exists()
 
     def test_ip_task_drops_default_route(self, tmp_path):
         source = tmp_path / "rulesets"
@@ -244,3 +262,25 @@ class TestDetectCrossPolicyConflicts:
 
     def test_missing_dir_returns_empty(self, tmp_path):
         assert merger.detect_cross_policy_conflicts(str(tmp_path / "nope")) == ({}, {})
+
+
+class TestRepoAnchor:
+
+    def test_source_dir_outside_repo_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(merger, "SOURCE_DIR", tempfile.gettempdir())
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+
+    def test_output_dir_outside_repo_is_rejected(self, monkeypatch, work_dir):
+        source = work_dir / "rulesets"
+        source.mkdir(parents=True)
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", tempfile.gettempdir())
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
