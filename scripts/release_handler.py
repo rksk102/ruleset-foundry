@@ -5,13 +5,29 @@ import subprocess
 import sys
 import time
 import zipfile
+from pathlib import Path
 
 import manifest
 from config_loader import get
-from logger import error, group_end, group_start, info, section, success, warning
-from utils import beijing_now, combined_products_hash, load_last_hash, save_last_hash
+from logger import (
+    error,
+    gh_error,
+    group_end,
+    group_start,
+    info,
+    section,
+    success,
+    warning,
+)
+from utils import (
+    anchor_cwd_to_repo_root,
+    beijing_now,
+    combined_products_hash,
+    load_last_hash,
+    save_last_hash,
+)
 
-REPO_ROOT = os.getcwd()
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
 MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
 MRS_DIR = get("paths", "mrs_output_dir", default="merged-rules-mrs")
@@ -107,6 +123,11 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
                 f"{BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空"
                 f"（已检查 {' / '.join(baseline_files())}）"
             )
+        if not txt_files and not mrs_files:
+            raise manifest.ManifestError(
+                f"没有任何产物可校验: {txt_dir} 与 {mrs_dir} 均不存在或为空"
+                "（通常在非仓库根目录运行时出现，拒绝空跑通过）"
+            )
         warning(f"  {BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空，跳过绝对基准校验")
     else:
         check_expected(baseline, txt_files, f"{txt_dir} 绝对基准校验")
@@ -124,6 +145,7 @@ def enforce_products(txt_dir=None, mrs_dir=None):
         verified = verify_products(txt_dir, mrs_dir)
     except manifest.ManifestError as e:
         error(f"  {e}")
+        gh_error(f"产物校验失败: {e}")
         group_end()
         sys.exit(1)
     if verified is not None:
@@ -190,6 +212,10 @@ def zip_target_files(tag_date):
                     if file.endswith(ext):
                         file_path = os.path.join(root, file)
                         arcname = os.path.relpath(file_path, REPO_ROOT)
+                        if arcname.startswith(("..", "/", "\\")) or os.path.isabs(arcname):
+                            error(f"  zip 条目越出仓库范围，拒绝打包: {arcname}")
+                            gh_error(f"zip 条目越出仓库范围: {arcname}（REPO_ROOT={REPO_ROOT}）")
+                            sys.exit(1)
                         zipf.write(file_path, arcname)
                         file_manifest[folder].append(arcname)
                         total_files += 1
@@ -291,6 +317,7 @@ def main():
 
     if c1 != c2:
         error(f"  产物数量不一致: .txt={c1} 与 .mrs={c2}，可能存在空产物漂移")
+        gh_error(f"产物数量不一致: .txt={c1} 与 .mrs={c2}")
         group_end()
         sys.exit(1)
 
@@ -312,6 +339,7 @@ def main():
 
     if publish_release(release_tag, zip_file, f"Merged Rules - {tag_date}", notes, exists) is None:
         error("  Release 发布失败，不保存哈希，下次运行将重试")
+        gh_error(f"Release {release_tag} 发布失败（不保存哈希，下次运行重试）")
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)
@@ -319,11 +347,13 @@ def main():
     asset_count = confirm_release_assets(release_tag)
     if asset_count is None:
         error(f"  Release {release_tag} 的资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
+        gh_error(f"Release {release_tag} 资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)
     if asset_count == 0:
         error(f"  Release {release_tag} 发布后没有任何资产（--clobber 会先删后传），判定失败")
+        gh_error(f"Release {release_tag} 发布后没有任何资产")
         if os.path.exists(zip_file):
             os.unlink(zip_file)
         sys.exit(1)
@@ -341,6 +371,7 @@ def main():
             releases = json.loads(releases_json)
         except (TypeError, ValueError) as e:
             error(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
+            gh_error(f"旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
             if os.path.exists(zip_file):
                 os.unlink(zip_file)
             sys.exit(1)
@@ -389,4 +420,5 @@ def main():
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()

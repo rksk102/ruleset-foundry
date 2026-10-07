@@ -12,6 +12,16 @@ except ImportError:
 
 _CONFIG = None
 _CONFIG_FILE = Path("config.yaml")
+_REPO_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.yaml"
+
+
+def resolve_config_file():
+    """默认的 config.yaml 优先取运行目录，缺失时回落到仓库根。"""
+    if _CONFIG_FILE.exists():
+        return _CONFIG_FILE
+    if str(_CONFIG_FILE) == "config.yaml" and _REPO_CONFIG_FILE.exists():
+        return _REPO_CONFIG_FILE
+    return _CONFIG_FILE
 
 _TYPES = {
     ("network", "timeout_seconds"): int,
@@ -203,26 +213,27 @@ def load_config():
         return _CONFIG
 
     cfg = _defaults()
+    config_file = resolve_config_file()
 
-    if _CONFIG_FILE.exists():
+    if config_file.exists():
         if not _HAS_YAML:
             raise ConfigError(
-                f"检测到 {_CONFIG_FILE} 但 PyYAML 未安装，拒绝以默认值继续；"
+                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；"
                 "请运行 pip install -r requirements.txt"
             )
         try:
-            with open(_CONFIG_FILE, encoding="utf-8") as f:
+            with open(config_file, encoding="utf-8") as f:
                 user_data = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            raise ConfigError(f"配置文件 {_CONFIG_FILE} YAML 语法错误: {e}") from e
+            raise ConfigError(f"配置文件 {config_file} YAML 语法错误: {e}") from e
         except OSError as e:
-            raise ConfigError(f"配置文件 {_CONFIG_FILE} 读取失败: {e}") from e
+            raise ConfigError(f"配置文件 {config_file} 读取失败: {e}") from e
 
         if user_data is None:
             user_data = {}
         if not isinstance(user_data, dict):
             raise ConfigError(
-                f"配置文件 {_CONFIG_FILE} 顶层必须是映射，实际 {type(user_data).__name__}"
+                f"配置文件 {config_file} 顶层必须是映射，实际 {type(user_data).__name__}"
             )
 
         _merge_dict(cfg, user_data)

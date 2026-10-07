@@ -9,6 +9,13 @@ from pathlib import Path
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def anchor_cwd_to_repo_root():
+    """让配置里的相对路径始终相对仓库根，而不是调用者的当前目录。"""
+    os.chdir(REPO_ROOT)
+
 
 def beijing_now():
     return datetime.now(BEIJING_TZ)

@@ -4,9 +4,10 @@ from pathlib import Path
 
 import manifest
 from config_loader import get, load_config
-from logger import error, group_end, group_start, info, section, success, warning
+from logger import error, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     DomainTrie,
+    anchor_cwd_to_repo_root,
     atomic_write_with_header,
     beijing_timestamp,
     clean_directory,
@@ -66,6 +67,7 @@ def _ensure_repo_anchored(label, path):
     target = Path(path).resolve()
     if target != REPO_ROOT and REPO_ROOT not in target.parents:
         error(f"{label}不在仓库内，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
+        gh_error(f"{label}不在仓库内，拒绝继续: {target}")
         sys.exit(1)
 
 
@@ -298,6 +300,7 @@ def main():
 
     if not os.path.exists(SOURCE_DIR):
         error(f"源目录 '{SOURCE_DIR}' 不存在！")
+        gh_error(f"源目录 '{SOURCE_DIR}' 不存在，合并中止")
         sys.exit(1)
 
     if config_tasks:
@@ -306,6 +309,10 @@ def main():
             error(f"合并输入缺失 {len(missing_inputs)} 项（配置合并任务未执行，产物目录未改动）:")
             for rel in missing_inputs:
                 error(f"    - {rel}")
+            gh_error(
+                f"合并输入缺失 {len(missing_inputs)} 项，配置合并任务未执行"
+                f"（示例: {', '.join(missing_inputs[:3])}）"
+            )
             sys.exit(1)
 
     auto_tasks = auto_discover_files()
@@ -314,6 +321,7 @@ def main():
         for rel in overlap:
             error(f"合并任务与自动透传输出同一路径: {rel}")
         error("请改用不同的 owner/filename，或把该路径从 merges.inputs 中移除")
+        gh_error(f"合并任务与自动透传输出同一路径: {', '.join(overlap)}")
         sys.exit(1)
 
     if os.path.exists(OUTPUT_DIR):
@@ -376,11 +384,16 @@ def main():
         if stats["success"] + stats["skipped"] != expected_tasks:
             error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
                   f"成功 {stats['success']} + 跳过 {stats['skipped']}")
+            gh_error(
+                f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
+                f"成功 {stats['success']} + 跳过 {stats['skipped']}"
+            )
             sys.exit(1)
         try:
             verify_merged_products(config_tasks)
         except manifest.ManifestError as e:
             error(f"  {e}")
+            gh_error(f"合并产物与清单基线不一致: {e}")
             sys.exit(1)
         info("  合并产物与清单基线一致")
 
@@ -398,6 +411,7 @@ def main():
         action = resolve_conflict_action(conflict_policy, has_conflicts)
     except ValueError as e:
         error(str(e))
+        gh_error(f"behavior.conflict_policy 配置非法: {e}")
         sys.exit(1)
 
     show_conflicts = action != "ignore"
@@ -460,12 +474,15 @@ def main():
 
     if action == "fail":
         error("检测到跨策略冲突，按配置终止合并")
+        gh_error("检测到跨策略冲突，按 behavior.conflict_policy=fail 终止合并")
         sys.exit(1)
 
     if stats["failed"] > 0:
         error("存在失败任务，退出")
+        gh_error(f"存在 {stats['failed']} 个合并任务失败，合并中止")
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()

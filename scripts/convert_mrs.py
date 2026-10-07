@@ -16,7 +16,7 @@ from pathlib import Path
 import config_loader
 from config_loader import get
 from logger import error, group_end, group_start, info, success, warning
-from utils import clean_directory
+from utils import anchor_cwd_to_repo_root, clean_directory
 
 SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
@@ -43,7 +43,7 @@ def ensure_kernel_platform():
 def ensure_config_usable():
     if getattr(config_loader, "_HAS_YAML", True):
         return
-    config_file = getattr(config_loader, "_CONFIG_FILE", None)
+    config_file = config_loader.resolve_config_file()
     if config_file is None or not Path(config_file).exists():
         return
     error(f"检测到 {config_file} 但 PyYAML 未安装，配置将被整份忽略；请先执行 pip install -r requirements.txt")
@@ -504,4 +504,5 @@ def main():
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()
