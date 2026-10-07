@@ -247,7 +247,8 @@ def _process_ip_group(all_lines):
         else:
             ip_lines.append(line)
 
-    result, ip_errors = processor.process_ip(ip_lines)
+    result, ip_errors, ip_stats = processor.process_ip_detailed(ip_lines)
+    stats["dropped_default_route"] = ip_stats["dropped_default_route"]
     for bad, why in ip_errors[:10]:
         warning(f"    无效 CIDR 已丢弃: {bad} -> {why}")
     if len(ip_errors) > 10:
