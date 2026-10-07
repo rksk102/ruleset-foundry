@@ -93,7 +93,6 @@ def new_stats():
     return {
         "suffix": 0,
         "subdomain": 0,
-        "exact": 0,
         "relaxed_exact": 0,
         "wildcard": 0,
         "bare_single_label": 0,
@@ -383,10 +382,6 @@ def process_ip_detailed(lines):
     stats["dropped_default_route"] = len(dropped_default_routes)
     return result, errors, stats
 
-
-def process_ip(lines):
-    result, errors, _stats = process_ip_detailed(lines)
-    return result, errors
 
 def main():
     mode = "domain"

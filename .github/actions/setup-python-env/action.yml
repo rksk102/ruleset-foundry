@@ -1,21 +1,29 @@
 name: 'Setup Python Environment'
 description: 'Install Python, cache pip dependencies, and install requirements'
 
+inputs:
+  requirements-file:
+    description: 'Lock file to install (relative to the repository root)'
+    required: false
+    default: 'requirements.lock'
+
 runs:
   using: 'composite'
   steps:
-    - name: Setup Python 3.13
+    - name: Setup Python
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
-        python-version: '3.13'
+        python-version: '3.14'
 
     - name: Cache pip dependencies
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.cache/pip
-        key: pip-${{ runner.os }}-${{ hashFiles('requirements*.txt') }}
+        key: pip-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'requirements*.lock') }}
         restore-keys: pip-${{ runner.os }}-
 
     - name: Install dependencies
       shell: bash
-      run: pip install --require-hashes -r requirements.lock
+      env:
+        REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
+      run: pip install --require-hashes -r "$REQUIREMENTS_FILE"

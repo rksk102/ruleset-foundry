@@ -8,7 +8,6 @@ paths:
   rulesets_dir: "rulesets"
   merged_output_dir: "merged-rules"
   mrs_output_dir: "merged-rules-mrs"
-  cache_dir: ".cache"
   log_dir: "logs"
 
 merges:
@@ -41,7 +40,6 @@ merges:
       - "policy/domain/Loyalsoldier/proxy-list.txt"
 
 behavior:
-  strict_mode: false
   release_change_detection: true
   release_keep_days: 3
   conflict_policy: "warn"
@@ -53,5 +51,4 @@ mihomo:
   kernel_cache_path: ".cache/mihomo-kernel"
   repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
   pinned_version: "v1.19.32"
-  asset_name: "mihomo-linux-amd64-v1.19.32.gz"
   kernel_sha256: "3122d100e8177501776109f1a6253a694611627cf4d7c7ec82705855cf8626a8"

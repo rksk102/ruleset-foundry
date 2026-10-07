@@ -94,12 +94,13 @@
 
 ## 内核版本升级流程（维护者）
 
-内核由 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段钉扎；
+内核由 `config.yaml` 的 `mihomo.pinned_version` / `kernel_sha256` 两字段钉扎（资产名按
+`mihomo-linux-amd64-<tag>.gz` 推导）；
 `kernel-bump.yml` 每周一自动跟随最新正式版（即 `python scripts/convert_mrs.py --bump-config`），
-正常情况下无需手工操作。手工升级时**必须先改前两个字段、最后再算哈希**：
+正常情况下无需手工操作。手工升级时**必须先改版本、最后再算哈希**：
 
 1. 在 mihomo 官方 Release 页面确认目标 tag 与资产名（如 `mihomo-linux-amd64-v1.19.32.gz`）。
-2. 先改 `config.yaml` 的 `pinned_version` 与 `asset_name`（`kernel_sha256` 暂留旧值）。
+2. 先改 `config.yaml` 的 `pinned_version`（`kernel_sha256` 暂留旧值）。
 3. 再运行 `python scripts/convert_mrs.py --print-kernel-hash`：它会按新的 pin 下载该资产，
    打印解压后二进制的 sha256，用该输出覆盖 `kernel_sha256`。
 4. 提 PR，由 CI（pytest + ruff）验证后合并。
@@ -108,8 +109,8 @@
 > Windows/macOS 请用 WSL 或交给 CI。顺序颠倒会拿到**旧资产**的哈希，下一次流水线会以
 > 「内核哈希不匹配」失败。
 
-**自动跟随的信任模型**：`kernel-bump.yml` 每周一自动把 `pinned_version` / `asset_name` /
-`kernel_sha256` 三字段更新到 main（机器人直接提交，没有 PR 评审，该 push 也不会触发 CI）。
+**自动跟随的信任模型**：`kernel-bump.yml` 每周一自动把 `pinned_version` / `kernel_sha256`
+两字段更新到 main（机器人直接提交，没有 PR 评审，该 push 也不会触发 CI）。
 实际信任锚是上游 Release 资产的 `digest`（GitHub API 记录）+ 本仓库钉扎的解压后 SHA-256 +
 ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采纳。如需人工把关，请禁用该 workflow
 的 commit job，或改走上面的手工流程。
@@ -130,9 +131,7 @@ ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采�
 | `paths.rulesets_dir` | `rulesets` | 同步产物目录 |
 | `paths.merged_output_dir` | `merged-rules` | 合并产物目录（`.txt`） |
 | `paths.mrs_output_dir` | `merged-rules-mrs` | MRS 产物目录 |
-| `paths.cache_dir` | `.cache` | 缓存目录 |
 | `paths.log_dir` | `logs` | 运行日志目录 |
-| `behavior.strict_mode` | `false` | 任一源失败即让同步失败（可被 dispatch 输入覆盖） |
 | `behavior.release_change_detection` | `true` | 仅当规则正文变化时才新建 Release |
 | `behavior.release_keep_days` | `3` | 旧 Release 保留天数 |
 | `behavior.conflict_policy` | `warn` | 跨策略冲突处理：`ignore` / `warn` / `fail` |
@@ -142,12 +141,17 @@ ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采�
 | `mihomo.kernel_cache_path` | `.cache/mihomo-kernel` | 内核缓存目录 |
 | `mihomo.repo_api` | GitHub API | 内核 Release 查询地址 |
 | `mihomo.pinned_version` | — | 钉扎的内核 tag |
-| `mihomo.asset_name` | — | 钉扎的内核资产名 |
 | `mihomo.kernel_sha256` | — | 解压后内核二进制的 SHA-256 |
 | `merges` | `[]` | 合并任务列表，见下一节 |
 
 `paths.*` 与 `mihomo.kernel_cache_path` 只接受仓库内相对路径；所有键的类型与取值范围都会在
 启动时校验，写错会直接报错而不是静默忽略。
+
+`behavior.allow_partial=false`（默认）时，**任一源下载/解析失败、或某个源的未识别行占比超过
+`unrecognized_warn_ratio`，当天整批产物都不会发布**：同步作业失败，读者继续使用上一版产物与
+Release。这是有意为之的 fail-closed 取舍——宁可停更一天，也不发布一份「看起来正常、实际拦截面
+缩小」的规则集。若要接受部分产物，请显式设 `allow_partial: true`，并用
+`min_source_success_ratio` 设出可接受的成功率下限。
 
 ## 规则合并任务（merges）
 
@@ -203,6 +207,14 @@ rule-providers:
 
 产物由 CI 每日生成，**不进入 git 历史**，统一发布在本仓库的 `artifacts` 分支上。
 上表所有下载链接均指向该分支；请按链接原样引用，不要改用 `main` 分支。
+
+下载渠道的取舍：Source 列的 `raw.githubusercontent.com` 是权威且无缓存延迟的来源；jsDelivr 有
+CDN 加速，但**分支引用（本仓库的 `@artifacts`）最长有 12 小时缓存**；`ghproxy.net` 等第三方
+反向代理无可用性承诺、内容经第三方转发，请自行评估后再用。
+
+产物路径会随上游文件名冲突而变化：同一策略/类型下若两个上游仓库提供同名文件，owner 目录会自动
+加 `__<仓库名>` 后缀（例如 `Loyalsoldier__v2ray-rules-dat`）。请以本文件表格与 `artifacts`
+分支的实际内容为准，不要硬编码单条 URL。
 
 ## 规则格式与匹配语义（重要）
 
@@ -269,6 +281,10 @@ rule-providers:
   `+.d` / `.d` / `*.d` 等写法保持原有语义，标记不会改写它们。
 - 标记行必须独占一行（`[domain-kind:exact|suffix]`、`[policy:...]`、`[type:...]` 均可反复出现）；
   `#` 开头的整行是注释。
+- 标记**大小写不敏感**（`[Policy:Block]` 等价 `[policy:block]`），并允许行尾 `#` 注释
+  （如 `[policy:block] # 广告源`）。
+- 独占一行的方括号内容必须是上表三种标记之一：键名拼错（如 `[polcy:block]`）或写成
+  `[policy:block] 说明` 都会**直接报错并终止同步**（报出行号与原文），不会静默沿用上一个标记。
 
 当前已标注 `[domain-kind:suffix]` 的源（均为 DLC 系纯文本列表）：
 
@@ -289,17 +305,18 @@ rule-providers:
 ## 跨策略冲突处理（conflict_policy）
 
 `behavior.conflict_policy` 支持 `ignore | warn | fail`，默认 `warn`。
+设为 `ignore` 时会**跳过冲突检测本身**（不再花费合并阶段约 1/3 的时间与内存）。
 `fail` 仅作为"新增源时的临时验收开关"：当前隐式冲突基线噪声较大（约 1.2 万条），
 直接启用 `fail` 会中断发布；启用前请先人工核对冲突检测结果。
 
 ## 本地开发与测试
 
-本地环境要求 Python 3.13（CI 使用 `ubuntu-latest` + 3.13）：
+本地环境要求 Python 3.14（CI 使用 `ubuntu-latest` + 3.14）：
 
 Linux/macOS：
 
 ```bash
-uv venv .venv --python 3.13
+uv venv .venv --python 3.14
 uv pip install --require-hashes -r requirements-dev.lock --python .venv/bin/python
 
 export PYTHONPATH=$PWD/scripts
@@ -311,7 +328,7 @@ export PYTHONPATH=$PWD/scripts
 Windows（PowerShell）：
 
 ```powershell
-uv venv .venv --python 3.13
+uv venv .venv --python 3.14
 uv pip install --require-hashes -r requirements-dev.lock --python .venv/Scripts/python.exe
 
 $env:PYTHONPATH = "$PWD/scripts"
@@ -320,9 +337,18 @@ $env:PYTHONPATH = "$PWD/scripts"
 .venv/Scripts/zizmor.exe --min-severity medium .github/
 ```
 
-依赖锁定在 `requirements*.lock`（含哈希）；改依赖请用 `uv pip compile … --generate-hashes` 重新生成。
+依赖锁定在 `requirements*.lock`（含哈希），**改依赖后必须重新生成并提交锁文件**：
+
+```bash
+uv pip compile requirements.txt --generate-hashes -o requirements.lock
+uv pip compile requirements.txt requirements-dev.txt --generate-hashes -o requirements-dev.lock
+```
+
+`tests/test_dependency_locks.py` 会校验「锁中版本满足清单约束」且「每个锁定包都带 `--hash`」，
+因此只改 `requirements*.txt` 不改锁（Dependabot 的常见形态）会在 CI 中失败。
 工作流的静态检查（CI 的 `workflows-lint`）使用 `rhysd/actionlint`，本地可跑
-`docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`。
+`docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`（它只检查 workflow 文件，
+复合 action 由 `zizmor` 覆盖）。
 内核相关路径（`scripts/convert_mrs.py` 的下载与校验）需要 Linux 才能执行真实内核，
 Windows/macOS 请在 WSL 中运行或交给 CI。
 

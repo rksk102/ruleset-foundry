@@ -50,7 +50,7 @@ class TestConsumerContract:
 
     def test_kernel_upgrade_steps_put_pin_before_hashing(self):
         text = gen_readme.make_static_sections()
-        assert "2. 先改 `config.yaml` 的 `pinned_version` 与 `asset_name`" in text
+        assert "2. 先改 `config.yaml` 的 `pinned_version`" in text
         assert "3. 再运行 `python scripts/convert_mrs.py --print-kernel-hash`" in text
         assert "顺序颠倒" in text
         assert "只在 Linux 上可用" in text
@@ -75,12 +75,12 @@ class TestDocumentedConfigAndWorkflow:
         "network.timeout_seconds", "network.max_retries", "network.max_source_bytes",
         "network.max_concurrency", "network.max_per_host", "network.max_retry_after_seconds",
         "paths.sources_file", "paths.rulesets_dir", "paths.merged_output_dir",
-        "paths.mrs_output_dir", "paths.cache_dir", "paths.log_dir",
-        "behavior.strict_mode", "behavior.release_change_detection",
+        "paths.mrs_output_dir", "paths.log_dir",
+        "behavior.release_change_detection",
         "behavior.release_keep_days", "behavior.conflict_policy",
         "behavior.unrecognized_warn_ratio", "behavior.min_source_success_ratio",
         "behavior.allow_partial", "mihomo.kernel_cache_path", "mihomo.repo_api",
-        "mihomo.pinned_version", "mihomo.asset_name", "mihomo.kernel_sha256", "merges",
+        "mihomo.pinned_version", "mihomo.kernel_sha256", "merges",
     )
 
     def test_config_reference_lists_every_key(self):

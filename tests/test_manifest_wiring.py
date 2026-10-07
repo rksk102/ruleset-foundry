@@ -66,7 +66,7 @@ class GhStub:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, cmd, fail_fast=False):
+    def __call__(self, cmd):
         self.calls.append(list(cmd))
         if cmd[:2] == ["release", "list"]:
             return "[]"

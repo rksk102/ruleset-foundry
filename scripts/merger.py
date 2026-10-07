@@ -3,10 +3,11 @@ import sys
 from pathlib import Path
 
 import manifest
-from config_loader import get, load_config
-from logger import error, group_end, group_start, info, section, success, warning
+from config_loader import CONFLICT_POLICIES, get, load_config
+from logger import error, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     DomainTrie,
+    anchor_cwd_to_repo_root,
     atomic_write_with_header,
     beijing_timestamp,
     clean_directory,
@@ -18,7 +19,6 @@ from utils import (
 CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
-MANIFEST_NAME = "products.manifest"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -43,7 +43,7 @@ def missing_merge_inputs(merge_tasks, base_dir=None):
 
 def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None):
     out_dir = output_dir or OUTPUT_DIR
-    manifest_file = manifest_file or os.path.join(SOURCE_DIR, MANIFEST_NAME)
+    manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
     baseline = manifest.load_manifest(manifest_file)
     if not baseline:
         raise manifest.ManifestError(
@@ -66,6 +66,7 @@ def _ensure_repo_anchored(label, path):
     target = Path(path).resolve()
     if target != REPO_ROOT and REPO_ROOT not in target.parents:
         error(f"{label}不在仓库内，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
+        gh_error(f"{label}不在仓库内，拒绝继续: {target}")
         sys.exit(1)
 
 
@@ -201,12 +202,12 @@ def load_domains_from_file(filepath):
     return domains
 
 
-VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
+IMPLICIT_SAMPLE_LIMIT = 3
 
 
 def resolve_conflict_action(conflict_policy, has_conflicts):
     policy = (conflict_policy or "warn").lower()
-    if policy not in VALID_CONFLICT_POLICIES:
+    if policy not in CONFLICT_POLICIES:
         raise ValueError(f"behavior.conflict_policy 取值非法: {conflict_policy!r}")
     if not has_conflicts:
         return "none"
@@ -298,6 +299,7 @@ def main():
 
     if not os.path.exists(SOURCE_DIR):
         error(f"源目录 '{SOURCE_DIR}' 不存在！")
+        gh_error(f"源目录 '{SOURCE_DIR}' 不存在，合并中止")
         sys.exit(1)
 
     if config_tasks:
@@ -306,6 +308,10 @@ def main():
             error(f"合并输入缺失 {len(missing_inputs)} 项（配置合并任务未执行，产物目录未改动）:")
             for rel in missing_inputs:
                 error(f"    - {rel}")
+            gh_error(
+                f"合并输入缺失 {len(missing_inputs)} 项，配置合并任务未执行"
+                f"（示例: {', '.join(missing_inputs[:3])}）"
+            )
             sys.exit(1)
 
     auto_tasks = auto_discover_files()
@@ -314,6 +320,7 @@ def main():
         for rel in overlap:
             error(f"合并任务与自动透传输出同一路径: {rel}")
         error("请改用不同的 owner/filename，或把该路径从 merges.inputs 中移除")
+        gh_error(f"合并任务与自动透传输出同一路径: {', '.join(overlap)}")
         sys.exit(1)
 
     if os.path.exists(OUTPUT_DIR):
@@ -376,11 +383,16 @@ def main():
         if stats["success"] + stats["skipped"] != expected_tasks:
             error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
                   f"成功 {stats['success']} + 跳过 {stats['skipped']}")
+            gh_error(
+                f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
+                f"成功 {stats['success']} + 跳过 {stats['skipped']}"
+            )
             sys.exit(1)
         try:
             verify_merged_products(config_tasks)
         except manifest.ManifestError as e:
             error(f"  {e}")
+            gh_error(f"合并产物与清单基线不一致: {e}")
             sys.exit(1)
         info("  合并产物与清单基线一致")
 
@@ -390,14 +402,17 @@ def main():
         for r in summary_rows:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
-    explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
-
     conflict_policy = get("behavior", "conflict_policy", default="warn")
+    if str(conflict_policy or "warn").lower() == "ignore":
+        explicit_conflicts, implicit_conflicts = {}, {}
+    else:
+        explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
     has_conflicts = bool(explicit_conflicts or implicit_conflicts)
     try:
         action = resolve_conflict_action(conflict_policy, has_conflicts)
     except ValueError as e:
         error(str(e))
+        gh_error(f"behavior.conflict_policy 配置非法: {e}")
         sys.exit(1)
 
     show_conflicts = action != "ignore"
@@ -416,12 +431,14 @@ def main():
 
     if show_conflicts and implicit_conflicts:
         group_start("隐式冲突（父域名覆盖其他策略的子域名）")
+        total_implicit = sum(len(v) for v in implicit_conflicts.values())
+        warning(f"  共 {total_implicit} 个子域受父域规则影响（完整列表见 step summary）")
         for pair, items in implicit_conflicts.items():
             warning(f"  {pair}: {len(items)} 个子域被覆盖")
-            for child, parent in items[:10]:
+            for child, parent in items[:IMPLICIT_SAMPLE_LIMIT]:
                 warning(f"    - {child} 被 {parent} 覆盖")
-            if len(items) > 10:
-                warning(f"    ... 及其他 {len(items) - 10} 个")
+            if len(items) > IMPLICIT_SAMPLE_LIMIT:
+                warning(f"    ... 及其他 {len(items) - IMPLICIT_SAMPLE_LIMIT} 个")
         group_end()
 
     if os.getenv("GITHUB_STEP_SUMMARY"):
@@ -460,12 +477,15 @@ def main():
 
     if action == "fail":
         error("检测到跨策略冲突，按配置终止合并")
+        gh_error("检测到跨策略冲突，按 behavior.conflict_policy=fail 终止合并")
         sys.exit(1)
 
     if stats["failed"] > 0:
         error("存在失败任务，退出")
+        gh_error(f"存在 {stats['failed']} 个合并任务失败，合并中止")
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()

@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from utils import is_safe_component
@@ -12,6 +11,16 @@ except ImportError:
 
 _CONFIG = None
 _CONFIG_FILE = Path("config.yaml")
+_REPO_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.yaml"
+
+
+def resolve_config_file():
+    """默认的 config.yaml 优先取运行目录，缺失时回落到仓库根。"""
+    if _CONFIG_FILE.exists():
+        return _CONFIG_FILE
+    if str(_CONFIG_FILE) == "config.yaml" and _REPO_CONFIG_FILE.exists():
+        return _REPO_CONFIG_FILE
+    return _CONFIG_FILE
 
 _TYPES = {
     ("network", "timeout_seconds"): int,
@@ -24,9 +33,7 @@ _TYPES = {
     ("paths", "rulesets_dir"): str,
     ("paths", "merged_output_dir"): str,
     ("paths", "mrs_output_dir"): str,
-    ("paths", "cache_dir"): str,
     ("paths", "log_dir"): str,
-    ("behavior", "strict_mode"): bool,
     ("behavior", "release_change_detection"): bool,
     ("behavior", "release_keep_days"): int,
     ("behavior", "conflict_policy"): str,
@@ -36,7 +43,6 @@ _TYPES = {
     ("mihomo", "kernel_cache_path"): str,
     ("mihomo", "repo_api"): str,
     ("mihomo", "pinned_version"): str,
-    ("mihomo", "asset_name"): str,
     ("mihomo", "kernel_sha256"): str,
 }
 
@@ -55,14 +61,13 @@ _RATIOS = {
     ("behavior", "min_source_success_ratio"),
 }
 
-_CONFLICT_POLICIES = ("ignore", "warn", "fail")
+CONFLICT_POLICIES = ("ignore", "warn", "fail")
 
 _PATH_KEYS = {
     ("paths", "sources_file"),
     ("paths", "rulesets_dir"),
     ("paths", "merged_output_dir"),
     ("paths", "mrs_output_dir"),
-    ("paths", "cache_dir"),
     ("paths", "log_dir"),
     ("mihomo", "kernel_cache_path"),
 }
@@ -91,12 +96,10 @@ def _defaults():
             "rulesets_dir": "rulesets",
             "merged_output_dir": "merged-rules",
             "mrs_output_dir": "merged-rules-mrs",
-            "cache_dir": ".cache",
             "log_dir": "logs",
         },
         "merges": [],
         "behavior": {
-            "strict_mode": False,
             "release_change_detection": True,
             "release_keep_days": 3,
             "conflict_policy": "warn",
@@ -108,7 +111,6 @@ def _defaults():
             "kernel_cache_path": ".cache/mihomo-kernel",
             "repo_api": "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
             "pinned_version": "",
-            "asset_name": "",
             "kernel_sha256": "",
         },
     }
@@ -165,9 +167,9 @@ def _validate_scalar(section, key, value):
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
         raise ConfigError(f"{section}.{key} 必须在 0..1 之间，实际 {value!r}")
-    if (section, key) == ("behavior", "conflict_policy") and value not in _CONFLICT_POLICIES:
+    if (section, key) == ("behavior", "conflict_policy") and value not in CONFLICT_POLICIES:
         raise ConfigError(
-            f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(_CONFLICT_POLICIES)}）"
+            f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(CONFLICT_POLICIES)}）"
         )
     return value
 
@@ -203,26 +205,27 @@ def load_config():
         return _CONFIG
 
     cfg = _defaults()
+    config_file = resolve_config_file()
 
-    if _CONFIG_FILE.exists():
+    if config_file.exists():
         if not _HAS_YAML:
             raise ConfigError(
-                f"检测到 {_CONFIG_FILE} 但 PyYAML 未安装，拒绝以默认值继续；"
+                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；"
                 "请运行 pip install -r requirements.txt"
             )
         try:
-            with open(_CONFIG_FILE, encoding="utf-8") as f:
+            with open(config_file, encoding="utf-8") as f:
                 user_data = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            raise ConfigError(f"配置文件 {_CONFIG_FILE} YAML 语法错误: {e}") from e
+            raise ConfigError(f"配置文件 {config_file} YAML 语法错误: {e}") from e
         except OSError as e:
-            raise ConfigError(f"配置文件 {_CONFIG_FILE} 读取失败: {e}") from e
+            raise ConfigError(f"配置文件 {config_file} 读取失败: {e}") from e
 
         if user_data is None:
             user_data = {}
         if not isinstance(user_data, dict):
             raise ConfigError(
-                f"配置文件 {_CONFIG_FILE} 顶层必须是映射，实际 {type(user_data).__name__}"
+                f"配置文件 {config_file} 顶层必须是映射，实际 {type(user_data).__name__}"
             )
 
         _merge_dict(cfg, user_data)
@@ -241,10 +244,6 @@ def load_config():
                 raise ConfigError(f"未知配置项: {section}.{key}（请检查拼写）")
             values[key] = _validate_scalar(section, key, value)
     _validate_merges(cfg.get("merges"))
-
-    raw = (os.getenv("STRICT_MODE") or "").strip().lower()
-    if raw:
-        cfg["behavior"]["strict_mode"] = raw in ("true", "1", "yes", "on")
 
     _CONFIG = cfg
     return _CONFIG

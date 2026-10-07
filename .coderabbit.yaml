@@ -108,9 +108,9 @@ reviews:
       enabled: false
     yamllint:
       enabled: false
-    # 保留与 workflow / 供应链安全相关的检查
+    # actionlint 与 CI 的 workflows-lint 完全重复（CI 钉扎同一版本），此处只留 zizmor 作第二意见
     actionlint:
-      enabled: true
+      enabled: false
     zizmor:
       enabled: true
     gitleaks:

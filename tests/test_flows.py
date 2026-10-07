@@ -22,7 +22,7 @@ PAYLOADS = {
 
 class TestMainFlow:
     def setup_run(self, monkeypatch, work_dir, sources=SOURCES, payloads=None,
-                  allow_partial=False, strict=False):
+                  allow_partial=False):
         payloads = PAYLOADS if payloads is None else payloads
         rulesets = work_dir / "rulesets"
         sources_file = work_dir / "sources.urls"
@@ -30,7 +30,6 @@ class TestMainFlow:
         monkeypatch.setattr(main, "SOURCES_FILE", str(sources_file))
         monkeypatch.setattr(main, "RULESETS_DIR", rulesets)
         monkeypatch.setattr(main, "MANIFEST_FILE", rulesets / "products.manifest")
-        monkeypatch.setattr(main, "STRICT_MODE", strict)
         monkeypatch.setattr(main, "ALLOW_PARTIAL", allow_partial)
         monkeypatch.setattr(main, "MIN_SUCCESS_RATIO", 0.0)
         monkeypatch.setattr(main, "UNRECOGNIZED_WARN_RATIO", 0.10)
@@ -96,18 +95,6 @@ class TestMainFlow:
             "block/domain/o/drop.txt", "block/domain/o/keep.txt"]
         assert self.manifest_entries(rulesets) == before
 
-    def test_strict_mode_exits_after_writing(self, monkeypatch, work_dir):
-        payloads = dict(PAYLOADS, **{"drop.txt": None})
-        rulesets = self.setup_run(monkeypatch, work_dir, payloads=payloads,
-                                  allow_partial=True, strict=True)
-
-        with pytest.raises(SystemExit) as exc:
-            main.main()
-
-        assert exc.value.code == 1
-        assert self.manifest_entries(rulesets) == ["block/domain/o/keep.txt"]
-
-
 class TestConvertMrsFlow:
     def test_print_kernel_hash_prints_the_file_digest(self, monkeypatch, work_dir, capsys):
         kernel = work_dir / "mihomo"
@@ -156,3 +143,21 @@ class TestConvertMrsFlow:
 
         assert exc.value.code == 0, "只有被跳过的文件时不算失败（配对校验在发布环节兜底）"
         assert not list(Path(convert_mrs.DST_ROOT).rglob("*.mrs"))
+
+
+class TestDegradedSummary:
+    def test_reasons_are_listed_and_cells_are_escaped(self, work_dir, monkeypatch):
+        summary = work_dir / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        stats = main.SyncStats()
+        stats.download_errors.append(("https://x.test/a|b.txt", "第一行\n第二行|尾巴"))
+        stats.parse_errors.append(("https://x.test/c.txt", "解析失败: 多行\n错误"))
+
+        main.generate_summary(
+            stats, ["存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false"])
+
+        text = summary.read_text(encoding="utf-8")
+        assert "### 本次未发布（消费者继续使用上一版产物）" in text
+        assert "- 存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false" in text
+        assert "第一行 第二行\\|尾巴" in text
+        assert "第一行\n第二行" not in text

@@ -110,7 +110,7 @@ class TestEmptyPayloadDoesNotSilentlyDelete:
         (work_dir / "config.yaml").write_text(
             'network:\n  timeout_seconds: 15\n  max_retries: 2\n  max_source_bytes: 67108864\n'
             'paths:\n  sources_file: "sources.urls"\n  rulesets_dir: "rulesets"\n'
-            'behavior:\n  strict_mode: false\n  min_source_success_ratio: 0.0\n'
+            'behavior:\n  min_source_success_ratio: 0.0\n'
             '  allow_partial: false\n',
             encoding="utf-8",
         )

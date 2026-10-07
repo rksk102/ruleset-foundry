@@ -16,14 +16,13 @@ from pathlib import Path
 import config_loader
 from config_loader import get
 from logger import error, group_end, group_start, info, success, warning
-from utils import clean_directory
+from utils import anchor_cwd_to_repo_root, clean_directory, file_sha256
 
 SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
 REPO_API = get("mihomo", "repo_api",
                default="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest")
 PINNED_VERSION = (get("mihomo", "pinned_version", default="") or "").strip()
-ASSET_NAME = (get("mihomo", "asset_name", default="") or "").strip()
 EXPECTED_SHA = (get("mihomo", "kernel_sha256", default="") or "").strip().lower()
 KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
 KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
@@ -43,7 +42,7 @@ def ensure_kernel_platform():
 def ensure_config_usable():
     if getattr(config_loader, "_HAS_YAML", True):
         return
-    config_file = getattr(config_loader, "_CONFIG_FILE", None)
+    config_file = config_loader.resolve_config_file()
     if config_file is None or not Path(config_file).exists():
         return
     error(f"检测到 {config_file} 但 PyYAML 未安装，配置将被整份忽略；请先执行 pip install -r requirements.txt")
@@ -63,45 +62,18 @@ def release_api_url(pinned_version, repo_api=None):
     return f"{root}/latest"
 
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def select_kernel_asset(assets, asset_name, pinned_version):
-    def pick(asset):
-        return {
-            "name": asset["name"],
-            "url": asset["browser_download_url"],
-            "digest": asset.get("digest") or "",
-        }
-
-    gz = [a for a in assets if "linux-amd64" in a["name"] and a["name"].endswith(".gz")]
-    if asset_name:
-        for a in gz:
-            if a["name"] == asset_name:
-                return pick(a)
+def select_kernel_asset(assets, tag_name):
+    """按官方命名规则取 linux-amd64 压缩包；命名不符即返回 None（调用方 fail-closed）。"""
+    if not tag_name:
         return None
-
-    def is_variant(name):
-        base = name[:-3]
-        return (
-            any(k in base for k in ("-go1", "-go2", "compatible"))
-            or "-v1-" in base or "-v2-" in base or "-v3-" in base
-            or base.endswith("-v1") or base.endswith("-v2") or base.endswith("-v3")
-        )
-
-    stable = [a for a in gz if not is_variant(a["name"])]
-    if pinned_version:
-        exact = f"mihomo-linux-amd64-{pinned_version}.gz"
-        for a in stable:
-            if a["name"] == exact:
-                return pick(a)
-    if stable:
-        return pick(sorted(stable, key=lambda a: a["name"])[0])
+    want = expected_kernel_asset_name(tag_name)
+    for asset in assets:
+        if asset["name"] == want:
+            return {
+                "name": asset["name"],
+                "url": asset["browser_download_url"],
+                "digest": asset.get("digest") or "",
+            }
     return None
 
 
@@ -111,7 +83,7 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF", require_sh
     if magic != expected_magic:
         raise ValueError(f"内核不是有效 ELF 文件（magic={magic!r}）")
 
-    actual = sha256_file(path)
+    actual = file_sha256(path)
     if not expected_sha:
         if require_sha:
             raise ValueError(
@@ -232,9 +204,11 @@ def get_latest_mihomo(skip_hash_check=False):
                         return
                     warning("  缓存内核不可运行，将重新下载")
 
-        asset = select_kernel_asset(data["assets"], ASSET_NAME, PINNED_VERSION)
+        asset = select_kernel_asset(data["assets"], tag_name)
         if not asset:
-            raise Exception(f"未找到合适的 linux-amd64 内核资源（asset_name={ASSET_NAME!r}）")
+            raise Exception(
+                f"未找到 Linux 内核资产 {expected_kernel_asset_name(tag_name)}"
+            )
 
         info(f"  下载内核: {asset['url']}")
         if not asset["digest"]:
@@ -380,10 +354,9 @@ def bump_config():
         info(f"  已是最新正式版 {tag}，无需更新")
         return
 
-    asset_name = expected_kernel_asset_name(tag)
-    asset = select_kernel_asset(data["assets"], asset_name, tag)
+    asset = select_kernel_asset(data["assets"], tag)
     if not asset:
-        error(f"  未找到期望资产 {asset_name}，拒绝改用启发式挑选")
+        error(f"  未找到期望资产 {expected_kernel_asset_name(tag)}，拒绝改用启发式挑选")
         sys.exit(1)
 
     info(f"  下载并校验 {tag} ...")
@@ -399,7 +372,7 @@ def bump_config():
         error(f"  内核结构校验失败: {e}")
         sys.exit(1)
 
-    sha = sha256_file(KERNEL_BIN)
+    sha = file_sha256(KERNEL_BIN)
     ver_out = _verify_kernel()
     if not ver_out or "Mihomo" not in ver_out:
         error("  内核无法运行，拒绝写入配置")
@@ -407,10 +380,9 @@ def bump_config():
     _smoke_convert()
 
     text = _set_config_field(text, "pinned_version", tag)
-    text = _set_config_field(text, "asset_name", asset_name)
     text = _set_config_field(text, "kernel_sha256", sha)
     cfg_path.write_text(text, encoding="utf-8")
-    info(f"  已更新 config.yaml: {asset_name} ({sha[:12]}...)")
+    info(f"  已更新 config.yaml: {tag} ({sha[:12]}...)")
 
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
@@ -424,7 +396,7 @@ def main():
 
     if "--print-kernel-hash" in sys.argv:
         get_latest_mihomo(skip_hash_check=True)
-        print(sha256_file(KERNEL_BIN))
+        print(file_sha256(KERNEL_BIN))
         return
 
     if "--bump-config" in sys.argv:
@@ -504,4 +476,5 @@ def main():
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()
