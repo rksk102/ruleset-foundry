@@ -2,12 +2,20 @@ import os
 import re
 import sys
 import urllib.parse
+from io import StringIO
+from pathlib import Path
 
 from config_loader import get
 from logger import error, group_end, group_start, info, success
-from utils import beijing_now, combined_products_hash, load_last_hash
+from utils import (
+    anchor_cwd_to_repo_root,
+    atomic_write,
+    beijing_now,
+    combined_products_hash,
+    load_last_hash,
+)
 
-REPO_ROOT = os.getcwd()
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 DIR_RULES = os.path.join(REPO_ROOT, get("paths", "merged_output_dir", default="merged-rules"))
 DIR_MRS = os.path.join(REPO_ROOT, get("paths", "mrs_output_dir", default="merged-rules-mrs"))
 README_FILE = os.path.join(REPO_ROOT, "README.md")
@@ -212,6 +220,12 @@ ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采�
 `paths.*` 与 `mihomo.kernel_cache_path` 只接受仓库内相对路径；所有键的类型与取值范围都会在
 启动时校验，写错会直接报错而不是静默忽略。
 
+`behavior.allow_partial=false`（默认）时，**任一源下载/解析失败、或某个源的未识别行占比超过
+`unrecognized_warn_ratio`，当天整批产物都不会发布**：同步作业失败，读者继续使用上一版产物与
+Release。这是有意为之的 fail-closed 取舍——宁可停更一天，也不发布一份「看起来正常、实际拦截面
+缩小」的规则集。若要接受部分产物，请显式设 `allow_partial: true`，并用
+`min_source_success_ratio` 设出可接受的成功率下限。
+
 ## 规则合并任务（merges）
 
 `merges` 把多个已同步的产物合并成一个新产物（例如把三个广告列表合成 `all-adblock.txt`）：
@@ -266,6 +280,14 @@ rule-providers:
 
 产物由 CI 每日生成，**不进入 git 历史**，统一发布在本仓库的 `artifacts` 分支上。
 上表所有下载链接均指向该分支；请按链接原样引用，不要改用 `main` 分支。
+
+下载渠道的取舍：Source 列的 `raw.githubusercontent.com` 是权威且无缓存延迟的来源；jsDelivr 有
+CDN 加速，但**分支引用（本仓库的 `@artifacts`）最长有 12 小时缓存**；`ghproxy.net` 等第三方
+反向代理无可用性承诺、内容经第三方转发，请自行评估后再用。
+
+产物路径会随上游文件名冲突而变化：同一策略/类型下若两个上游仓库提供同名文件，owner 目录会自动
+加 `__<仓库名>` 后缀（例如 `Loyalsoldier__v2ray-rules-dat`）。请以本文件表格与 `artifacts`
+分支的实际内容为准，不要硬编码单条 URL。
 
 ## 规则格式与匹配语义（重要）
 
@@ -332,6 +354,10 @@ rule-providers:
   `+.d` / `.d` / `*.d` 等写法保持原有语义，标记不会改写它们。
 - 标记行必须独占一行（`[domain-kind:exact|suffix]`、`[policy:...]`、`[type:...]` 均可反复出现）；
   `#` 开头的整行是注释。
+- 标记**大小写不敏感**（`[Policy:Block]` 等价 `[policy:block]`），并允许行尾 `#` 注释
+  （如 `[policy:block] # 广告源`）。
+- 独占一行的方括号内容必须是上表三种标记之一：键名拼错（如 `[polcy:block]`）或写成
+  `[policy:block] 说明` 都会**直接报错并终止同步**（报出行号与原文），不会静默沿用上一个标记。
 
 当前已标注 `[domain-kind:suffix]` 的源（均为 DLC 系纯文本列表）：
 
@@ -357,12 +383,12 @@ rule-providers:
 
 ## 本地开发与测试
 
-本地环境要求 Python 3.13（CI 使用 `ubuntu-latest` + 3.13）：
+本地环境要求 Python 3.14（CI 使用 `ubuntu-latest` + 3.14）：
 
 Linux/macOS：
 
 ```bash
-uv venv .venv --python 3.13
+uv venv .venv --python 3.14
 uv pip install --require-hashes -r requirements-dev.lock --python .venv/bin/python
 
 export PYTHONPATH=$PWD/scripts
@@ -374,7 +400,7 @@ export PYTHONPATH=$PWD/scripts
 Windows（PowerShell）：
 
 ```powershell
-uv venv .venv --python 3.13
+uv venv .venv --python 3.14
 uv pip install --require-hashes -r requirements-dev.lock --python .venv/Scripts/python.exe
 
 $env:PYTHONPATH = "$PWD/scripts"
@@ -383,9 +409,18 @@ $env:PYTHONPATH = "$PWD/scripts"
 .venv/Scripts/zizmor.exe --min-severity medium .github/
 ```
 
-依赖锁定在 `requirements*.lock`（含哈希）；改依赖请用 `uv pip compile … --generate-hashes` 重新生成。
+依赖锁定在 `requirements*.lock`（含哈希），**改依赖后必须重新生成并提交锁文件**：
+
+```bash
+uv pip compile requirements.txt --generate-hashes -o requirements.lock
+uv pip compile requirements.txt requirements-dev.txt --generate-hashes -o requirements-dev.lock
+```
+
+`tests/test_dependency_locks.py` 会校验「锁中版本满足清单约束」且「每个锁定包都带 `--hash`」，
+因此只改 `requirements*.txt` 不改锁（Dependabot 的常见形态）会在 CI 中失败。
 工作流的静态检查（CI 的 `workflows-lint`）使用 `rhysd/actionlint`，本地可跑
-`docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`。
+`docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`（它只检查 workflow 文件，
+复合 action 由 `zizmor` 覆盖）。
 内核相关路径（`scripts/convert_mrs.py` 的下载与校验）需要 Linux 才能执行真实内核，
 Windows/macOS 请在 WSL 中运行或交给 CI。
 
@@ -432,27 +467,28 @@ def main():
     badge_time = resolve_badge_time()
 
     try:
-        with open(README_FILE, "w", encoding="utf-8") as f:
-            f.write(make_page_header(badge_time))
+        buf = StringIO()
+        buf.write(make_page_header(badge_time))
 
-            f.write("## 规则列表\n\n")
+        buf.write("## 规则列表\n\n")
 
-            count_std, size_std = make_section(
-                f, "基础规则集合",
-                "面向 mihomo (Clash.Meta) 内核：按 `behavior: domain` 加载 `.txt`，"
-                "含 `+.d` / `.d` 等 mihomo 专属前缀语义；"
-                "Clash Premium、Sing-box 等其它内核不能直接消费 `.txt`，"
-                "`.mrs` 更是 mihomo 专用二进制格式",
-                files_std, DIR_RULES,
-            )
+        count_std, size_std = make_section(
+            buf, "基础规则集合",
+            "面向 mihomo (Clash.Meta) 内核：按 `behavior: domain` 加载 `.txt`，"
+            "含 `+.d` / `.d` 等 mihomo 专属前缀语义；"
+            "Clash Premium、Sing-box 等其它内核不能直接消费 `.txt`，"
+            "`.mrs` 更是 mihomo 专用二进制格式",
+            files_std, DIR_RULES,
+        )
 
-            count_mrs, size_mrs = make_section(
-                f, "Mihomo 专用集合",
-                "仅适用于 Mihomo (Clash.Meta) 内核，二进制格式 (.mrs) 性能更好、加载更快",
-                files_mrs, DIR_MRS,
-            )
+        count_mrs, size_mrs = make_section(
+            buf, "Mihomo 专用集合",
+            "仅适用于 Mihomo (Clash.Meta) 内核，二进制格式 (.mrs) 性能更好、加载更快",
+            files_mrs, DIR_MRS,
+        )
 
-            f.write(make_static_sections())
+        buf.write(make_static_sections())
+        atomic_write(README_FILE, buf.getvalue())
 
     except Exception as e:
         error(f"README 生成失败: {e}")
@@ -472,4 +508,5 @@ def main():
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()
