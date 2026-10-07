@@ -147,7 +147,6 @@ jobs:
       - name: 下载 rulesets 产物（提供产物清单基线）
         id: dl-rulesets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        continue-on-error: true
         with:
           name: rulesets
           path: rulesets/
@@ -173,6 +172,11 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
+      - name: 产物一致性预检
+        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/release_handler.py --verify-only
       - name: 发布规则产物到 artifacts 分支
         if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:

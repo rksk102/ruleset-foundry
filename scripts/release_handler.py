@@ -51,10 +51,7 @@ def product_dirs():
 
 
 def baseline_files():
-    return (
-        os.path.join(RULESETS_DIR, MANIFEST_NAME),
-        os.path.join(MERGED_DIR, MANIFEST_NAME),
-    )
+    return (os.path.join(RULESETS_DIR, MANIFEST_NAME),)
 
 
 def baseline_required():
@@ -132,6 +129,12 @@ def enforce_products(txt_dir=None, mrs_dir=None):
     if verified is not None:
         info(f"  产物校验通过（{verified} 项）")
     return verified
+
+
+def verify_only():
+    group_start("产物校验（发布前预检）")
+    enforce_products()
+    group_end()
 
 
 def run_gh(cmd_list, fail_fast=False):
@@ -266,6 +269,10 @@ def publish_release(release_tag, zip_file, title, notes, exists):
 
 
 def main():
+    if "--verify-only" in sys.argv[1:]:
+        verify_only()
+        return
+
     group_start("处理发布")
 
     utc_now = datetime.datetime.now(datetime.UTC)
