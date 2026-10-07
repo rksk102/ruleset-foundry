@@ -3,9 +3,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import config_loader
-import pytest
-
 SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
 
 
@@ -24,7 +21,7 @@ BASE = (
     "paths:\n"
     "  sources_file: \"sources.urls\"\n"
     "behavior:\n"
-    "  strict_mode: false\n"
+    "  allow_partial: false\n"
 )
 
 
@@ -40,7 +37,7 @@ def run_child(cwd):
         "try:\n"
         "    cfg = load_config()\n"
         "    print('OK', json.dumps({'merges': len(cfg.get('merges') or []),"
-        " 'strict': cfg['behavior']['strict_mode'],"
+        " 'allow_partial': cfg['behavior']['allow_partial'],"
         " 'timeout': cfg['network']['timeout_seconds']}))\n"
         "except ConfigError as e:\n"
         "    print('CONFIG_ERROR', str(e)[:120])\n"
@@ -62,10 +59,10 @@ class TestConfigValidation:
         assert "max_source_bytes" in out
 
     def test_quoted_bool_is_rejected(self, work_dir):
-        write_cfg(work_dir, BASE.replace("strict_mode: false", 'strict_mode: "false"'))
+        write_cfg(work_dir, BASE.replace("allow_partial: false", 'allow_partial: "false"'))
         out = run_child(work_dir)
         assert out.startswith("CONFIG_ERROR")
-        assert "strict_mode" in out
+        assert "allow_partial" in out
 
     def test_negative_int_is_rejected(self, work_dir):
         write_cfg(work_dir, BASE.replace("timeout_seconds: 15", "timeout_seconds: -1"))
@@ -160,7 +157,7 @@ class TestConfigValidation:
         assert "float" in out
 
     def test_unknown_section_is_rejected(self, work_dir):
-        write_cfg(work_dir, BASE + "behaviour:\n  strict_mode: true\n")
+        write_cfg(work_dir, BASE + "behaviour:\n  release_keep_days: 3\n")
         out = run_child(work_dir)
         assert out.startswith("CONFIG_ERROR")
         assert "behaviour" in out
@@ -237,29 +234,3 @@ class TestPyYamlMissing:
         assert proc.stdout.strip().startswith("CONFIG_ERROR")
 
 
-class TestStrictModeEnv:
-    @pytest.mark.parametrize("value,expected", [
-        ("true", True), ("TRUE", True), ("1", True), ("yes", True), ("on", True),
-        ("false", False), ("0", False), ("", False),
-    ])
-    def test_env_parsing(self, work_dir, monkeypatch, value, expected):
-        write_cfg(work_dir, BASE)
-        monkeypatch.chdir(work_dir)
-        monkeypatch.setenv("STRICT_MODE", value)
-        monkeypatch.setattr(config_loader, "_CONFIG", None)
-        cfg = config_loader.load_config()
-        assert cfg["behavior"]["strict_mode"] is expected
-
-    def test_blank_env_keeps_config_value(self, work_dir, monkeypatch):
-        write_cfg(work_dir, BASE.replace("strict_mode: false", "strict_mode: true"))
-        monkeypatch.chdir(work_dir)
-        monkeypatch.setenv("STRICT_MODE", "")
-        monkeypatch.setattr(config_loader, "_CONFIG", None)
-        assert config_loader.load_config()["behavior"]["strict_mode"] is True
-
-    def test_explicit_false_env_overrides_config_true(self, work_dir, monkeypatch):
-        write_cfg(work_dir, BASE.replace("strict_mode: false", "strict_mode: true"))
-        monkeypatch.chdir(work_dir)
-        monkeypatch.setenv("STRICT_MODE", "false")
-        monkeypatch.setattr(config_loader, "_CONFIG", None)
-        assert config_loader.load_config()["behavior"]["strict_mode"] is False

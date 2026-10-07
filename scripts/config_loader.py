@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from utils import is_safe_component
@@ -34,9 +33,7 @@ _TYPES = {
     ("paths", "rulesets_dir"): str,
     ("paths", "merged_output_dir"): str,
     ("paths", "mrs_output_dir"): str,
-    ("paths", "cache_dir"): str,
     ("paths", "log_dir"): str,
-    ("behavior", "strict_mode"): bool,
     ("behavior", "release_change_detection"): bool,
     ("behavior", "release_keep_days"): int,
     ("behavior", "conflict_policy"): str,
@@ -46,7 +43,6 @@ _TYPES = {
     ("mihomo", "kernel_cache_path"): str,
     ("mihomo", "repo_api"): str,
     ("mihomo", "pinned_version"): str,
-    ("mihomo", "asset_name"): str,
     ("mihomo", "kernel_sha256"): str,
 }
 
@@ -65,14 +61,13 @@ _RATIOS = {
     ("behavior", "min_source_success_ratio"),
 }
 
-_CONFLICT_POLICIES = ("ignore", "warn", "fail")
+CONFLICT_POLICIES = ("ignore", "warn", "fail")
 
 _PATH_KEYS = {
     ("paths", "sources_file"),
     ("paths", "rulesets_dir"),
     ("paths", "merged_output_dir"),
     ("paths", "mrs_output_dir"),
-    ("paths", "cache_dir"),
     ("paths", "log_dir"),
     ("mihomo", "kernel_cache_path"),
 }
@@ -101,12 +96,10 @@ def _defaults():
             "rulesets_dir": "rulesets",
             "merged_output_dir": "merged-rules",
             "mrs_output_dir": "merged-rules-mrs",
-            "cache_dir": ".cache",
             "log_dir": "logs",
         },
         "merges": [],
         "behavior": {
-            "strict_mode": False,
             "release_change_detection": True,
             "release_keep_days": 3,
             "conflict_policy": "warn",
@@ -118,7 +111,6 @@ def _defaults():
             "kernel_cache_path": ".cache/mihomo-kernel",
             "repo_api": "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
             "pinned_version": "",
-            "asset_name": "",
             "kernel_sha256": "",
         },
     }
@@ -175,9 +167,9 @@ def _validate_scalar(section, key, value):
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
         raise ConfigError(f"{section}.{key} 必须在 0..1 之间，实际 {value!r}")
-    if (section, key) == ("behavior", "conflict_policy") and value not in _CONFLICT_POLICIES:
+    if (section, key) == ("behavior", "conflict_policy") and value not in CONFLICT_POLICIES:
         raise ConfigError(
-            f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(_CONFLICT_POLICIES)}）"
+            f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(CONFLICT_POLICIES)}）"
         )
     return value
 
@@ -252,10 +244,6 @@ def load_config():
                 raise ConfigError(f"未知配置项: {section}.{key}（请检查拼写）")
             values[key] = _validate_scalar(section, key, value)
     _validate_merges(cfg.get("merges"))
-
-    raw = (os.getenv("STRICT_MODE") or "").strip().lower()
-    if raw:
-        cfg["behavior"]["strict_mode"] = raw in ("true", "1", "yes", "on")
 
     _CONFIG = cfg
     return _CONFIG

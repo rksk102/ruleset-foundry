@@ -30,7 +30,6 @@ try:
     TIMEOUT = get("network", "timeout_seconds", default=15)
     RETRIES = get("network", "max_retries", default=2)
     MAX_SOURCE_BYTES = get("network", "max_source_bytes", default=64 * 1024 * 1024)
-    STRICT_MODE = get("behavior", "strict_mode", default=False)
     UNRECOGNIZED_WARN_RATIO = get("behavior", "unrecognized_warn_ratio", default=0.10)
     CONCURRENCY = get("network", "max_concurrency", default=6)
     PER_HOST = get("network", "max_per_host", default=2)
@@ -41,7 +40,7 @@ except ConfigError as _cfg_err:
     gh_error(f"配置校验失败: {_cfg_err}")
     sys.exit(1)
 
-MANIFEST_FILE = RULESETS_DIR / "products.manifest"
+MANIFEST_FILE = RULESETS_DIR / manifest.MANIFEST_NAME
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
@@ -617,7 +616,7 @@ def main():
 
     group_start("初始化")
     RULESETS_DIR.mkdir(parents=True, exist_ok=True)
-    info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次 | 严格模式:{'开' if STRICT_MODE else '关'}")
+    info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次")
     tasks = parse_sources()
     info(f"  加载 {len(tasks)} 个上游源")
     group_end()
@@ -705,10 +704,6 @@ def main():
     finalize_products(expected_files)
 
     generate_summary(stats)
-
-    if STRICT_MODE and (stats.download_errors or stats.parse_errors):
-        gh_error("严格模式下存在失败源，退出")
-        sys.exit(1)
 
     info(f"\n同步完成: {stats.success} 个输出成功, "
          f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败")

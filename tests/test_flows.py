@@ -22,7 +22,7 @@ PAYLOADS = {
 
 class TestMainFlow:
     def setup_run(self, monkeypatch, work_dir, sources=SOURCES, payloads=None,
-                  allow_partial=False, strict=False):
+                  allow_partial=False):
         payloads = PAYLOADS if payloads is None else payloads
         rulesets = work_dir / "rulesets"
         sources_file = work_dir / "sources.urls"
@@ -30,7 +30,6 @@ class TestMainFlow:
         monkeypatch.setattr(main, "SOURCES_FILE", str(sources_file))
         monkeypatch.setattr(main, "RULESETS_DIR", rulesets)
         monkeypatch.setattr(main, "MANIFEST_FILE", rulesets / "products.manifest")
-        monkeypatch.setattr(main, "STRICT_MODE", strict)
         monkeypatch.setattr(main, "ALLOW_PARTIAL", allow_partial)
         monkeypatch.setattr(main, "MIN_SUCCESS_RATIO", 0.0)
         monkeypatch.setattr(main, "UNRECOGNIZED_WARN_RATIO", 0.10)
@@ -95,18 +94,6 @@ class TestMainFlow:
                 if not p.endswith("sync-summary.txt")] == [
             "block/domain/o/drop.txt", "block/domain/o/keep.txt"]
         assert self.manifest_entries(rulesets) == before
-
-    def test_strict_mode_exits_after_writing(self, monkeypatch, work_dir):
-        payloads = dict(PAYLOADS, **{"drop.txt": None})
-        rulesets = self.setup_run(monkeypatch, work_dir, payloads=payloads,
-                                  allow_partial=True, strict=True)
-
-        with pytest.raises(SystemExit) as exc:
-            main.main()
-
-        assert exc.value.code == 1
-        assert self.manifest_entries(rulesets) == ["block/domain/o/keep.txt"]
-
 
 class TestConvertMrsFlow:
     def test_print_kernel_hash_prints_the_file_digest(self, monkeypatch, work_dir, capsys):

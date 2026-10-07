@@ -1,5 +1,3 @@
-import os
-
 import config_loader
 import pytest
 
@@ -18,7 +16,6 @@ def reset_config():
 
     config_loader._CONFIG = None
     config_loader._CONFIG_FILE = pathlib.Path("config.yaml")
-    os.environ.pop("STRICT_MODE", None)
 
 
 class TestMergeDict:
@@ -117,34 +114,6 @@ class TestLoadConfig:
         finally:
             reset_config()
 
-    def test_strict_mode_env_true(self, work_dir):
-        use_config(work_dir)
-        os.environ["STRICT_MODE"] = "true"
-        try:
-            assert config_loader.load_config()["behavior"]["strict_mode"] is True
-        finally:
-            reset_config()
-
-    def test_strict_mode_env_is_case_insensitive_and_exact(self, work_dir):
-        use_config(work_dir)
-        try:
-            for raw, expected in [("TRUE", True), ("True", True), ("yes", True),
-                                  ("1", True), ("on", True),
-                                  ("false", False), ("0", False), ("no", False), ("", False)]:
-                config_loader._CONFIG = None
-                os.environ["STRICT_MODE"] = raw
-                assert config_loader.load_config()["behavior"]["strict_mode"] is expected
-        finally:
-            reset_config()
-
-    def test_strict_mode_env_absent_keeps_default(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.load_config()["behavior"]["strict_mode"] is False
-        finally:
-            reset_config()
-
-
 class TestGet:
     def test_single_key(self, work_dir):
         use_config(work_dir)
@@ -192,8 +161,8 @@ class TestGet:
             reset_config()
 
     def test_false_is_not_treated_as_missing(self, work_dir):
-        use_config(work_dir, "behavior:\n  strict_mode: false\n")
+        use_config(work_dir, "behavior:\n  allow_partial: false\n")
         try:
-            assert config_loader.get("behavior", "strict_mode", default=True) is False
+            assert config_loader.get("behavior", "allow_partial", default=True) is False
         finally:
             reset_config()

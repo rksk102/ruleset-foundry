@@ -104,11 +104,11 @@ class TestMergerGuards:
 
 class TestConvertMrs:
     def test_set_config_field_accepts_unquoted_values(self):
-        text = 'mihomo:\n  pinned_version: v1.0\n  asset_name: \'a.gz\'\n'
+        text = 'mihomo:\n  pinned_version: v1.0\n  kernel_sha256: \'aa\'\n'
         assert 'pinned_version: "v2.0"' in convert_mrs._set_config_field(
             text, "pinned_version", "v2.0")
-        assert 'asset_name: "b.gz"' in convert_mrs._set_config_field(
-            text, "asset_name", "b.gz")
+        assert 'kernel_sha256: "bb"' in convert_mrs._set_config_field(
+            text, "kernel_sha256", "bb")
 
     def test_non_linux_fails_with_a_clear_message(self, monkeypatch, caplog):
         monkeypatch.setattr(convert_mrs.sys, "platform", "win32")
@@ -130,7 +130,7 @@ class TestReleaseHandler:
         monkeypatch.setattr(release_handler, "publish_release", lambda *a: "ok")
         monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: asset_count)
         monkeypatch.setattr(release_handler, "save_last_hash", lambda *a: None)
-        monkeypatch.setattr(release_handler, "run_gh", lambda cmd, fail_fast=False: "")
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "hash")
         monkeypatch.setattr(release_handler.os.path, "exists", lambda p: False)
 
@@ -187,7 +187,7 @@ class TestReleaseHandler:
         assert saved == ["new-hash"]
 
     def test_release_asset_count_parses_gh_output(self, monkeypatch):
-        monkeypatch.setattr(release_handler, "run_gh", lambda cmd, fail_fast=False: "3")
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "3")
         assert release_handler.release_asset_count("rules-2026-10-06") == 3
-        monkeypatch.setattr(release_handler, "run_gh", lambda cmd, fail_fast=False: "")
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
         assert release_handler.release_asset_count("rules-2026-10-06") is None

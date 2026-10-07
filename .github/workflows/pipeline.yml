@@ -6,10 +6,6 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
-      strict_mode:
-        description: '严格模式（任何源失败则终止）'
-        type: boolean
-        default: false
       skip_release:
         description: '跳过 Release 发布'
         type: boolean
@@ -36,7 +32,6 @@ jobs:
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
         env:
-          STRICT_MODE: ${{ inputs.strict_mode }}
           PYTHONPATH: ${{ github.workspace }}/scripts
           GH_TOKEN: ${{ github.token }}
         run: python scripts/main.py

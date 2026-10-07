@@ -94,12 +94,13 @@
 
 ## 内核版本升级流程（维护者）
 
-内核由 `config.yaml` 的 `mihomo.pinned_version` / `asset_name` / `kernel_sha256` 三字段钉扎；
+内核由 `config.yaml` 的 `mihomo.pinned_version` / `kernel_sha256` 两字段钉扎（资产名按
+`mihomo-linux-amd64-<tag>.gz` 推导）；
 `kernel-bump.yml` 每周一自动跟随最新正式版（即 `python scripts/convert_mrs.py --bump-config`），
-正常情况下无需手工操作。手工升级时**必须先改前两个字段、最后再算哈希**：
+正常情况下无需手工操作。手工升级时**必须先改版本、最后再算哈希**：
 
 1. 在 mihomo 官方 Release 页面确认目标 tag 与资产名（如 `mihomo-linux-amd64-v1.19.32.gz`）。
-2. 先改 `config.yaml` 的 `pinned_version` 与 `asset_name`（`kernel_sha256` 暂留旧值）。
+2. 先改 `config.yaml` 的 `pinned_version`（`kernel_sha256` 暂留旧值）。
 3. 再运行 `python scripts/convert_mrs.py --print-kernel-hash`：它会按新的 pin 下载该资产，
    打印解压后二进制的 sha256，用该输出覆盖 `kernel_sha256`。
 4. 提 PR，由 CI（pytest + ruff）验证后合并。
@@ -108,8 +109,8 @@
 > Windows/macOS 请用 WSL 或交给 CI。顺序颠倒会拿到**旧资产**的哈希，下一次流水线会以
 > 「内核哈希不匹配」失败。
 
-**自动跟随的信任模型**：`kernel-bump.yml` 每周一自动把 `pinned_version` / `asset_name` /
-`kernel_sha256` 三字段更新到 main（机器人直接提交，没有 PR 评审，该 push 也不会触发 CI）。
+**自动跟随的信任模型**：`kernel-bump.yml` 每周一自动把 `pinned_version` / `kernel_sha256`
+两字段更新到 main（机器人直接提交，没有 PR 评审，该 push 也不会触发 CI）。
 实际信任锚是上游 Release 资产的 `digest`（GitHub API 记录）+ 本仓库钉扎的解压后 SHA-256 +
 ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采纳。如需人工把关，请禁用该 workflow
 的 commit job，或改走上面的手工流程。
@@ -130,9 +131,7 @@ ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采�
 | `paths.rulesets_dir` | `rulesets` | 同步产物目录 |
 | `paths.merged_output_dir` | `merged-rules` | 合并产物目录（`.txt`） |
 | `paths.mrs_output_dir` | `merged-rules-mrs` | MRS 产物目录 |
-| `paths.cache_dir` | `.cache` | 缓存目录 |
 | `paths.log_dir` | `logs` | 运行日志目录 |
-| `behavior.strict_mode` | `false` | 任一源失败即让同步失败（可被 dispatch 输入覆盖） |
 | `behavior.release_change_detection` | `true` | 仅当规则正文变化时才新建 Release |
 | `behavior.release_keep_days` | `3` | 旧 Release 保留天数 |
 | `behavior.conflict_policy` | `warn` | 跨策略冲突处理：`ignore` / `warn` / `fail` |
@@ -142,7 +141,6 @@ ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采�
 | `mihomo.kernel_cache_path` | `.cache/mihomo-kernel` | 内核缓存目录 |
 | `mihomo.repo_api` | GitHub API | 内核 Release 查询地址 |
 | `mihomo.pinned_version` | — | 钉扎的内核 tag |
-| `mihomo.asset_name` | — | 钉扎的内核资产名 |
 | `mihomo.kernel_sha256` | — | 解压后内核二进制的 SHA-256 |
 | `merges` | `[]` | 合并任务列表，见下一节 |
 
@@ -307,6 +305,7 @@ CDN 加速，但**分支引用（本仓库的 `@artifacts`）最长有 12 小时
 ## 跨策略冲突处理（conflict_policy）
 
 `behavior.conflict_policy` 支持 `ignore | warn | fail`，默认 `warn`。
+设为 `ignore` 时会**跳过冲突检测本身**（不再花费合并阶段约 1/3 的时间与内存）。
 `fail` 仅作为"新增源时的临时验收开关"：当前隐式冲突基线噪声较大（约 1.2 万条），
 直接启用 `fail` 会中断发布；启用前请先人工核对冲突检测结果。
 

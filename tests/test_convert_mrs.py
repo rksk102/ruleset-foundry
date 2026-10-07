@@ -52,61 +52,47 @@ class TestReleaseApiUrl:
 
 
 class TestSelectKernelAsset:
-    def test_exact_asset_name_match(self):
+    def test_matches_derived_asset_name(self):
         assets = [asset("mihomo-linux-amd64-v1.19.30.gz")]
-        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        got = convert_mrs.select_kernel_asset(assets, "v1.19.30")
         assert got["url"] == "https://example.com/mihomo-linux-amd64-v1.19.30.gz"
         assert got["name"] == "mihomo-linux-amd64-v1.19.30.gz"
         assert got["digest"].startswith("sha256:")
 
     def test_digest_is_carried_through(self):
         assets = [asset("mihomo-linux-amd64-v1.19.30.gz", digest="sha256:deadbeef")]
-        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        got = convert_mrs.select_kernel_asset(assets, "v1.19.30")
         assert got["digest"] == "sha256:deadbeef"
 
     def test_missing_digest_becomes_empty_string(self):
         assets = [{"name": "mihomo-linux-amd64-v1.19.30.gz",
                    "browser_download_url": "https://example.com/x.gz"}]
-        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.30.gz", "v1.19.30")
+        got = convert_mrs.select_kernel_asset(assets, "v1.19.30")
         assert got["digest"] == ""
 
-    def test_exact_asset_name_missing_returns_none(self):
+    def test_other_version_returns_none(self):
         assets = [asset("mihomo-linux-amd64-v1.19.30.gz")]
-        assert convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v1.19.31.gz", "v1.19.31") is None
+        assert convert_mrs.select_kernel_asset(assets, "v1.19.31") is None
 
-    def test_prefers_exact_name_over_variants(self):
-        assets = [
-            asset("mihomo-linux-amd64-go1.24-v1.19.32.gz"),
-            asset("mihomo-linux-amd64-compatible-v1.19.32.gz"),
-            asset("mihomo-linux-amd64-v1.19.32.gz"),
-        ]
-        got = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
-        assert got["url"] == "https://example.com/mihomo-linux-amd64-v1.19.32.gz"
-
-    def test_only_variants_returns_none(self):
+    def test_variants_are_never_selected(self):
         assets = [
             asset("mihomo-linux-amd64-go1.24-v1.19.32.gz"),
             asset("mihomo-linux-amd64-compatible-v1.19.32.gz"),
             asset("mihomo-linux-amd64-v3-v1.19.32.gz"),
         ]
-        assert convert_mrs.select_kernel_asset(assets, "", "v1.19.32") is None
+        assert convert_mrs.select_kernel_asset(assets, "v1.19.32") is None
 
-    def test_ignores_non_linux_amd64_and_non_gz(self):
+    def test_exact_name_wins_among_variants(self):
         assets = [
-            asset("mihomo-linux-arm64-v1.19.32.gz"),
-            asset("mihomo-windows-amd64-v1.19.32.zip"),
+            asset("mihomo-linux-amd64-go1.24-v1.19.32.gz"),
+            asset("mihomo-linux-amd64-compatible-v1.19.32.gz"),
             asset("mihomo-linux-amd64-v1.19.32.gz"),
         ]
-        got = convert_mrs.select_kernel_asset(assets, "", "v1.19.32")
-        assert got["url"].endswith("mihomo-linux-amd64-v1.19.32.gz")
+        got = convert_mrs.select_kernel_asset(assets, "v1.19.32")
+        assert got["url"] == "https://example.com/mihomo-linux-amd64-v1.19.32.gz"
 
-    def test_without_pinned_version_picks_sorted_first(self):
-        assets = [
-            asset("mihomo-linux-amd64-v1.19.31.gz"),
-            asset("mihomo-linux-amd64-v1.19.30.gz"),
-        ]
-        got = convert_mrs.select_kernel_asset(assets, "", "")
-        assert got["url"].endswith("v1.19.30.gz")
+    def test_empty_tag_returns_none(self):
+        assert convert_mrs.select_kernel_asset([asset("mihomo-linux-amd64-v1.19.32.gz")], "") is None
 
 
 class TestDownloadKernelDigest:
@@ -339,7 +325,6 @@ class TestBumpConfigExactAsset:
     CONFIG = (
         'mihomo:\n'
         '  pinned_version: "v1.0.0"\n'
-        '  asset_name: "mihomo-linux-amd64-v1.0.0.gz"\n'
         '  kernel_sha256: "' + "a" * 64 + '"\n'
     )
 
@@ -365,25 +350,21 @@ class TestBumpConfigExactAsset:
             self._bump(monkeypatch, work_dir, "v9.9.9", assets)
         assert ei.value.code == 1
 
-    def test_selection_receives_exact_asset_name(self, monkeypatch, work_dir):
+    def test_selection_receives_the_target_tag(self, monkeypatch, work_dir):
         seen = {}
 
-        def fake_select(assets, asset_name, pinned_version):
-            seen["asset_name"] = asset_name
-            seen["pinned_version"] = pinned_version
+        def fake_select(assets, tag_name):
+            seen["tag_name"] = tag_name
             return None
 
         monkeypatch.setattr(convert_mrs, "select_kernel_asset", fake_select)
         with pytest.raises(SystemExit):
             self._bump(monkeypatch, work_dir, "v9.9.9", [asset("mihomo-linux-amd64-v9.9.9.gz")])
-        assert seen == {
-            "asset_name": "mihomo-linux-amd64-v9.9.9.gz",
-            "pinned_version": "v9.9.9",
-        }
+        assert seen == {"tag_name": "v9.9.9"}
 
     def test_exact_name_selects_that_asset(self):
         assets = [asset("mihomo-linux-amd64-v9.9.8.gz"), asset("mihomo-linux-amd64-v9.9.9.gz")]
-        got = convert_mrs.select_kernel_asset(assets, "mihomo-linux-amd64-v9.9.9.gz", "v9.9.9")
+        got = convert_mrs.select_kernel_asset(assets, "v9.9.9")
         assert got["name"] == "mihomo-linux-amd64-v9.9.9.gz"
 
 
@@ -407,7 +388,7 @@ class TestConfigGuard:
         cfg = work_dir / "config.yaml"
         if exists:
             cfg.write_text(
-                'mihomo:\n  pinned_version: "v1.19.30"\n  asset_name: "x.gz"\n',
+                'mihomo:\n  pinned_version: "v1.19.30"\n',
                 encoding="utf-8",
             )
         monkeypatch.setattr(config_loader, "_HAS_YAML", False)
@@ -463,8 +444,8 @@ class TestBumpQueriesLatest:
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
         monkeypatch.chdir(work_dir)
         (work_dir / "config.yaml").write_text(
-            'mihomo:\n  pinned_version: "v1.19.30"\n  asset_name: "a.gz"\n'
-            '  kernel_sha256: "00"\n', encoding="utf-8")
+            'mihomo:\n  pinned_version: "v1.19.30"\n  kernel_sha256: "00"\n',
+            encoding="utf-8")
         with pytest.raises(RuntimeError):
             convert_mrs.bump_config()
         assert seen == [""], "bump 路径必须用 /latest（pinned=\"\"）"
@@ -486,8 +467,8 @@ class TestBumpQueriesLatest:
         monkeypatch.setattr(convert_mrs.time, "sleep", lambda _s: None)
         monkeypatch.chdir(work_dir)
         (work_dir / "config.yaml").write_text(
-            'mihomo:\n  pinned_version: "v1.19.30"\n  asset_name: "a.gz"\n'
-            '  kernel_sha256: "00"\n', encoding="utf-8")
+            'mihomo:\n  pinned_version: "v1.19.30"\n  kernel_sha256: "00"\n',
+            encoding="utf-8")
         with pytest.raises(RuntimeError):
             convert_mrs.bump_config()
         assert seen, "bump 路径没有发出任何请求"
@@ -506,7 +487,6 @@ class TestGetLatestMihomo:
         monkeypatch.setattr(convert_mrs, "VERSION_FILE", version_file)
         monkeypatch.setattr(convert_mrs, "EXPECTED_SHA", "a" * 64)
         monkeypatch.setattr(convert_mrs, "PINNED_VERSION", "v1.2.3")
-        monkeypatch.setattr(convert_mrs, "ASSET_NAME", "mihomo-linux-amd64-v1.2.3.gz")
         for name in ("info", "warning", "error", "group_start", "group_end"):
             monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
         cache.mkdir(parents=True, exist_ok=True)
@@ -519,7 +499,7 @@ class TestGetLatestMihomo:
         return {"tag_name": tag, "assets": [asset("mihomo-linux-amd64-v1.2.3.gz")]}
 
     def downloaded(self, monkeypatch, bin_path):
-        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, name, pinned: {
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, tag_name: {
             "name": "mihomo-linux-amd64-v1.2.3.gz",
             "url": "https://example.com/kernel.gz",
             "digest": "sha256:" + "b" * 64,
@@ -646,7 +626,7 @@ class TestGetLatestMihomo:
         monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
         monkeypatch.setattr(convert_mrs, "get_latest_mihomo",
                             lambda skip_hash_check=False: seen.append(skip_hash_check))
-        monkeypatch.setattr(convert_mrs, "sha256_file", lambda path: "f" * 64)
+        monkeypatch.setattr(convert_mrs, "file_sha256", lambda path: "f" * 64)
         monkeypatch.setattr(convert_mrs, "KERNEL_BIN", "kernel")
         monkeypatch.setattr(sys, "argv", ["convert_mrs.py", "--print-kernel-hash"])
 
@@ -706,7 +686,6 @@ class TestBumpConfigSuccess:
         cfg = work_dir / "config.yaml"
         cfg.write_text(
             'pinned_version: "v1.0.0"\n'
-            'asset_name: "mihomo-linux-amd64-v1.0.0.gz"\n'
             'kernel_sha256: "old"\n',
             encoding="utf-8",
         )
@@ -717,7 +696,7 @@ class TestBumpConfigSuccess:
         monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(work_dir / "cache" / "mihomo"))
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
                             lambda *a, **k: {"tag_name": "v9.9.9", "assets": []})
-        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, name, pinned: {
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, tag_name: {
             "name": "mihomo-linux-amd64-v9.9.9.gz",
             "url": "https://example.com/kernel.gz",
             "digest": "sha256:" + "c" * 64,
@@ -731,7 +710,7 @@ class TestBumpConfigSuccess:
             convert_mrs, "verify_kernel_file",
             lambda path, expected_sha, *a, **k: verifications.append(
                 (str(path), expected_sha)) or "d" * 64)
-        monkeypatch.setattr(convert_mrs, "sha256_file", lambda path: "e" * 64)
+        monkeypatch.setattr(convert_mrs, "file_sha256", lambda path: "e" * 64)
         monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v9.9.9")
         monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda: None)
         for name in ("info", "warning", "error", "group_start", "group_end"):
@@ -741,7 +720,6 @@ class TestBumpConfigSuccess:
 
         text = cfg.read_text(encoding="utf-8")
         assert 'pinned_version: "v9.9.9"' in text
-        assert 'asset_name: "mihomo-linux-amd64-v9.9.9.gz"' in text
         assert f'kernel_sha256: "{"e" * 64}"' in text
         assert gh_output.read_text(encoding="utf-8") == "changed=true\ntag=v9.9.9\n"
         assert downloads == [("https://example.com/kernel.gz", "sha256:" + "c" * 64)]
