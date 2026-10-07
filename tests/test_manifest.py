@@ -8,6 +8,11 @@ class TestSaveLoad:
         manifest.save_manifest(path, ["b/2.txt", "a/1.txt"])
         assert manifest.load_manifest(path) == ["a/1.txt", "b/2.txt"]
 
+    def test_no_temp_file_left_behind(self, work_dir):
+        path = work_dir / "products.txt"
+        manifest.save_manifest(path, ["a/1.txt"])
+        assert [p.name for p in work_dir.iterdir()] == ["products.txt"]
+
     def test_missing_returns_none(self, work_dir):
         assert manifest.load_manifest(work_dir / "nope.txt") is None
 

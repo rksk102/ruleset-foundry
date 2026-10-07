@@ -21,7 +21,7 @@ def beijing_timestamp():
 _IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
 
 
-def flatten_ip_cidr(entries, strict=False, extract=False):
+def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
     ipv4_nets = []
     ipv6_nets = []
     errors = []
@@ -46,6 +46,8 @@ def flatten_ip_cidr(entries, strict=False, extract=False):
             continue
 
         if net.prefixlen == 0:
+            if dropped_default_routes is not None:
+                dropped_default_routes.append(str(net))
             continue
         if net.version == 4:
             ipv4_nets.append(net)
@@ -143,7 +145,17 @@ def load_last_hash(hash_file="state/release.sha256"):
 def save_last_hash(hash_value, hash_file="state/release.sha256"):
     hp = Path(hash_file)
     hp.parent.mkdir(parents=True, exist_ok=True)
-    hp.write_text(hash_value, encoding="utf-8")
+    atomic_write(str(hp), hash_value)
+
+
+_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def is_safe_component(value):
+    """单段名字白名单：首字符为字母/数字，禁 '..' 与路径分隔符。"""
+    if not isinstance(value, str) or ".." in value:
+        return False
+    return bool(_COMPONENT_RE.fullmatch(value))
 
 
 def normalize_policy(p):

@@ -37,7 +37,7 @@ jobs:
         run: python3 scripts/convert_mrs.py --bump-config
       - name: 上传待提交的 config.yaml
         if: steps.bump.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: bumped-config
           path: config.yaml
@@ -50,7 +50,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.changed == 'true'
     permissions:
-      contents: write
+        contents: write  # 需要推送更新后的 config.yaml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 config.yaml
       - name: 下载 config.yaml

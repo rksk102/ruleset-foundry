@@ -30,11 +30,8 @@ def _escape_data(value):
     return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], str(value))
 
 
-def _render(msg, args):
-    text = str(msg)
-    if args:
-        text = text % args
-    return text
+def _render(msg):
+    return str(msg)
 
 
 class _StripAnsiFilter(logging.Filter):
@@ -112,14 +109,14 @@ def _init_logger():
     _cleanup_old_logs()
 
 
-def info(msg, *args):
+def info(msg):
     _init_logger()
-    _logger.info(_render(msg, args))
+    _logger.info(_render(msg))
 
 
-def debug(msg, *args):
+def debug(msg):
     _init_logger()
-    _logger.debug(_render(msg, args))
+    _logger.debug(_render(msg))
 
 
 def _defang_command_lines(text):
@@ -129,23 +126,23 @@ def _defang_command_lines(text):
     )
 
 
-def warning(msg, *args):
+def warning(msg):
     _init_logger()
     _logger.warning(
-        f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg, args))}{Colors.RESET}"
+        f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg))}{Colors.RESET}"
     )
 
 
-def error(msg, *args):
+def error(msg):
     _init_logger()
     _logger.error(
-        f"{Colors.RED}[错误] {_defang_command_lines(_render(msg, args))}{Colors.RESET}"
+        f"{Colors.RED}[错误] {_defang_command_lines(_render(msg))}{Colors.RESET}"
     )
 
 
-def success(msg, *args):
+def success(msg):
     _init_logger()
-    _logger.info(f"{Colors.GREEN}[成功] {_render(msg, args)}{Colors.RESET}")
+    _logger.info(f"{Colors.GREEN}[成功] {_render(msg)}{Colors.RESET}")
 
 
 def group_start(title):

@@ -217,7 +217,7 @@ def get_latest_mihomo(skip_hash_check=False):
         expected_sha = "" if skip_hash_check else EXPECTED_SHA
 
         if VERSION_FILE.exists():
-            cached_ver = VERSION_FILE.read_text().strip()
+            cached_ver = VERSION_FILE.read_text(encoding="utf-8").strip()
             if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
                 try:
                     verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=True)
@@ -255,7 +255,7 @@ def get_latest_mihomo(skip_hash_check=False):
             raise Exception("内核下载后验证失败（mihomo -v 输出异常）")
 
         info(f"  内核安装成功: {ver_out}")
-        VERSION_FILE.write_text(tag_name)
+        VERSION_FILE.write_text(tag_name, encoding="utf-8")
 
     except SystemExit:
         raise
@@ -332,7 +332,7 @@ def write_summary(stats, total_time):
     if is_failed:
         markdown.append("**错误**: 部分文件转换失败，请检查上方日志。")
 
-    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+    with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
         f.write("\n".join(markdown))
 
 

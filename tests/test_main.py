@@ -509,3 +509,12 @@ class TestParseSources:
             assert t["url"].startswith("http")
 
 
+class TestProcessIpGroup:
+
+    def test_default_route_drop_is_reported(self):
+        result, stats = main._process_ip_group(["0.0.0.0/0", "1.0.0.0/24"])
+
+        assert result == ["1.0.0.0/24"]
+        assert stats["dropped_default_route"] == 1
+
+

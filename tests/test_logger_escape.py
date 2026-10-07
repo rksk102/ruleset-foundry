@@ -136,3 +136,9 @@ class TestLogFile:
         content = (LOG_DIR / "run-test.log").read_text(encoding="utf-8")
         assert "磁盘告警" in content
         assert "\x1b" not in content
+
+
+class TestRender:
+
+    def test_percent_literals_are_kept_verbatim(self):
+        assert log._render("阈值 50%") == "阈值 50%"

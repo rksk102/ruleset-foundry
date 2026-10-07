@@ -5,9 +5,7 @@ on:  # zizmor: ignore[dangerous-triggers] 仅调用 gh pr merge，不检出/执�
     workflows: ["CI"]
     types: [completed]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}  # 默认收回全部权限，仅在本 job 显式申明所需写权限
 
 jobs:
   auto-merge:
@@ -16,6 +14,9 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write  # 合并 PR 需要
+      pull-requests: write  # 读取 PR 元数据并触发合并
     steps:
       - name: 合并 Dependabot PR
         env:

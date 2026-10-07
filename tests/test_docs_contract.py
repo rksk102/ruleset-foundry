@@ -67,3 +67,40 @@ class TestPublishedPathStability:
         }
         _owner, _name, rel, _abs_path = main.build_filepath(task)
         assert rel.as_posix() == "policy/domain/MetaCubeX/category-ai-!cn.txt"
+
+
+class TestDocumentedConfigAndWorkflow:
+
+    CONFIG_KEYS = (
+        "network.timeout_seconds", "network.max_retries", "network.max_source_bytes",
+        "network.max_concurrency", "network.max_per_host", "network.max_retry_after_seconds",
+        "paths.sources_file", "paths.rulesets_dir", "paths.merged_output_dir",
+        "paths.mrs_output_dir", "paths.cache_dir", "paths.log_dir",
+        "behavior.strict_mode", "behavior.release_change_detection",
+        "behavior.release_keep_days", "behavior.conflict_policy",
+        "behavior.unrecognized_warn_ratio", "behavior.min_source_success_ratio",
+        "behavior.allow_partial", "mihomo.kernel_cache_path", "mihomo.repo_api",
+        "mihomo.pinned_version", "mihomo.asset_name", "mihomo.kernel_sha256", "merges",
+    )
+
+    def test_config_reference_lists_every_key(self):
+        text = gen_readme.make_static_sections()
+        for key in self.CONFIG_KEYS:
+            assert f"`{key}`" in text, key
+
+    def test_merge_mechanism_and_local_dev_documented(self):
+        text = gen_readme.make_static_sections()
+        assert "规则合并任务（merges）" in text
+        assert "本地开发与测试" in text
+        assert "requirements-dev.lock" in text
+        assert "--cov-fail-under=70" in text
+
+    def test_readme_declares_generated_origin(self):
+        text = gen_readme.make_static_sections()
+        assert "gen_readme.py" in text
+        assert "make_static_sections()" in text
+
+    def test_kernel_auto_follow_trust_model_documented(self):
+        text = gen_readme.make_static_sections()
+        assert "自动跟随的信任模型" in text
+        assert "没有 PR 评审" in text

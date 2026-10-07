@@ -16,7 +16,9 @@
    校验最多四重（GitHub 资产摘要、解压后 SHA-256、ELF magic、`-v` 可运行性）：上游资产**未提供
    `digest`** 时拒绝下载该资产并回落到已校验的缓存内核（`--bump-config` 直接失败），此时实际生效
    的是后三重；这些命令需要执行 Linux 版内核，请在 Linux/WSL 上运行或交给 CI。
-   本地运行前请自行确认你信任该版本。
+    本地运行前请自行确认你信任该版本。该 pin 由 `kernel-bump.yml` 每周一自动跟随上游最新正式版并
+    直接提交到 main（无 PR 评审，该 push 不触发 CI）；如不接受这一信任模型，请禁用该 workflow
+    的 commit job。
 2. **上游规则列表是不可信数据。** 它们只被当作文本解析为域名/IP 规则，不参与脚本拼接、
    不作为代码执行；但它们的内容会**原样进入发布产物**。若某个上游列表被投毒，
    产物中的规则也会被污染（这属于上游仓库的问题，见下）。
@@ -52,7 +54,8 @@
 
 - 内核哈希：`python scripts/convert_mrs.py --print-kernel-hash` 打印解压后二进制的 SHA-256，
   与上游 Release 资产核对后写入 `config.yaml`。
-- 产物完整性：CI 的 `pipeline.yml` 末尾有"校验制品下载完整性"步骤，产物下载失败或哈希不匹配
-  会使发布作业失败，不会静默发布残缺产物。
+- 产物完整性：`rulesets` / `merged-rules` / `merged-rules-mrs` 三个制品任一缺失或哈希不匹配都会
+  让发布作业失败；更新 `artifacts` 分支之前还会先跑一次产物一致性预检（清单基线 + txt↔mrs
+  逐一配对），不存在"先发布后校验"。
 - 依赖与工作流：Dependabot 维护 `pip` 与 `github-actions` 依赖，CI 对 workflow 文件做静态检查；
   所有 action 以完整 commit SHA 钉扎。

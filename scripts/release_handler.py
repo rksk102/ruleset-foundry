@@ -51,10 +51,7 @@ def product_dirs():
 
 
 def baseline_files():
-    return (
-        os.path.join(RULESETS_DIR, MANIFEST_NAME),
-        os.path.join(MERGED_DIR, MANIFEST_NAME),
-    )
+    return (os.path.join(RULESETS_DIR, MANIFEST_NAME),)
 
 
 def baseline_required():
@@ -132,6 +129,12 @@ def enforce_products(txt_dir=None, mrs_dir=None):
     if verified is not None:
         info(f"  产物校验通过（{verified} 项）")
     return verified
+
+
+def verify_only():
+    group_start("产物校验（发布前预检）")
+    enforce_products()
+    group_end()
 
 
 def run_gh(cmd_list, fail_fast=False):
@@ -266,6 +269,10 @@ def publish_release(release_tag, zip_file, title, notes, exists):
 
 
 def main():
+    if "--verify-only" in sys.argv[1:]:
+        verify_only()
+        return
+
     group_start("处理发布")
 
     utc_now = datetime.datetime.now(datetime.UTC)
@@ -330,15 +337,26 @@ def main():
     releases_json = run_gh(["release", "list", "--limit", "50", "--json", "tagName,createdAt"])
 
     if releases_json:
-        releases = json.loads(releases_json)
+        try:
+            releases = json.loads(releases_json)
+        except (TypeError, ValueError) as e:
+            error(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
+            if os.path.exists(zip_file):
+                os.unlink(zip_file)
+            sys.exit(1)
+
         cutoff_time = utc_now - datetime.timedelta(days=KEEP_DAYS)
 
         cleaned = 0
         for rel in releases:
-            created_at = datetime.datetime.fromisoformat(
-                rel["createdAt"].replace("Z", "+00:00")
-            )
-            tag = rel["tagName"]
+            try:
+                created_at = datetime.datetime.fromisoformat(
+                    rel["createdAt"].replace("Z", "+00:00")
+                )
+                tag = rel["tagName"]
+            except (KeyError, AttributeError, TypeError, ValueError) as e:
+                warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")
+                continue
             if not tag.startswith("rules-"):
                 continue
             if created_at < cutoff_time and tag != release_tag:

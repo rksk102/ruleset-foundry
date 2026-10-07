@@ -337,6 +337,10 @@ class TestProcessIp:
     def test_default_route_dropped(self):
         assert processor.process_ip(["0.0.0.0/0", "::/0"])[0] == []
 
+    def test_default_route_counted_in_stats(self):
+        _result, _errors, stats = processor.process_ip_detailed(["0.0.0.0/0", "10.0.0.0/8"])
+        assert stats["dropped_default_route"] == 1
+
     def test_v4_before_v6(self):
         result, _ = processor.process_ip(["2001:db8::/32", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8", "2001:db8::/32"]
@@ -391,11 +395,12 @@ class TestRuleTypeTable:
             assert name in processor._UNSUPPORTED_TYPES, name
 
     def test_only_cidr_types_classify_as_ip(self):
-        for name in ("IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"):
+        for name in ("IP-CIDR", "IP-CIDR6"):
             assert processor.classify_rule_line(f"{name},1.2.3.0/24")[0] == "ip"
 
     def test_unexpressible_ip_types_do_not_classify_as_ip(self):
-        for name in ("IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN"):
+        for name in ("SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN",
+                     "SRC-IP-ASN", "DST-IP-ASN"):
             kind, _payload, type_name = processor.classify_rule_line(f"{name},x")
             assert kind == "opaque", name
             assert type_name == name
@@ -454,10 +459,17 @@ class TestClassicalRuleLinesInIpMode:
         result, errors = processor.process_ip([
             "IP-CIDR,1.2.3.0/24",
             "IP-CIDR6,2001:db8::/32",
-            "SRC-IP-CIDR,10.0.0.0/8",
         ])
         assert errors == []
-        assert result == ["1.2.3.0/24", "10.0.0.0/8", "2001:db8::/32"]
+        assert result == ["1.2.3.0/24", "2001:db8::/32"]
+
+    def test_src_ip_cidr_is_dropped_with_reason(self):
+        _result, _errors, stats = processor.process_ip_detailed([
+            "SRC-IP-CIDR,10.0.0.0/8",
+            "IP-CIDR,1.2.3.0/24",
+        ])
+        assert stats["dropped_rule_type"]["SRC-IP-CIDR"] == 1
+        assert "src 语义" in processor.ipcidr_drop_reason("SRC-IP-CIDR")
 
     def test_classic_line_is_not_read_as_hex_fragment(self):
         result, errors = processor.process_ip(["IP-CIDR,x"])
@@ -567,3 +579,27 @@ class TestYamlPayloadParsing:
 
     def test_plain_domain_list_is_not_taken_as_yaml(self):
         assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
+
+
+class TestYamlProbeGating:
+
+    def test_plain_text_skips_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
+        assert calls == [], "纯文本不应触发 yaml.safe_load"
+
+    def test_payload_head_triggers_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        assert processor.parse_lines("payload:\n  - a.com\n") == ["a.com"]
+        assert len(calls) == 1
+
+    def test_rules_head_triggers_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        processor.parse_lines("rules:\n  - a.com\n")
+        assert len(calls) == 1

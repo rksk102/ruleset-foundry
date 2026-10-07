@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from utils import is_safe_component
+
 try:
     import yaml
     _HAS_YAML = True
@@ -66,6 +68,8 @@ _PATH_KEYS = {
 }
 
 _MERGE_REQUIRED = ("strategy", "type", "owner", "filename", "inputs")
+
+_KNOWN_SECTIONS = ("network", "paths", "merges", "behavior", "mihomo")
 
 
 class ConfigError(Exception):
@@ -182,8 +186,15 @@ def _validate_merges(merges):
         if not isinstance(task["inputs"], list) or not task["inputs"]:
             raise ConfigError(f"merges[{idx}].inputs 必须为非空列表")
         for field in ("strategy", "type", "owner", "filename"):
-            if not isinstance(task[field], str) or not task[field].strip():
-                raise ConfigError(f"merges[{idx}].{field} 必须为非空字符串")
+            if not is_safe_component(task[field]):
+                raise ConfigError(
+                    f"merges[{idx}].{field} 必须是以字母/数字开头的单段名字"
+                    f"（允许 [A-Za-z0-9._-]，不得含 '..'、路径分隔符或空白）: {task[field]!r}"
+                )
+        for pos, rel in enumerate(task["inputs"]):
+            if not isinstance(rel, str) or not rel.strip():
+                raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")
+            _validate_path_value(f"merges[{idx}].inputs[{pos}]", rel)
 
 
 def load_config():
@@ -217,6 +228,8 @@ def load_config():
         _merge_dict(cfg, user_data)
 
     for section, values in cfg.items():
+        if section not in _KNOWN_SECTIONS:
+            raise ConfigError(f"未知配置节: {section}（请检查拼写）")
         if section == "merges":
             continue
         if not isinstance(values, dict):
@@ -229,8 +242,8 @@ def load_config():
             values[key] = _validate_scalar(section, key, value)
     _validate_merges(cfg.get("merges"))
 
-    if os.getenv("STRICT_MODE"):
-        raw = os.getenv("STRICT_MODE", "").strip().lower()
+    raw = (os.getenv("STRICT_MODE") or "").strip().lower()
+    if raw:
         cfg["behavior"]["strict_mode"] = raw in ("true", "1", "yes", "on")
 
     _CONFIG = cfg

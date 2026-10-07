@@ -4,6 +4,17 @@ import os
 import utils
 
 
+class TestIsSafeComponent:
+    def test_accepts_single_segment_names(self):
+        for value in ("block", "rksk102", "all-adblock.txt", "a_b-c.d1"):
+            assert utils.is_safe_component(value) is True
+
+    def test_rejects_path_and_dot_tricks(self):
+        for value in ("../x", "..", ".", "a/../b", "a\\b", "/abs", "C:/x", "",
+                      "a b", "a..b", ".hidden", None, 5, ["a"]):
+            assert utils.is_safe_component(value) is False, value
+
+
 class TestAtomicWrite:
     def test_list_joined_with_trailing_newline(self, tmp_path):
         target = tmp_path / "out.txt"
@@ -276,6 +287,11 @@ class TestHashStatePersistence:
         utils.save_last_hash("one", str(target))
         utils.save_last_hash("two", str(target))
         assert utils.load_last_hash(str(target)) == "two"
+
+    def test_save_leaves_no_temp_file(self, tmp_path):
+        target = tmp_path / "h.sha256"
+        utils.save_last_hash("abc", str(target))
+        assert [p.name for p in tmp_path.iterdir()] == ["h.sha256"]
 
 
 class TestNormalizePolicy:
@@ -584,6 +600,13 @@ class TestFlattenIpDefaultRoute:
     def test_ipv4_default_route_dropped(self):
         result, _errors = utils.flatten_ip_cidr(["9.0.0.0/8", "0.0.0.0/0"])
         assert result == ["9.0.0.0/8"]
+
+    def test_dropped_default_routes_are_reported(self):
+        dropped = []
+        result, _errors = utils.flatten_ip_cidr(
+            ["1.0.0.0/24", "0.0.0.0/0", "::/0"], dropped_default_routes=dropped)
+        assert result == ["1.0.0.0/24"]
+        assert dropped == ["0.0.0.0/0", "::/0"]
 
     def test_ipv4_default_route_does_not_swallow_others(self):
         result, _errors = utils.flatten_ip_cidr(["1.0.0.0/24", "0.0.0.0/0", "10.0.0.0/8"])

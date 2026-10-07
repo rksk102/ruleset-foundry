@@ -32,15 +32,16 @@ jobs:
         with:
           persist-credentials: false
       - name: 安装 Python 环境
+        # 暂不使用 $/ 自仓库语法：CI 钉扎的 actionlint 1.7.12 尚不支持
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
         env:
-          STRICT_MODE: ${{ inputs.strict_mode || 'false' }}
+          STRICT_MODE: ${{ inputs.strict_mode }}
           PYTHONPATH: ${{ github.workspace }}/scripts
           GH_TOKEN: ${{ github.token }}
         run: python scripts/main.py
       - name: 上传 rulesets 产物
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rulesets
           path: rulesets/
@@ -73,7 +74,7 @@ jobs:
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
         if: steps.dl-rulesets.outcome == 'success' && steps.merge.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: merged-rules
           path: merged-rules/
@@ -124,7 +125,7 @@ jobs:
           key: mihomo-${{ runner.os }}-${{ hashFiles('config.yaml') }}
       - name: 上传 merged-rules-mrs 产物
         if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
@@ -137,7 +138,7 @@ jobs:
     needs: convert-mrs
     if: github.ref == 'refs/heads/main'
     permissions:
-      contents: write
+        contents: write  # 需要推送 artifacts 分支、README 与 state/release.sha256
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 README/state
       - name: 安装 Python 环境
@@ -147,7 +148,6 @@ jobs:
       - name: 下载 rulesets 产物（提供产物清单基线）
         id: dl-rulesets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        continue-on-error: true
         with:
           name: rulesets
           path: rulesets/
@@ -173,6 +173,11 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
+      - name: 产物一致性预检
+        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/release_handler.py --verify-only
       - name: 发布规则产物到 artifacts 分支
         if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:

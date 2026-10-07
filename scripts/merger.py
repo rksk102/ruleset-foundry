@@ -19,6 +19,7 @@ CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
 MANIFEST_NAME = "products.manifest"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def detect_mode(type_str):
@@ -53,10 +54,27 @@ def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None):
     return manifest.verify_matches(expected, actual, f"{out_dir} 绝对基准校验")
 
 
+def _ensure_within(base_dir, target_path, what):
+    root = Path(base_dir).resolve()
+    target = Path(target_path).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"{what}路径越界，拒绝访问: {target}（须位于 {root} 内）")
+    return target
+
+
+def _ensure_repo_anchored(label, path):
+    target = Path(path).resolve()
+    if target != REPO_ROOT and REPO_ROOT not in target.parents:
+        error(f"{label}不在仓库内，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
+        sys.exit(1)
+
+
 def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
+    _ensure_within(OUTPUT_DIR, full_output_dir, "合并输出")
+    _ensure_within(full_output_dir, full_output_file, "合并输出")
     combined_rules = set()
     files_read_count = 0
     source_urls = []
@@ -65,6 +83,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     for rel_input in inputs:
         full_src_path = os.path.join(SOURCE_DIR, rel_input)
+        _ensure_within(SOURCE_DIR, full_src_path, "合并输入")
         if not os.path.exists(full_src_path):
             missing_files.append(rel_input)
             continue
@@ -96,7 +115,11 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     raw_count = len(combined_rules)
 
     if mode == "IP-CIDR":
-        final_list, cidr_errors = flatten_ip_cidr(combined_rules)
+        dropped_default_routes = []
+        final_list, cidr_errors = flatten_ip_cidr(
+            combined_rules, dropped_default_routes=dropped_default_routes)
+        if dropped_default_routes:
+            warning(f"    默认路由(/0) 已按设计丢弃: {len(dropped_default_routes)} 条")
         if cidr_errors:
             for bad_cidr, err_msg in cidr_errors[:5]:
                 warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")
@@ -258,6 +281,8 @@ def detect_cross_policy_conflicts(merged_dir):
 
 def main():
     section("规则合并器")
+    _ensure_repo_anchored("源目录", SOURCE_DIR)
+    _ensure_repo_anchored("输出目录", OUTPUT_DIR)
 
     stats = {"success": 0, "skipped": 0, "failed": 0}
     error_logs = []

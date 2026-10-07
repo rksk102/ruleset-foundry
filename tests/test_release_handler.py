@@ -1,8 +1,10 @@
 import datetime
 import json
 import os
+import sys
 import zipfile
 
+import pytest
 import release_handler
 
 
@@ -487,6 +489,51 @@ class TestMainOrchestration:
                 os.environ["GITHUB_STEP_SUMMARY"] = prior
             self.teardown_env(cwd, original)
 
+    def test_unparsable_release_listing_exits(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        stub = GhStub(responses={("release", "list"): "not-json"})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: None
+        try:
+            with pytest.raises(SystemExit) as exc:
+                run_with_stub(stub, release_handler.main)
+            assert exc.value.code == 1
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
+    def test_unparsable_entry_is_skipped_and_others_pruned(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        listing = release_listing(
+            {"tagName": "rules-broken", "createdAt": "not-a-date"},
+            {"tagName": "rules-1999-01-01", "createdAt": old},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: None
+        try:
+            run_with_stub(stub, release_handler.main)
+            flat = " ".join(stub.commands())
+            assert "release delete rules-1999-01-01 --yes" in flat
+            assert "rules-broken" not in flat, "无法解析的记录应跳过而非中断清理"
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
 
 class TestRunGhErrorHandling:
     def test_oserror_exits_nonzero(self):
@@ -524,4 +571,74 @@ class TestConstants:
 
     def test_beijing_offset_is_utc8(self):
         assert release_handler.beijing_now().utcoffset() == datetime.timedelta(hours=8)
+
+
+class TestVerifyOnly:
+
+    def setup_products(self, work_dir, *, paired=True):
+        cwd = os.getcwd()
+        original = (release_handler.RULESETS_DIR, release_handler.MERGED_DIR,
+                    release_handler.MRS_DIR, release_handler.merge_product_entries)
+        release_handler.merge_product_entries = lambda *a, **k: set()
+        (work_dir / "rulesets").mkdir(parents=True)
+        (work_dir / "rulesets" / "products.manifest").write_text(
+            "block/domain/A/x.txt\n", encoding="utf-8")
+        (work_dir / "merged-rules" / "block" / "domain" / "A").mkdir(parents=True)
+        (work_dir / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text(
+            "x", encoding="utf-8")
+        mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
+        mrs_dir.mkdir(parents=True)
+        if paired:
+            (mrs_dir / "x.mrs").write_text("y", encoding="utf-8")
+        release_handler.RULESETS_DIR = "rulesets"
+        release_handler.MERGED_DIR = "merged-rules"
+        release_handler.MRS_DIR = "merged-rules-mrs"
+        os.chdir(work_dir)
+        return cwd, original
+
+    def teardown_products(self, cwd, original):
+        release_handler.RULESETS_DIR, release_handler.MERGED_DIR, \
+            release_handler.MRS_DIR, release_handler.merge_product_entries = original
+        os.chdir(cwd)
+
+    def test_paired_products_pass_without_gh(self, work_dir):
+        cwd, original = self.setup_products(work_dir)
+        stub = GhStub()
+        try:
+            run_with_stub(stub, release_handler.verify_only)
+            assert stub.calls == [], "预检不应调用 gh"
+        finally:
+            self.teardown_products(cwd, original)
+
+    def test_missing_mrs_exits_nonzero(self, work_dir):
+        cwd, original = self.setup_products(work_dir, paired=False)
+        stub = GhStub()
+        try:
+            with pytest.raises(SystemExit) as exc:
+                run_with_stub(stub, release_handler.verify_only)
+            assert exc.value.code == 1
+            assert stub.calls == []
+        finally:
+            self.teardown_products(cwd, original)
+
+    def test_missing_baseline_exits_nonzero_when_rulesets_present(self, work_dir):
+        cwd, original = self.setup_products(work_dir)
+        try:
+            os.unlink("rulesets/products.manifest")
+            with pytest.raises(SystemExit) as exc:
+                release_handler.verify_only()
+            assert exc.value.code == 1
+        finally:
+            self.teardown_products(cwd, original)
+
+    def test_main_dispatches_verify_only_without_publishing(self, work_dir, monkeypatch):
+        cwd, original = self.setup_products(work_dir)
+        calls = []
+        monkeypatch.setattr(sys, "argv", ["release_handler.py", "--verify-only"])
+        monkeypatch.setattr(release_handler, "verify_only", lambda: calls.append(True))
+        try:
+            run_with_stub(GhStub(), release_handler.main)
+            assert calls == [True], "main() 应分发到 verify_only 并提前返回"
+        finally:
+            self.teardown_products(cwd, original)
 
