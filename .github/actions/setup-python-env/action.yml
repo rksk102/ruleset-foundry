@@ -1,6 +1,12 @@
 name: 'Setup Python Environment'
 description: 'Install Python, cache pip dependencies, and install requirements'
 
+inputs:
+  requirements-file:
+    description: 'Lock file to install (relative to the repository root)'
+    required: false
+    default: 'requirements.lock'
+
 runs:
   using: 'composite'
   steps:
@@ -18,4 +24,6 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: pip install --require-hashes -r requirements.lock
+      env:
+        REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
+      run: pip install --require-hashes -r "$REQUIREMENTS_FILE"
