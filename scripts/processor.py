@@ -8,8 +8,8 @@ import utils
 
 _SUFFIX_TYPES = {"DOMAIN-SUFFIX", "HOST-SUFFIX"}
 _EXACT_TYPES = {"DOMAIN", "HOST", "FULL"}
-_CIDR_TYPES = {"IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"}
-_UNEXPRESSIBLE_IP_TYPES = {"IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN"}
+_CIDR_TYPES = {"IP-CIDR", "IP-CIDR6"}
+_UNEXPRESSIBLE_IP_TYPES = {"SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN"}
 _UNSUPPORTED_TYPES = {
     "DST-IP-CIDR", "DST-IP-ASN", "DST-GEOIP", "SCRIPT",
     "SRC-PORT-RANGE", "DST-PORT-RANGE",
@@ -79,6 +79,9 @@ def _valid_wildcard(value):
 
 
 def ipcidr_drop_reason(type_name):
+    if type_name == "SRC-IP-CIDR":
+        return ("SRC-IP-CIDR 的 src 语义由引用侧 RULE-SET,...,src 决定，"
+                "规则集文件本身无法表达")
     if type_name in _UNEXPRESSIBLE_IP_TYPES:
         return f"mihomo 的 {type_name} 无法用 ipcidr 规则集表达（载荷不是 CIDR）"
     if type_name in _UNSUPPORTED_TYPES:
