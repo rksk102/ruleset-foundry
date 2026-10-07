@@ -171,6 +171,50 @@ class TestConfigValidation:
         assert out.startswith("CONFIG_ERROR")
         assert "allow_particals" in out
 
+    def test_unknown_empty_section_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE + "foo: {}\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "未知配置节" in out
+
+    def test_merges_traversal_field_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE
+                  + "merges:\n  - strategy: '../../outside'\n    type: domain\n"
+                    "    owner: o\n    filename: a.txt\n    inputs: ['x.txt']\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "strategy" in out
+
+    def test_merges_filename_with_separator_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE
+                  + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+                    "    filename: '../PWNED.txt'\n    inputs: ['x.txt']\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "filename" in out
+
+    def test_merges_absolute_input_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE
+                  + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+                    "    filename: a.txt\n    inputs: ['/etc/hosts']\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+        assert "相对路径" in out
+
+    def test_merges_parent_ref_input_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE
+                  + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+                    "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+
+    def test_merges_non_string_input_is_rejected(self, work_dir):
+        write_cfg(work_dir, BASE
+                  + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+                    "    filename: a.txt\n    inputs: [123]\n")
+        out = run_child(work_dir)
+        assert out.startswith("CONFIG_ERROR")
+
 
 class TestPyYamlMissing:
     def test_missing_pyyaml_is_hard_error(self, work_dir):
@@ -205,3 +249,17 @@ class TestStrictModeEnv:
         monkeypatch.setattr(config_loader, "_CONFIG", None)
         cfg = config_loader.load_config()
         assert cfg["behavior"]["strict_mode"] is expected
+
+    def test_blank_env_keeps_config_value(self, work_dir, monkeypatch):
+        write_cfg(work_dir, BASE.replace("strict_mode: false", "strict_mode: true"))
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setenv("STRICT_MODE", "")
+        monkeypatch.setattr(config_loader, "_CONFIG", None)
+        assert config_loader.load_config()["behavior"]["strict_mode"] is True
+
+    def test_explicit_false_env_overrides_config_true(self, work_dir, monkeypatch):
+        write_cfg(work_dir, BASE.replace("strict_mode: false", "strict_mode: true"))
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setenv("STRICT_MODE", "false")
+        monkeypatch.setattr(config_loader, "_CONFIG", None)
+        assert config_loader.load_config()["behavior"]["strict_mode"] is False

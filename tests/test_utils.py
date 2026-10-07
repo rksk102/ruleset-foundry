@@ -4,6 +4,17 @@ import os
 import utils
 
 
+class TestIsSafeComponent:
+    def test_accepts_single_segment_names(self):
+        for value in ("block", "rksk102", "all-adblock.txt", "a_b-c.d1"):
+            assert utils.is_safe_component(value) is True
+
+    def test_rejects_path_and_dot_tricks(self):
+        for value in ("../x", "..", ".", "a/../b", "a\\b", "/abs", "C:/x", "",
+                      "a b", "a..b", ".hidden", None, 5, ["a"]):
+            assert utils.is_safe_component(value) is False, value
+
+
 class TestAtomicWrite:
     def test_list_joined_with_trailing_newline(self, tmp_path):
         target = tmp_path / "out.txt"

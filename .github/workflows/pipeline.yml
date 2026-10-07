@@ -35,7 +35,7 @@ jobs:
         uses: ./.github/actions/setup-python-env
       - name: 运行同步
         env:
-          STRICT_MODE: ${{ inputs.strict_mode || 'false' }}
+          STRICT_MODE: ${{ inputs.strict_mode }}
           PYTHONPATH: ${{ github.workspace }}/scripts
           GH_TOKEN: ${{ github.token }}
         run: python scripts/main.py

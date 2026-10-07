@@ -146,6 +146,16 @@ def save_last_hash(hash_value, hash_file="state/release.sha256"):
     hp.write_text(hash_value, encoding="utf-8")
 
 
+_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def is_safe_component(value):
+    """单段名字白名单：首字符为字母/数字，禁 '..' 与路径分隔符。"""
+    if not isinstance(value, str) or ".." in value:
+        return False
+    return bool(_COMPONENT_RE.fullmatch(value))
+
+
 def normalize_policy(p):
     p = p.lower()
     if any(x in p for x in ["reject", "block", "deny", "ads", "adblock"]):

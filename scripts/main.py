@@ -18,6 +18,7 @@ from utils import (
     beijing_now,
     beijing_timestamp,
     get_owner_from_url,
+    is_safe_component,
     normalize_policy,
     normalize_type,
 )
@@ -110,12 +111,11 @@ def source_repo_slug(url):
     return host.replace(".", "_") if host else ""
 
 
-_SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _UNSAFE_COMPONENT_CHARS_RE = re.compile(r'[/\\:*?"<>|#%@\s\x00-\x1f\x7f]')
 
 
 def safe_marker_value(value, label):
-    if not _SAFE_COMPONENT_RE.fullmatch(value) or ".." in value:
+    if not is_safe_component(value):
         gh_error(f"非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，"
                  f"不得含 '..'、前导点、盘符或路径分隔符）")
         sys.exit(1)

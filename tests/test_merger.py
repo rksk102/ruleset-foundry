@@ -1,4 +1,5 @@
 import merger
+import pytest
 
 
 def write(path, text):
@@ -132,6 +133,40 @@ class TestProcessTaskLogic:
         except FileNotFoundError:
             return
         raise AssertionError("缺失输入应抛出 FileNotFoundError")
+
+    def test_input_outside_source_dir_rejected(self, tmp_path):
+        source = tmp_path / "rulesets"
+        source.mkdir(parents=True)
+        outside = tmp_path / "outside.txt"
+        write(outside, "ads.example.com\n")
+
+        def run():
+            merger.process_task_logic("block", "domain", "Owner", "all.txt",
+                                      [str(outside)], "x")
+
+        with pytest.raises(ValueError):
+            self.use_dirs(source, tmp_path / "merged", run)
+
+        def run_relative():
+            merger.process_task_logic("block", "domain", "Owner", "all.txt",
+                                      ["../outside.txt"], "x")
+
+        with pytest.raises(ValueError):
+            self.use_dirs(source, tmp_path / "merged", run_relative)
+
+    def test_output_traversal_rejected_without_writing(self, tmp_path):
+        source = tmp_path / "rulesets"
+        write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\n")
+        output = tmp_path / "merged"
+        output.mkdir(parents=True)
+
+        def run():
+            merger.process_task_logic("../../..", "domain", "Owner", "../PWNED.txt",
+                                      ["block/domain/A/one.txt"], "x")
+
+        with pytest.raises(ValueError):
+            self.use_dirs(source, output, run)
+        assert not (tmp_path / "PWNED.txt").exists()
 
     def test_ip_task_drops_default_route(self, tmp_path):
         source = tmp_path / "rulesets"
