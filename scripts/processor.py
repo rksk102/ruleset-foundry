@@ -93,7 +93,6 @@ def new_stats():
     return {
         "suffix": 0,
         "subdomain": 0,
-        "exact": 0,
         "relaxed_exact": 0,
         "wildcard": 0,
         "bare_single_label": 0,

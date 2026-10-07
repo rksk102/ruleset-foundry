@@ -14,6 +14,7 @@ import processor
 from config_loader import ConfigError, get
 from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
+    anchor_cwd_to_repo_root,
     atomic_write,
     beijing_now,
     beijing_timestamp,
@@ -114,9 +115,10 @@ def source_repo_slug(url):
 _UNSAFE_COMPONENT_CHARS_RE = re.compile(r'[/\\:*?"<>|#%@\s\x00-\x1f\x7f]')
 
 
-def safe_marker_value(value, label):
+def safe_marker_value(value, label, line_no=None):
     if not is_safe_component(value):
-        gh_error(f"非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，"
+        where = f"sources.urls:{line_no}: " if line_no else ""
+        gh_error(f"{where}非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，"
                  f"不得含 '..'、前导点、盘符或路径分隔符）")
         sys.exit(1)
     return value
@@ -305,9 +307,14 @@ def process_group(group, raw_by_index):
             info(f"    后缀语义源: 提升 {special['suffix_promoted']} 条裸域名为 '+.' 形式")
         for key, label in (
             ("suffix", "后缀规则(+./domain:)已保留 +. 前缀"),
+            ("subdomain", "仅子域规则(.d)已保留"),
             ("relaxed_exact", "精确规则(full:/host:/裸域名)按精确匹配输出"),
             ("wildcard", "通配符规则(*)已原样保留"),
             ("bare_single_label", "裸单标签条目按精确匹配保留"),
+        ):
+            if special.get(key):
+                info(f"    {label}: {special[key]} 行")
+        for key, label in (
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),
             ("ip_in_domain", "IP 规则出现在 domain 源中，已丢弃"),
@@ -354,6 +361,14 @@ class SyncStats:
         return f"{time.time() - self.start_time:.1f}s"
 
 
+_MARKER_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]*)\s*:([^\]]*)\]\s*(?:#.*)?$")
+
+
+def _fail_marker(line_no, text, detail):
+    gh_error(f"sources.urls:{line_no}: {detail}: {text!r}")
+    sys.exit(1)
+
+
 def parse_sources():
     tasks = []
     current_policy = "policy"
@@ -367,34 +382,38 @@ def parse_sources():
     with open(SOURCES_FILE, encoding="utf-8") as f:
         content = f.read().lstrip("\ufeff")
 
-    for line in content.splitlines():
-        line = line.strip()
+    for line_no, raw_line in enumerate(content.splitlines(), 1):
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
 
-        m_pol = re.match(r"^\[policy:(.+)\]$", line)
-        if m_pol:
-            current_policy = normalize_policy(
-                safe_marker_value(m_pol.group(1).strip(), "policy"))
+        marker = _MARKER_RE.match(line)
+        if marker:
+            key = marker.group(1).lower()
+            value = marker.group(2).strip()
+            if key == "policy":
+                current_policy = normalize_policy(
+                    safe_marker_value(value, "policy", line_no))
+            elif key == "type":
+                current_type = normalize_type(
+                    safe_marker_value(value, "type", line_no))
+            elif key == "domain-kind":
+                kind = value.lower()
+                if kind not in ("exact", "suffix"):
+                    _fail_marker(line_no, line,
+                                 "非法 [domain-kind:] 标记（仅允许 exact | suffix）")
+                current_domain_kind = kind
+            else:
+                _fail_marker(line_no, line,
+                             f"无法识别的标记 [{key}:]（仅允许 policy / type / domain-kind）")
             continue
 
-        m_type = re.match(r"^\[type:(.+)\]$", line)
-        if m_type:
-            current_type = normalize_type(
-                safe_marker_value(m_type.group(1).strip(), "type"))
-            continue
-
-        m_kind = re.match(r"^\[domain-kind:(.*)\]$", line)
-        if m_kind:
-            value = m_kind.group(1).strip().lower()
-            if value not in ("exact", "suffix"):
-                gh_error(
-                    f"非法 [domain-kind:] 标记: {m_kind.group(1)!r}"
-                    "（仅允许 exact | suffix，且标记必须独占一行）"
-                )
-                sys.exit(1)
-            current_domain_kind = value
-            continue
+        if line.startswith("["):
+            _fail_marker(
+                line_no, line,
+                "无法识别的标记（标记必须独占一行且形如 "
+                "[policy:...] / [type:...] / [domain-kind:exact|suffix]）",
+            )
 
         url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
@@ -482,7 +501,7 @@ async def download_one(session, task):
 
 async def download_all(tasks):
     connector = aiohttp.TCPConnector(limit=CONCURRENCY, limit_per_host=PER_HOST)
-    async with aiohttp.ClientSession(connector=connector) as session:
+    async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
         coros = [download_one(session, t) for t in tasks]
         results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -539,7 +558,11 @@ def finalize_products(expected_files):
     return produced
 
 
-def generate_summary(stats):
+def _md_cell(value):
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def generate_summary(stats, degraded_reasons=None):
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     dl_fail = len(stats.download_errors)
     parse_fail = len(stats.parse_errors)
@@ -562,6 +585,11 @@ def generate_summary(stats):
 
     with open(summary_path, "a", encoding="utf-8") as f:
         f.write("# 规则同步仪表盘\n\n")
+        if degraded_reasons:
+            f.write("### 本次未发布（消费者继续使用上一版产物）\n\n")
+            for reason in degraded_reasons:
+                f.write(f"- {_md_cell(reason)}\n")
+            f.write("\n")
         f.write("| 成功 | 失败 | 总规则数 |\n")
         f.write("| :---: | :---: | :---: |\n")
         f.write(f"| **{stats.success}** | **{total_fail}** | **{stats.total_lines}** |\n\n")
@@ -569,13 +597,13 @@ def generate_summary(stats):
         if dl_fail > 0:
             f.write("### 下载失败详情\n\n| URL | 原因 |\n| :--- | :--- |\n")
             for url, reason in stats.download_errors:
-                f.write(f"| `{url}` | {reason} |\n")
+                f.write(f"| `{_md_cell(url)}` | {_md_cell(reason)} |\n")
             f.write("\n")
 
         if parse_fail > 0:
             f.write("### 解析失败详情\n\n| URL | 原因 |\n| :--- | :--- |\n")
             for url, reason in stats.parse_errors:
-                f.write(f"| `{url}` | {reason} |\n")
+                f.write(f"| `{_md_cell(url)}` | {_md_cell(reason)} |\n")
             f.write("\n")
 
         if total_fail == 0:
@@ -624,10 +652,17 @@ def main():
         success(f"  {label} -> {count} 条规则")
 
     degraded = stats.success == 0
+    degraded_reasons = []
+    if degraded:
+        degraded_reasons.append(f"没有任何可用产物（成功 0/{len(groups)}）")
     if not degraded and groups:
         ratio = stats.success / len(groups)
         if MIN_SUCCESS_RATIO > 0 and ratio < MIN_SUCCESS_RATIO:
             degraded = True
+            degraded_reasons.append(
+                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}"
+                f"（成功 {stats.success}/{len(groups)}）"
+            )
             gh_error(
                 f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}"
                 f"（成功 {stats.success}/{len(groups)}）"
@@ -635,35 +670,36 @@ def main():
         partial_failures = bool(stats.download_errors or stats.parse_errors)
         if partial_failures and not ALLOW_PARTIAL:
             degraded = True
+            degraded_reasons.append(
+                f"存在失败源（下载 {len(stats.download_errors)} / "
+                f"解析 {len(stats.parse_errors)}）且 behavior.allow_partial=false"
+            )
             gh_error(
                 f"存在失败源（下载 {len(stats.download_errors)} / 解析 {len(stats.parse_errors)}），"
                 "behavior.allow_partial=false 时拒绝发布部分产物"
             )
 
     if degraded:
-        reason = "（全部源下载失败）" if stats.download_errors else ""
-        info(f"  无新规则写入{reason}")
+        info("  本次不发布，保留上一版产物：")
+        for reason in degraded_reasons:
+            info(f"    - {reason}")
         summary_file = RULESETS_DIR / "sync-summary.txt"
         summary_file.write_text(
             "# 同步摘要\n"
             f"# 时间: {beijing_timestamp()}\n"
-            f"# 成功: {stats.success} 失败: {len(stats.download_errors)}\n"
-            "# 无新规则内容同步\n",
+            f"# 成功: {stats.success} "
+            f"失败: {len(stats.download_errors) + len(stats.parse_errors)}\n"
+            f"# 原因: {'；'.join(degraded_reasons)}\n",
             encoding="utf-8",
         )
         info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
-        generate_summary(stats)
-        if stats.success == 0:
-            gh_error(
-                f"同步未产出任何可用规则（成功 0/{len(groups)}），拒绝清理与发布。"
-                "请检查 sources.urls 与上游可达性；该状态不受 behavior.allow_partial 影响"
-            )
-        else:
-            gh_error(
-                f"同步被门禁判定为降级（成功 {stats.success}/{len(groups)}），拒绝清理与发布；"
-                "如需接受部分产物请设 behavior.allow_partial=true（或调低 "
-                "behavior.min_source_success_ratio）"
-            )
+        generate_summary(stats, degraded_reasons)
+        gh_error(
+            f"同步未发布（成功 {stats.success}/{len(groups)}）："
+            f"{'；'.join(degraded_reasons)}。请检查 sources.urls 与上游可达性；"
+            "如需接受部分产物请设 behavior.allow_partial=true（或调低 "
+            "behavior.min_source_success_ratio）"
+        )
         sys.exit(1)
 
     finalize_products(expected_files)
@@ -679,4 +715,5 @@ def main():
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()

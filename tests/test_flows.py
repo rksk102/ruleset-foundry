@@ -156,3 +156,21 @@ class TestConvertMrsFlow:
 
         assert exc.value.code == 0, "只有被跳过的文件时不算失败（配对校验在发布环节兜底）"
         assert not list(Path(convert_mrs.DST_ROOT).rglob("*.mrs"))
+
+
+class TestDegradedSummary:
+    def test_reasons_are_listed_and_cells_are_escaped(self, work_dir, monkeypatch):
+        summary = work_dir / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        stats = main.SyncStats()
+        stats.download_errors.append(("https://x.test/a|b.txt", "第一行\n第二行|尾巴"))
+        stats.parse_errors.append(("https://x.test/c.txt", "解析失败: 多行\n错误"))
+
+        main.generate_summary(
+            stats, ["存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false"])
+
+        text = summary.read_text(encoding="utf-8")
+        assert "### 本次未发布（消费者继续使用上一版产物）" in text
+        assert "- 存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false" in text
+        assert "第一行 第二行\\|尾巴" in text
+        assert "第一行\n第二行" not in text

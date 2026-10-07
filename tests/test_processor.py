@@ -603,3 +603,17 @@ class TestYamlProbeGating:
                             lambda content: calls.append(content) or None)
         processor.parse_lines("rules:\n  - a.com\n")
         assert len(calls) == 1
+
+
+class TestStatsContract:
+
+    def test_no_dead_counters(self):
+        stats = processor.new_stats()
+        assert "exact" not in stats, "exact 计数器从未被累加，属于死字段"
+        assert stats["subdomain"] == 0
+
+    def test_subdomain_rules_are_counted(self):
+        domains_, stats = processor.process_domain_detailed(
+            [".sub.example", "bare.example"], "exact")
+        assert domains_ == [".sub.example", "bare.example"]
+        assert stats["subdomain"] == 1
