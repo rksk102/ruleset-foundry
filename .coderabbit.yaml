@@ -68,7 +68,9 @@ reviews:
         即独立锚点；压缩流既已对上，解压后内容即被传递性锚定）、解压后比对 config.yaml 里 pin 的
         kernel_sha256。「无哈希也可执行」属缺陷，require_sha=True 不得被削弱。
         --bump-config 首次引入新版本时尚无 pin 可对，此时禁止用刚算出的哈希自我比对；
-        新哈希写入 config.yaml 后经 kernel-bump PR 人工评审，下一次运行才走固定哈希路径。
+        新哈希由 kernel-bump.yml 的 commit job 直接提交到 main（无 PR 评审，且该 push 不触发 CI），
+        下一次运行才走固定哈希路径；信任锚是上游 asset.digest 与本仓库 kernel_sha256 的组合，
+        如需人工把关请禁用该 workflow 的 commit job。
         转换子进程必须有超时，失败必须让本轮退出码非零。
 
     - path: "scripts/merger.py"

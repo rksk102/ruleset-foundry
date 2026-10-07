@@ -107,6 +107,67 @@
 > Windows/macOS 请用 WSL 或交给 CI。顺序颠倒会拿到**旧资产**的哈希，下一次流水线会以
 > 「内核哈希不匹配」失败。
 
+**自动跟随的信任模型**：`kernel-bump.yml` 每周一自动把 `pinned_version` / `asset_name` /
+`kernel_sha256` 三字段更新到 main（机器人直接提交，没有 PR 评审，该 push 也不会触发 CI）。
+实际信任锚是上游 Release 资产的 `digest`（GitHub API 记录）+ 本仓库钉扎的解压后 SHA-256 +
+ELF 校验与冒烟转换——换言之，上游发布新版本会被自动采纳。如需人工把关，请禁用该 workflow
+的 commit job，或改走上面的手工流程。
+
+## 配置参考（config.yaml）
+
+未列出的键一律拒绝（含拼写错误的空节），所以这里就是全部可配置项：
+
+| 键 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `network.timeout_seconds` | `15` | 单源下载超时（秒） |
+| `network.max_retries` | `2` | 下载失败后的重试次数（不含首次） |
+| `network.max_source_bytes` | `67108864` | 单源响应体上限（64 MiB），超出即放弃该源 |
+| `network.max_concurrency` | `6` | 全局并发连接数 |
+| `network.max_per_host` | `2` | 单主机并发连接数 |
+| `network.max_retry_after_seconds` | `60` | `Retry-After` 退避上限（秒） |
+| `paths.sources_file` | `sources.urls` | 上游清单文件 |
+| `paths.rulesets_dir` | `rulesets` | 同步产物目录 |
+| `paths.merged_output_dir` | `merged-rules` | 合并产物目录（`.txt`） |
+| `paths.mrs_output_dir` | `merged-rules-mrs` | MRS 产物目录 |
+| `paths.cache_dir` | `.cache` | 缓存目录 |
+| `paths.log_dir` | `logs` | 运行日志目录 |
+| `behavior.strict_mode` | `false` | 任一源失败即让同步失败（可被 dispatch 输入覆盖） |
+| `behavior.release_change_detection` | `true` | 仅当规则正文变化时才新建 Release |
+| `behavior.release_keep_days` | `3` | 旧 Release 保留天数 |
+| `behavior.conflict_policy` | `warn` | 跨策略冲突处理：`ignore` / `warn` / `fail` |
+| `behavior.unrecognized_warn_ratio` | `0.10` | 未识别行占比阈值，超阈值记入失败明细 |
+| `behavior.min_source_success_ratio` | `0.0` | 源成功率下限，低于该值拒绝发布 |
+| `behavior.allow_partial` | `false` | 是否允许部分源失败仍继续发布 |
+| `mihomo.kernel_cache_path` | `.cache/mihomo-kernel` | 内核缓存目录 |
+| `mihomo.repo_api` | GitHub API | 内核 Release 查询地址 |
+| `mihomo.pinned_version` | — | 钉扎的内核 tag |
+| `mihomo.asset_name` | — | 钉扎的内核资产名 |
+| `mihomo.kernel_sha256` | — | 解压后内核二进制的 SHA-256 |
+| `merges` | `[]` | 合并任务列表，见下一节 |
+
+`paths.*` 与 `mihomo.kernel_cache_path` 只接受仓库内相对路径；所有键的类型与取值范围都会在
+启动时校验，写错会直接报错而不是静默忽略。
+
+## 规则合并任务（merges）
+
+`merges` 把多个已同步的产物合并成一个新产物（例如把三个广告列表合成 `all-adblock.txt`）：
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `strategy` | 输出策略目录：`block` / `direct` / `policy` |
+| `type` | 输出类型目录：`domain` 或 `ipcidr` |
+| `owner` | 输出目录名，本仓库自有任务统一用 `rskk102` |
+| `filename` | 输出文件名（`.txt`） |
+| `inputs` | 输入文件列表，路径相对 `rulesets_dir` |
+
+约束：
+
+- `strategy` / `type` / `owner` / `filename` 只能是以字母或数字开头的单段名字，
+  `inputs` 必须是仓库内相对路径；任一项越界或含 `..` 都会让配置校验失败。
+- 合并任务与自动透传任务不允许输出到同一路径；合并结果为空会直接失败，不会写出空产物。
+- 合并产物与其它产物同权：一起进入 `artifacts` 分支与 Release，语义（`+.d` / `.d` / 裸域名）
+  完全相同。
+
 ## 规则优先级与消费方式
 
 策略优先级固定为 `block > direct > policy`；在代理客户端中按此顺序引用 rule-provider。
@@ -229,6 +290,31 @@ rule-providers:
 `behavior.conflict_policy` 支持 `ignore | warn | fail`，默认 `warn`。
 `fail` 仅作为"新增源时的临时验收开关"：当前隐式冲突基线噪声较大（约 1.2 万条），
 直接启用 `fail` 会中断发布；启用前请先人工核对冲突检测结果。
+
+## 本地开发与测试
+
+本地环境要求 Python 3.13（CI 使用 `ubuntu-latest` + 3.13）：
+
+```bash
+uv venv .venv --python 3.13
+uv pip install --require-hashes -r requirements-dev.lock --python .venv/Scripts/python.exe
+# Linux/macOS 用 .venv/bin/python；依赖锁定在 requirements*.lock，改依赖请用 uv pip compile 重新生成
+
+export PYTHONPATH=$PWD/scripts
+.venv/Scripts/python.exe -m pytest tests/ -q --cov=scripts --cov-branch --cov-fail-under=70
+.venv/Scripts/ruff.exe check scripts tests
+.venv/Scripts/zizmor.exe --min-severity medium .github/
+```
+
+工作流的静态检查（CI 的 `workflows-lint`）使用 `rhysd/actionlint`，本地可跑
+`docker run --rm -v "$PWD:/w" -w /w rhysd/actionlint:1.7.12 -color`。
+内核相关路径（`scripts/convert_mrs.py` 的下载与校验）需要 Linux 才能执行真实内核，
+Windows/macOS 请在 WSL 中运行或交给 CI。
+
+## 关于本文件
+
+`README.md` 由 `scripts/gen_readme.py` 完整生成（规则列表 + 本节静态段落），每次流水线运行都会
+重写；修改文案请改脚本里的 `make_static_sections()`，直接编辑本文件会被下一次运行覆盖。
 
 ## 许可与上游署名
 
