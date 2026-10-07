@@ -337,6 +337,10 @@ class TestProcessIp:
     def test_default_route_dropped(self):
         assert processor.process_ip(["0.0.0.0/0", "::/0"])[0] == []
 
+    def test_default_route_counted_in_stats(self):
+        _result, _errors, stats = processor.process_ip_detailed(["0.0.0.0/0", "10.0.0.0/8"])
+        assert stats["dropped_default_route"] == 1
+
     def test_v4_before_v6(self):
         result, _ = processor.process_ip(["2001:db8::/32", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8", "2001:db8::/32"]
@@ -575,3 +579,27 @@ class TestYamlPayloadParsing:
 
     def test_plain_domain_list_is_not_taken_as_yaml(self):
         assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
+
+
+class TestYamlProbeGating:
+
+    def test_plain_text_skips_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
+        assert calls == [], "纯文本不应触发 yaml.safe_load"
+
+    def test_payload_head_triggers_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        assert processor.parse_lines("payload:\n  - a.com\n") == ["a.com"]
+        assert len(calls) == 1
+
+    def test_rules_head_triggers_yaml_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(processor, "_yaml_payload_lines",
+                            lambda content: calls.append(content) or None)
+        processor.parse_lines("rules:\n  - a.com\n")
+        assert len(calls) == 1

@@ -100,6 +100,7 @@ def new_stats():
         "ip_in_domain": 0,
         "dropped_exception": 0,
         "dropped_keyword": 0,
+        "dropped_default_route": 0,
         "dropped_rule_type": {},
         "unrecognized": 0,
     }
@@ -150,15 +151,11 @@ def _yaml_payload_lines(content):
     return None
 
 
+_YAML_HEAD_RE = re.compile(r'^\s*(?:payload|rules):', re.IGNORECASE)
+
+
 def parse_lines(raw_content):
     content = explicit_base64_decode(raw_content)
-    yaml_lines = _yaml_payload_lines(content)
-    if yaml_lines is not None:
-        return yaml_lines
-
-    lines = []
-
-    in_payload = False
     yaml_payload_pattern = re.compile(r'^\s*payload:', re.IGNORECASE)
     content_lines = content.splitlines()
     probe = []
@@ -169,6 +166,14 @@ def parse_lines(raw_content):
         probe.append(s)
         if len(probe) >= 50:
             break
+
+    if any(_YAML_HEAD_RE.match(l) for l in probe):
+        yaml_lines = _yaml_payload_lines(content)
+        if yaml_lines is not None:
+            return yaml_lines
+
+    lines = []
+    in_payload = False
     has_payload = any(yaml_payload_pattern.match(l) for l in probe)
 
     for line in content_lines:
@@ -358,6 +363,7 @@ def process_domain_detailed(lines, domain_kind="exact"):
 def process_ip_detailed(lines):
     candidates = []
     stats = new_stats()
+    dropped_default_routes = []
     for line in lines:
         kind, payload, type_name = classify_rule_line(line)
         if kind is None:
@@ -372,7 +378,9 @@ def process_ip_detailed(lines):
         stats["dropped_rule_type"][type_name] = \
             stats["dropped_rule_type"].get(type_name, 0) + 1
 
-    result, errors = utils.flatten_ip_cidr(candidates, extract=True)
+    result, errors = utils.flatten_ip_cidr(
+        candidates, extract=True, dropped_default_routes=dropped_default_routes)
+    stats["dropped_default_route"] = len(dropped_default_routes)
     return result, errors, stats
 
 
@@ -398,6 +406,9 @@ def main():
 
     if mode == 'ipcidr':
         result, errors, stats = process_ip_detailed(lines)
+        if stats["dropped_default_route"]:
+            print(f"# 丢弃默认路由(/0) 规则 {stats['dropped_default_route']} 行",
+                  file=sys.stderr)
         for type_name, count in sorted(stats["dropped_rule_type"].items()):
             print(f"# 丢弃 {type_name} 规则 {count} 行: {ipcidr_drop_reason(type_name)}",
                   file=sys.stderr)

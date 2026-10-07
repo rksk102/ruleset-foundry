@@ -260,6 +260,8 @@ def _process_ip_group(all_lines):
     ):
         if count:
             warning(f"    {label} 规则不可放入 ipcidr 产物，已丢弃: {count} 行")
+    if stats["dropped_default_route"]:
+        warning(f"    默认路由(/0) 已按设计丢弃: {stats['dropped_default_route']} 行")
     for type_name, count in sorted(stats["dropped_rule_type"].items()):
         warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
     return result, stats

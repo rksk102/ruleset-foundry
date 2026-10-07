@@ -107,7 +107,11 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
     raw_count = len(combined_rules)
 
     if mode == "IP-CIDR":
-        final_list, cidr_errors = flatten_ip_cidr(combined_rules)
+        dropped_default_routes = []
+        final_list, cidr_errors = flatten_ip_cidr(
+            combined_rules, dropped_default_routes=dropped_default_routes)
+        if dropped_default_routes:
+            warning(f"    默认路由(/0) 已按设计丢弃: {len(dropped_default_routes)} 条")
         if cidr_errors:
             for bad_cidr, err_msg in cidr_errors[:5]:
                 warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")

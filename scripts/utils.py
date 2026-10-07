@@ -21,7 +21,7 @@ def beijing_timestamp():
 _IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
 
 
-def flatten_ip_cidr(entries, strict=False, extract=False):
+def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
     ipv4_nets = []
     ipv6_nets = []
     errors = []
@@ -46,6 +46,8 @@ def flatten_ip_cidr(entries, strict=False, extract=False):
             continue
 
         if net.prefixlen == 0:
+            if dropped_default_routes is not None:
+                dropped_default_routes.append(str(net))
             continue
         if net.version == 4:
             ipv4_nets.append(net)

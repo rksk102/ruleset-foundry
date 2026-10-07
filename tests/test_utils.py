@@ -596,6 +596,13 @@ class TestFlattenIpDefaultRoute:
         result, _errors = utils.flatten_ip_cidr(["9.0.0.0/8", "0.0.0.0/0"])
         assert result == ["9.0.0.0/8"]
 
+    def test_dropped_default_routes_are_reported(self):
+        dropped = []
+        result, _errors = utils.flatten_ip_cidr(
+            ["1.0.0.0/24", "0.0.0.0/0", "::/0"], dropped_default_routes=dropped)
+        assert result == ["1.0.0.0/24"]
+        assert dropped == ["0.0.0.0/0", "::/0"]
+
     def test_ipv4_default_route_does_not_swallow_others(self):
         result, _errors = utils.flatten_ip_cidr(["1.0.0.0/24", "0.0.0.0/0", "10.0.0.0/8"])
         assert result == ["1.0.0.0/24", "10.0.0.0/8"]
