@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import manifest
-from config_loader import get, load_config
+from config_loader import CONFLICT_POLICIES, get, load_config
 from logger import error, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     DomainTrie,
@@ -19,7 +19,6 @@ from utils import (
 CONFIG_FILE = "config.yaml"
 SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
 OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
-MANIFEST_NAME = "products.manifest"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -44,7 +43,7 @@ def missing_merge_inputs(merge_tasks, base_dir=None):
 
 def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None):
     out_dir = output_dir or OUTPUT_DIR
-    manifest_file = manifest_file or os.path.join(SOURCE_DIR, MANIFEST_NAME)
+    manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
     baseline = manifest.load_manifest(manifest_file)
     if not baseline:
         raise manifest.ManifestError(
@@ -203,12 +202,12 @@ def load_domains_from_file(filepath):
     return domains
 
 
-VALID_CONFLICT_POLICIES = ("ignore", "warn", "fail")
+IMPLICIT_SAMPLE_LIMIT = 3
 
 
 def resolve_conflict_action(conflict_policy, has_conflicts):
     policy = (conflict_policy or "warn").lower()
-    if policy not in VALID_CONFLICT_POLICIES:
+    if policy not in CONFLICT_POLICIES:
         raise ValueError(f"behavior.conflict_policy 取值非法: {conflict_policy!r}")
     if not has_conflicts:
         return "none"
@@ -403,9 +402,11 @@ def main():
         for r in summary_rows:
             info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
 
-    explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
-
     conflict_policy = get("behavior", "conflict_policy", default="warn")
+    if str(conflict_policy or "warn").lower() == "ignore":
+        explicit_conflicts, implicit_conflicts = {}, {}
+    else:
+        explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
     has_conflicts = bool(explicit_conflicts or implicit_conflicts)
     try:
         action = resolve_conflict_action(conflict_policy, has_conflicts)
@@ -430,12 +431,14 @@ def main():
 
     if show_conflicts and implicit_conflicts:
         group_start("隐式冲突（父域名覆盖其他策略的子域名）")
+        total_implicit = sum(len(v) for v in implicit_conflicts.values())
+        warning(f"  共 {total_implicit} 个子域受父域规则影响（完整列表见 step summary）")
         for pair, items in implicit_conflicts.items():
             warning(f"  {pair}: {len(items)} 个子域被覆盖")
-            for child, parent in items[:10]:
+            for child, parent in items[:IMPLICIT_SAMPLE_LIMIT]:
                 warning(f"    - {child} 被 {parent} 覆盖")
-            if len(items) > 10:
-                warning(f"    ... 及其他 {len(items) - 10} 个")
+            if len(items) > IMPLICIT_SAMPLE_LIMIT:
+                warning(f"    ... 及其他 {len(items) - IMPLICIT_SAMPLE_LIMIT} 个")
         group_end()
 
     if os.getenv("GITHUB_STEP_SUMMARY"):

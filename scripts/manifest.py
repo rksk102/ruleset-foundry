@@ -2,6 +2,8 @@ from pathlib import Path
 
 from utils import atomic_write
 
+MANIFEST_NAME = "products.manifest"
+
 
 class ManifestError(Exception):
     pass

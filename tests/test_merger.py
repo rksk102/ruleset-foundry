@@ -284,3 +284,38 @@ class TestRepoAnchor:
             merger.main()
 
         assert exc.value.code == 1
+
+
+class TestConflictPolicyIgnore:
+    def setup_run(self, monkeypatch, work_dir, policy):
+        source = work_dir / "rulesets"
+        write(source / "block" / "domain" / "Owner" / "ads.txt", "+.example.com\n")
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
+        monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+        monkeypatch.setattr(merger, "verify_merged_products", lambda tasks: True)
+        monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
+
+    def test_ignore_skips_detection_entirely(self, monkeypatch, work_dir):
+        self.setup_run(monkeypatch, work_dir, "ignore")
+        calls = []
+
+        def boom(_merged_dir):
+            calls.append(_merged_dir)
+            raise AssertionError("conflict_policy=ignore 时不应执行冲突检测")
+
+        monkeypatch.setattr(merger, "detect_cross_policy_conflicts", boom)
+
+        merger.main()
+
+        assert calls == []
+
+    def test_warn_still_runs_detection(self, monkeypatch, work_dir):
+        self.setup_run(monkeypatch, work_dir, "warn")
+        calls = []
+        monkeypatch.setattr(merger, "detect_cross_policy_conflicts",
+                            lambda merged_dir: (calls.append(merged_dir), ({}, {}))[1])
+
+        merger.main()
+
+        assert len(calls) == 1

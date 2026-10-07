@@ -26,7 +26,7 @@ class GhStub:
         self.responses = responses or {}
         self.asset_count = asset_count
 
-    def __call__(self, cmd, fail_fast=False):
+    def __call__(self, cmd):
         self.calls.append(list(cmd))
         if self.fail_when(cmd):
             return None

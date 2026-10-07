@@ -37,7 +37,6 @@ TARGET_CONFIG = {
 }
 KEEP_DAYS = get("behavior", "release_keep_days", default=3)
 CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
-MANIFEST_NAME = "products.manifest"
 BASELINE_MISSING = "清单基线缺失"
 GH_TIMEOUT = 120
 ASSET_CONFIRM_ATTEMPTS = 3
@@ -67,7 +66,7 @@ def product_dirs():
 
 
 def baseline_files():
-    return (os.path.join(RULESETS_DIR, MANIFEST_NAME),)
+    return (os.path.join(RULESETS_DIR, manifest.MANIFEST_NAME),)
 
 
 def baseline_required():
@@ -120,7 +119,7 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     if baseline is None:
         if require_baseline:
             raise manifest.ManifestError(
-                f"{BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空"
+                f"{BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空"
                 f"（已检查 {' / '.join(baseline_files())}）"
             )
         if not txt_files and not mrs_files:
@@ -128,7 +127,9 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
                 f"没有任何产物可校验: {txt_dir} 与 {mrs_dir} 均不存在或为空"
                 "（通常在非仓库根目录运行时出现，拒绝空跑通过）"
             )
-        warning(f"  {BASELINE_MISSING}: {MANIFEST_NAME} 不存在或为空，跳过绝对基准校验")
+        warning(
+            f"  {BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空，跳过绝对基准校验"
+        )
     else:
         check_expected(baseline, txt_files, f"{txt_dir} 绝对基准校验")
 
@@ -159,25 +160,20 @@ def verify_only():
     group_end()
 
 
-def run_gh(cmd_list, fail_fast=False):
+def run_gh(cmd_list):
     try:
         result = subprocess.run(["gh", *cmd_list], capture_output=True, text=True,
                                 check=True, timeout=GH_TIMEOUT)
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
-        if fail_fast:
-            error(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
-            sys.exit(1)
         warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
         return None
     except subprocess.CalledProcessError as e:
-        if fail_fast:
-            error(f"  GH CLI 失败: {e.stderr.strip()}")
-            sys.exit(1)
         warning(f"  GH CLI 警告: {e.stderr.strip()}")
         return None
     except OSError as e:
         error(f"  无法执行 gh CLI: {e}")
+        gh_error(f"无法执行 gh CLI: {e}")
         sys.exit(1)
 
 

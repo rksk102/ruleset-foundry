@@ -25,7 +25,6 @@ mihomo
 Thumbs.db
 desktop.ini
 
-.mimosa/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
@@ -37,6 +36,3 @@ pytest-cache-files-*/
 
 .tools/
 
-.dsh-meow/
-
-AUDIT-REPORT*.md

@@ -383,10 +383,6 @@ def process_ip_detailed(lines):
     return result, errors, stats
 
 
-def process_ip(lines):
-    result, errors, _stats = process_ip_detailed(lines)
-    return result, errors
-
 def main():
     mode = "domain"
     if len(sys.argv) > 1:

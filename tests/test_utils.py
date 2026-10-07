@@ -628,11 +628,12 @@ class TestFlattenIpModes:
         assert result == ["1.2.3.0/24"]
         assert errors == []
 
-    def test_extract_mode_matches_legacy_process_ip(self):
+    def test_extract_mode_matches_processor_pipeline(self):
         import processor
 
         lines = ["  1.2.3.0/24 # note", "10.0.0.0/8"]
-        assert processor.process_ip(lines) == utils.flatten_ip_cidr(lines, extract=True)
+        result, errors, _stats = processor.process_ip_detailed(lines)
+        assert (result, errors) == utils.flatten_ip_cidr(lines, extract=True)
 
 
 class TestFlattenIpOrdering:

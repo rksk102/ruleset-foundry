@@ -329,27 +329,28 @@ class TestParseLines:
 
 class TestProcessIp:
     def test_v4_collapsed(self):
-        assert processor.process_ip(["1.0.0.0/24", "1.0.1.0/24"])[0] == ["1.0.0.0/23"]
+        assert processor.process_ip_detailed(["1.0.0.0/24", "1.0.1.0/24"])[0] == ["1.0.0.0/23"]
 
     def test_bare_ip_gets_prefixlen(self):
-        assert processor.process_ip(["10.0.0.1"])[0] == ["10.0.0.1/32"]
+        assert processor.process_ip_detailed(["10.0.0.1"])[0] == ["10.0.0.1/32"]
 
     def test_default_route_dropped(self):
-        assert processor.process_ip(["0.0.0.0/0", "::/0"])[0] == []
+        assert processor.process_ip_detailed(["0.0.0.0/0", "::/0"])[0] == []
 
     def test_default_route_counted_in_stats(self):
         _result, _errors, stats = processor.process_ip_detailed(["0.0.0.0/0", "10.0.0.0/8"])
         assert stats["dropped_default_route"] == 1
 
     def test_v4_before_v6(self):
-        result, _ = processor.process_ip(["2001:db8::/32", "10.0.0.0/8"])
+        result, _errors, _stats = processor.process_ip_detailed(
+            ["2001:db8::/32", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8", "2001:db8::/32"]
 
     def test_garbage_skipped(self):
-        assert processor.process_ip(["hello", "not-an-ip"])[0] == []
+        assert processor.process_ip_detailed(["hello", "not-an-ip"])[0] == []
 
     def test_errors_are_returned_not_discarded(self):
-        result, errors = processor.process_ip(["1.0.0.0/24", "garbage"])
+        result, errors, _stats = processor.process_ip_detailed(["1.0.0.0/24", "garbage"])
         assert result == ["1.0.0.0/24"]
         assert len(errors) == 1
         assert errors[0][0] == "garbage"
@@ -456,7 +457,7 @@ class TestNoSilentRewriteInIpMode:
 class TestClassicalRuleLinesInIpMode:
 
     def test_classic_rule_lines_keep_their_payload(self):
-        result, errors = processor.process_ip([
+        result, errors, _stats = processor.process_ip_detailed([
             "IP-CIDR,1.2.3.0/24",
             "IP-CIDR6,2001:db8::/32",
         ])
@@ -472,18 +473,20 @@ class TestClassicalRuleLinesInIpMode:
         assert "src 语义" in processor.ipcidr_drop_reason("SRC-IP-CIDR")
 
     def test_classic_line_is_not_read_as_hex_fragment(self):
-        result, errors = processor.process_ip(["IP-CIDR,x"])
+        result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,x"])
         assert result == []
         assert len(errors) == 1
         assert errors[0][0] == "x"
 
     def test_no_resolve_modifier_stripped(self):
-        result, errors = processor.process_ip(["IP-CIDR,1.2.3.0/24,no-resolve"])
+        result, errors, _stats = processor.process_ip_detailed(
+            ["IP-CIDR,1.2.3.0/24,no-resolve"])
         assert result == ["1.2.3.0/24"]
         assert errors == []
 
     def test_rule_target_after_payload_is_ignored(self):
-        result, errors = processor.process_ip(["IP-CIDR,1.2.3.0/24,DIRECT"])
+        result, errors, _stats = processor.process_ip_detailed(
+            ["IP-CIDR,1.2.3.0/24,DIRECT"])
         assert result == ["1.2.3.0/24"]
         assert errors == []
 
@@ -493,15 +496,14 @@ class TestClassicalRuleLinesInIpMode:
         assert stats["unrecognized"] == 1
 
     def test_unclassified_lines_still_use_extract(self):
-        result, errors = processor.process_ip(["  1.2.3.0/24 # note", "10.0.0.0/8"])
+        result, errors, _stats = processor.process_ip_detailed(
+            ["  1.2.3.0/24 # note", "10.0.0.0/8"])
         assert result == ["1.2.3.0/24", "10.0.0.0/8"]
         assert errors == []
 
-    def test_process_ip_keeps_legacy_two_tuple(self):
-        assert len(processor.process_ip(["1.2.3.0/24"])) == 2
-
     def test_classified_and_unclassified_lines_collapse_together(self):
-        result, _errors = processor.process_ip(["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])
+        result, _errors, _stats = processor.process_ip_detailed(
+            ["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])
         assert result == ["1.0.0.0/23"]
 
 
