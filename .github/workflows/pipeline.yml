@@ -46,6 +46,7 @@ jobs:
           name: rulesets
           path: rulesets/
           retention-days: 1
+          if-no-files-found: error
 
   merge-rules:
     name: "2. 合并规则"
@@ -79,6 +80,7 @@ jobs:
           name: merged-rules
           path: merged-rules/
           retention-days: 1
+          if-no-files-found: error
 
   convert-mrs:
     name: "3. 转换 MRS"
@@ -130,6 +132,7 @@ jobs:
           name: merged-rules-mrs
           path: merged-rules-mrs/
           retention-days: 1
+          if-no-files-found: error
 
   publish:
     name: "4. 发布"
@@ -169,7 +172,7 @@ jobs:
           path: merged-rules-mrs/
           digest-mismatch: error
       - name: 生成 README
-        if: steps.dl-merged.outcome == 'success'
+        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
@@ -202,7 +205,7 @@ jobs:
           )
           git worktree remove --force "$WT"
       - name: 提交 README 与发布状态
-        if: steps.dl-merged.outcome == 'success'
+        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
