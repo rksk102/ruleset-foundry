@@ -18,6 +18,24 @@ def asset(name, digest="sha256:" + "0" * 64):
     }
 
 
+class TestWriteSummary:
+
+    def test_writes_utf8_step_summary(self, work_dir, monkeypatch):
+        target = work_dir / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(target))
+        convert_mrs.write_summary(
+            {"success": 2, "failed": 1, "skipped": 0, "total": 3}, 1.23)
+        text = target.read_text(encoding="utf-8")
+        assert "MRS 转换报告" in text
+        assert "1.23" in text
+
+    def test_missing_summary_env_writes_nothing(self, work_dir, monkeypatch):
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        convert_mrs.write_summary(
+            {"success": 0, "failed": 0, "skipped": 0, "total": 0}, 0.5)
+        assert not list(work_dir.iterdir())
+
+
 class TestReleaseApiUrl:
     def test_pinned_version_uses_tags(self):
         assert convert_mrs.release_api_url("v1.19.30", API_LATEST) == \
