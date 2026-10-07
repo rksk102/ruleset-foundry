@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from utils import atomic_write
+
 
 class ManifestError(Exception):
     pass
@@ -22,7 +24,7 @@ def save_manifest(path, entries):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     body = "\n".join(sorted({e.replace("\\", "/") for e in entries})) + "\n"
-    p.write_text(body, encoding="utf-8")
+    atomic_write(str(p), body)
     return p
 
 

@@ -288,6 +288,11 @@ class TestHashStatePersistence:
         utils.save_last_hash("two", str(target))
         assert utils.load_last_hash(str(target)) == "two"
 
+    def test_save_leaves_no_temp_file(self, tmp_path):
+        target = tmp_path / "h.sha256"
+        utils.save_last_hash("abc", str(target))
+        assert [p.name for p in tmp_path.iterdir()] == ["h.sha256"]
+
 
 class TestNormalizePolicy:
     def test_block_synonyms(self):

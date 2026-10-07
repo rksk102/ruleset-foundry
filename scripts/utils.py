@@ -145,7 +145,7 @@ def load_last_hash(hash_file="state/release.sha256"):
 def save_last_hash(hash_value, hash_file="state/release.sha256"):
     hp = Path(hash_file)
     hp.parent.mkdir(parents=True, exist_ok=True)
-    hp.write_text(hash_value, encoding="utf-8")
+    atomic_write(str(hp), hash_value)
 
 
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

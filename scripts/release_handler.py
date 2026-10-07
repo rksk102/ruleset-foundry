@@ -337,15 +337,26 @@ def main():
     releases_json = run_gh(["release", "list", "--limit", "50", "--json", "tagName,createdAt"])
 
     if releases_json:
-        releases = json.loads(releases_json)
+        try:
+            releases = json.loads(releases_json)
+        except (TypeError, ValueError) as e:
+            error(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
+            if os.path.exists(zip_file):
+                os.unlink(zip_file)
+            sys.exit(1)
+
         cutoff_time = utc_now - datetime.timedelta(days=KEEP_DAYS)
 
         cleaned = 0
         for rel in releases:
-            created_at = datetime.datetime.fromisoformat(
-                rel["createdAt"].replace("Z", "+00:00")
-            )
-            tag = rel["tagName"]
+            try:
+                created_at = datetime.datetime.fromisoformat(
+                    rel["createdAt"].replace("Z", "+00:00")
+                )
+                tag = rel["tagName"]
+            except (KeyError, AttributeError, TypeError, ValueError) as e:
+                warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")
+                continue
             if not tag.startswith("rules-"):
                 continue
             if created_at < cutoff_time and tag != release_tag:

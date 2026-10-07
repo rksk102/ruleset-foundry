@@ -489,6 +489,51 @@ class TestMainOrchestration:
                 os.environ["GITHUB_STEP_SUMMARY"] = prior
             self.teardown_env(cwd, original)
 
+    def test_unparsable_release_listing_exits(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        stub = GhStub(responses={("release", "list"): "not-json"})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: None
+        try:
+            with pytest.raises(SystemExit) as exc:
+                run_with_stub(stub, release_handler.main)
+            assert exc.value.code == 1
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
+    def test_unparsable_entry_is_skipped_and_others_pruned(self, work_dir):
+        cwd, original = self.setup_env(work_dir)
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        listing = release_listing(
+            {"tagName": "rules-broken", "createdAt": "not-a-date"},
+            {"tagName": "rules-1999-01-01", "createdAt": old},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        original_hash = release_handler.combined_products_hash
+        original_load = release_handler.load_last_hash
+        original_save = release_handler.save_last_hash
+        release_handler.combined_products_hash = lambda *a, **k: ("new", 1, 1)
+        release_handler.load_last_hash = lambda: None
+        release_handler.save_last_hash = lambda h: None
+        try:
+            run_with_stub(stub, release_handler.main)
+            flat = " ".join(stub.commands())
+            assert "release delete rules-1999-01-01 --yes" in flat
+            assert "rules-broken" not in flat, "无法解析的记录应跳过而非中断清理"
+        finally:
+            release_handler.combined_products_hash = original_hash
+            release_handler.load_last_hash = original_load
+            release_handler.save_last_hash = original_save
+            self.teardown_env(cwd, original)
+
 
 class TestRunGhErrorHandling:
     def test_oserror_exits_nonzero(self):
