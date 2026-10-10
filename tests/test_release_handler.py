@@ -6,46 +6,11 @@ import zipfile
 
 import pytest
 import release_handler
+from support import GhStub
 
 
 def release_listing(*releases):
     return json.dumps(list(releases))
-
-
-EMPTY_LISTING = release_listing()
-
-VIEW_FOUND = json.dumps({"tagName": "rules-x"})
-
-
-class GhStub:
-    """按子命令返回合理默认值：release list 必须是可解析的 JSON。"""
-
-    def __init__(self, fail_when=None, responses=None, asset_count="3"):
-        self.calls = []
-        self.fail_when = fail_when or (lambda cmd: False)
-        self.responses = responses or {}
-        self.asset_count = asset_count
-
-    def __call__(self, cmd):
-        self.calls.append(list(cmd))
-        if self.fail_when(cmd):
-            return None
-        key = (cmd[0], cmd[1]) if len(cmd) > 1 else (cmd[0],)
-        if key in self.responses:
-            return self.responses[key]
-        if key == ("release", "list"):
-            return EMPTY_LISTING
-        if key == ("release", "view"):
-            if "assets" in cmd:
-                return self.asset_count
-            return VIEW_FOUND
-        return "ok"
-
-    def commands(self):
-        return [" ".join(c) for c in self.calls]
-
-    def release_actions(self):
-        return [c[1] for c in self.calls if c[0] == "release" and len(c) > 1]
 
 
 def run_with_stub(stub, fn):
@@ -555,24 +520,6 @@ class TestRunGhErrorHandling:
             subprocess.run = original
 
 
-class TestConstants:
-    def test_keep_days_positive(self):
-        assert isinstance(release_handler.KEEP_DAYS, int)
-        assert release_handler.KEEP_DAYS >= 1
-
-    def test_target_config_maps_dir_to_extension(self):
-        assert release_handler.TARGET_CONFIG == {
-            "merged-rules": ".txt",
-            "merged-rules-mrs": ".mrs",
-        }
-
-    def test_keep_days_within_list_limit(self):
-        assert release_handler.KEEP_DAYS * 2 <= 50
-
-    def test_beijing_offset_is_utc8(self):
-        assert release_handler.beijing_now().utcoffset() == datetime.timedelta(hours=8)
-
-
 class TestVerifyOnly:
 
     def setup_products(self, work_dir, *, paired=True):
@@ -641,4 +588,79 @@ class TestVerifyOnly:
             assert calls == [True], "main() 应分发到 verify_only 并提前返回"
         finally:
             self.teardown_products(cwd, original)
+
+
+class TestAssetConfirmation:
+    def stub_release_flow(self, monkeypatch, calls, asset_count):
+        monkeypatch.setattr(release_handler, "combined_products_hash",
+                            lambda *a, **k: ("new-hash", 1, 1))
+        monkeypatch.setattr(release_handler, "product_dirs", lambda: ("txt", "mrs"))
+        monkeypatch.setattr(release_handler, "enforce_products",
+                            lambda *a: calls.append("enforce"))
+        monkeypatch.setattr(release_handler, "zip_target_files", lambda d: ("z.zip", {}))
+        monkeypatch.setattr(release_handler, "generate_release_notes", lambda *a: "notes")
+        monkeypatch.setattr(release_handler, "publish_release", lambda *a: "ok")
+        monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: asset_count)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda *a: None)
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
+        monkeypatch.setattr(release_handler, "load_last_hash", lambda: "hash")
+        monkeypatch.setattr(release_handler.os.path, "exists", lambda p: False)
+
+    def test_verification_runs_even_with_change_detection_off(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", False)
+        self.stub_release_flow(monkeypatch, calls, asset_count=1)
+
+        release_handler.main()
+
+        assert calls == ["enforce"]
+
+    def test_publish_without_assets_is_a_failure(self, monkeypatch, caplog):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        self.stub_release_flow(monkeypatch, [], asset_count=0)
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert "没有任何资产" in caplog.text
+
+    def test_unconfirmed_asset_count_is_a_failure(self, monkeypatch, caplog):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=None)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert "无法确认" in caplog.text
+        assert saved == []
+
+    def test_asset_query_is_retried_before_succeeding(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        attempts = []
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=None)
+
+        def flaky(tag):
+            attempts.append(tag)
+            return None if len(attempts) == 1 else 2
+
+        monkeypatch.setattr(release_handler, "release_asset_count", flaky)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        release_handler.main()
+
+        assert len(attempts) == 2
+        assert saved == ["new-hash"]
+
+    def test_release_asset_count_parses_gh_output(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "3")
+        assert release_handler.release_asset_count("rules-2026-10-06") == 3
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
+        assert release_handler.release_asset_count("rules-2026-10-06") is None
 

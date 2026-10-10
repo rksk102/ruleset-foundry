@@ -1,5 +1,7 @@
 """进程内驱动 main() 与 convert_mrs.main()：补上编排路径的覆盖（T-1）。"""
 import hashlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -7,12 +9,36 @@ import convert_mrs
 import main
 import pytest
 
+SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+
 SOURCES = """[policy:reject]
 [type:domain]
 [domain-kind:exact]
 https://raw.githubusercontent.com/o/keep/keep.txt
 https://raw.githubusercontent.com/o/drop/drop.txt
 """
+
+
+class TestConfigDirsWiring:
+    def test_product_dirs_and_readme_dirs_follow_config(self, work_dir):
+        (work_dir / "config.yaml").write_text(
+            'paths:\n  merged_output_dir: "out-txt"\n  mrs_output_dir: "out-mrs"\n',
+            encoding="utf-8")
+        child = (
+            "import gen_readme, release_handler\n"
+            "print(release_handler.product_dirs())\n"
+            "print(sorted(release_handler.TARGET_CONFIG))\n"
+            "print(gen_readme.DIR_RULES.endswith('out-txt'),"
+            " gen_readme.DIR_MRS.endswith('out-mrs'))\n"
+        )
+        env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
+        proc = subprocess.run([sys.executable, "-c", child], cwd=str(work_dir),
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, timeout=60)
+        out = (proc.stdout or "").strip()
+        assert "('out-txt', 'out-mrs')" in out, out or proc.stderr
+        assert "['out-mrs', 'out-txt']" in out, out
+        assert "True True" in out, out
 
 PAYLOADS = {
     "keep.txt": b"a.example\nb.example\n",
@@ -161,3 +187,39 @@ class TestDegradedSummary:
         assert "- 存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false" in text
         assert "第一行 第二行\\|尾巴" in text
         assert "第一行\n第二行" not in text
+
+
+EMPTY_PAYLOAD_CHILD = r"""
+import main as M
+async def fake(tasks):
+    return [(t, b'payload: []\n', None) for t in tasks]
+M.download_all = fake
+M.main()
+"""
+
+
+class TestEmptyPayloadDoesNotSilentlyDelete:
+    def test_empty_payload_exits_and_keeps_previous_products(self, work_dir):
+        victim = work_dir / "rulesets" / "block" / "domain" / "old" / "keep.txt"
+        victim.parent.mkdir(parents=True)
+        victim.write_text("+.keep.example\n", encoding="utf-8")
+        (work_dir / "config.yaml").write_text(
+            'network:\n  timeout_seconds: 15\n  max_retries: 2\n  max_source_bytes: 67108864\n'
+            'paths:\n  sources_file: "sources.urls"\n  rulesets_dir: "rulesets"\n'
+            'behavior:\n  min_source_success_ratio: 0.0\n'
+            '  allow_partial: false\n',
+            encoding="utf-8",
+        )
+        (work_dir / "sources.urls").write_text(
+            "[policy:block]\n[type:domain]\n"
+            "https://raw.githubusercontent.com/example/repo/main/ads.txt\n",
+            encoding="utf-8")
+        env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-c", EMPTY_PAYLOAD_CHILD],
+            cwd=str(work_dir), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=env, timeout=120,
+        )
+        assert proc.returncode == 1, proc.stdout
+        assert victim.exists()
+        assert "未解析出任何行" in (proc.stdout or "")

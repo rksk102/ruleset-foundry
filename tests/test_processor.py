@@ -619,3 +619,20 @@ class TestStatsContract:
             [".sub.example", "bare.example"], "exact")
         assert domains_ == [".sub.example", "bare.example"]
         assert stats["subdomain"] == 1
+
+
+class TestRuleLineSemantics:
+    def test_wildcard_star_must_occupy_a_whole_label(self):
+        domains, stats = processor.process_domain_detailed(
+            ["*.example.com", "*.*.example.com", "*.foo*.com",
+             "*.example.com/path", "*.a b.com", "*."], "exact")
+        assert domains == ["*.*.example.com", "*.example.com"]
+        assert stats["wildcard"] == 2
+        assert stats["unrecognized"] == 4
+
+    def test_ip_literals_are_dropped_instead_of_truncated(self):
+        domains, stats = processor.process_domain_detailed(
+            ["2001:db8::1", "1.2.3.4", "2001:db8::/32", "[2001:db8::1]",
+             "example.com:8080", "host.example"], "exact")
+        assert domains == ["example.com", "host.example"]
+        assert stats["unrecognized"] == 4

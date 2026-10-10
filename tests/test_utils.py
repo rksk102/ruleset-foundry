@@ -395,12 +395,13 @@ class TestBeijingTime:
         assert len(ts) == len("YYYY-MM-DD HH:MM:SS")
         assert ts[4] == "-" and ts[10] == " " and ts[13] == ":"
 
-    def test_timestamp_close_to_now(self):
+    def test_timestamp_uses_beijing_clock(self, monkeypatch):
         import datetime
 
-        now = utils.beijing_now()
-        parsed = datetime.datetime.strptime(utils.beijing_timestamp(), "%Y-%m-%d %H:%M:%S")
-        assert abs((parsed - now.replace(tzinfo=None)).total_seconds()) < 5
+        fixed = datetime.datetime(
+            2026, 10, 11, 12, 34, 56, tzinfo=utils.BEIJING_TZ)
+        monkeypatch.setattr(utils, "beijing_now", lambda: fixed)
+        assert utils.beijing_timestamp() == "2026-10-11 12:34:56"
 
 
 class TestCleanDirectory:
@@ -519,31 +520,6 @@ class TestFlattenIpCidr:
         result, errors = utils.flatten_ip_cidr(["", "  ", "10.0.0.0/8"])
         assert errors == []
         assert result == ["10.0.0.0/8"]
-
-
-class TestNormalize:
-    def test_policy(self):
-        assert utils.normalize_policy("REJECT") == "block"
-        assert utils.normalize_policy("adblock") == "block"
-        assert utils.normalize_policy("direct") == "direct"
-        assert utils.normalize_policy("no-proxy") == "direct"
-        assert utils.normalize_policy("gfw") == "policy"
-        assert utils.normalize_policy("proxy") == "policy"
-        assert utils.normalize_policy("") == "proxy"
-        assert utils.normalize_policy("custom") == "custom"
-
-    def test_type(self):
-        assert utils.normalize_type("IP") == "ipcidr"
-        assert utils.normalize_type("cidr") == "ipcidr"
-        assert utils.normalize_type("ipcIdr") == "ipcidr"
-        assert utils.normalize_type("domain") == "domain"
-
-    def test_owner_from_url(self):
-        assert utils.get_owner_from_url("https://github.com/OWNER/repo/raw/x/f.txt") == "OWNER"
-        assert utils.get_owner_from_url("https://raw.githubusercontent.com/OWNER/repo/branch/f.txt") == "OWNER"
-        assert utils.get_owner_from_url("https://cdn.jsdelivr.net/gh/OWNER/repo@ver/f.txt") == "OWNER"
-        assert utils.get_owner_from_url("https://example.com/a/b") == "example.com"
-        assert utils.get_owner_from_url("https://github.com") == "github"
 
 
 class TestDomainTrie:

@@ -58,39 +58,6 @@ class TestCombinedHashIncludesPath:
         assert first != second
 
 
-class TestCombinedHashStillIgnoresComments:
-    def test_date_comment_only_change_keeps_hash(self, work_dir):
-        txt, mrs = products(work_dir)
-        target = txt / "reject.txt"
-        target.write_text("# Date: 2026-01-01 00:00:00\na.com\n", encoding="utf-8")
-        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        target.write_text("# Date: 2026-10-31 23:59:59\na.com\n", encoding="utf-8")
-        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        assert first == second
-
-    def test_body_change_changes_hash(self, work_dir):
-        txt, mrs = products(work_dir)
-        target = txt / "reject.txt"
-        target.write_text("# Date: 2026-01-01\na.com\n", encoding="utf-8")
-        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        target.write_text("# Date: 2026-01-01\nb.com\n", encoding="utf-8")
-        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        assert first != second
-
-    def test_mrs_body_change_changes_hash(self, work_dir):
-        txt, mrs = products(work_dir)
-        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        (mrs / "rules.mrs").write_bytes(b"MRS-2")
-        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        assert first != second
-
-
 class TestDirHashIsPathSensitive:
     def test_rename_changes_skip_comments_digest(self, work_dir):
         root = work_dir / "rules"

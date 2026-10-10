@@ -319,3 +319,32 @@ class TestConflictPolicyIgnore:
         merger.main()
 
         assert len(calls) == 1
+
+
+class TestMergerGuards:
+    def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch):
+        source = work_dir / "rulesets"
+        write(source / "block" / "domain" / "Owner" / "ads.txt", "a.example\n")
+        tasks = [{
+            "strategy": "block", "type": "domain", "owner": "Owner",
+            "filename": "ads.txt", "inputs": ["block/domain/Owner/ads.txt"],
+        }]
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
+        monkeypatch.setattr(merger, "load_config", lambda: {"merges": tasks})
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+
+    def test_zero_rule_merge_result_is_refused(self, work_dir, monkeypatch):
+        source = work_dir / "rulesets"
+        write(source / "block" / "domain" / "Owner" / "ads.txt", "# 只有注释\n")
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
+
+        with pytest.raises(ValueError, match="合并结果为空"):
+            merger.process_task_logic(
+                "block", "domain", "Owner", "out.txt",
+                ["block/domain/Owner/ads.txt"], "测试")
