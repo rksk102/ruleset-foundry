@@ -1,5 +1,22 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import config_loader
 import pytest
+
+SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
+BASE = (
+    "network:\n"
+    "  timeout_seconds: 15\n"
+    "  max_retries: 2\n"
+    "  max_source_bytes: 67108864\n"
+    "paths:\n"
+    "  sources_file: \"sources.urls\"\n"
+    "behavior:\n"
+    "  allow_partial: false\n"
+)
 
 
 def use_config(work_dir, content=None):
@@ -18,43 +35,6 @@ def reset_config():
     config_loader._CONFIG_FILE = pathlib.Path("config.yaml")
 
 
-class TestMergeDict:
-    def test_scalar_override(self):
-        base = {"a": 1}
-        config_loader._merge_dict(base, {"a": 2})
-        assert base == {"a": 2}
-
-    def test_new_key_added(self):
-        base = {"a": 1}
-        config_loader._merge_dict(base, {"b": 2})
-        assert base == {"a": 1, "b": 2}
-
-    def test_nested_merged_not_replaced(self):
-        base = {"net": {"timeout": 15, "retries": 2}}
-        config_loader._merge_dict(base, {"net": {"timeout": 30}})
-        assert base == {"net": {"timeout": 30, "retries": 2}}
-
-    def test_deep_nesting(self):
-        base = {"a": {"b": {"c": 1, "d": 2}}}
-        config_loader._merge_dict(base, {"a": {"b": {"c": 9}}})
-        assert base == {"a": {"b": {"c": 9, "d": 2}}}
-
-    def test_dict_replaced_by_scalar(self):
-        base = {"a": {"b": 1}}
-        config_loader._merge_dict(base, {"a": 5})
-        assert base == {"a": 5}
-
-    def test_scalar_replaced_by_dict(self):
-        base = {"a": 1}
-        config_loader._merge_dict(base, {"a": {"b": 2}})
-        assert base == {"a": {"b": 2}}
-
-    def test_empty_override_keeps_base(self):
-        base = {"a": 1}
-        config_loader._merge_dict(base, {})
-        assert base == {"a": 1}
-
-
 class TestLoadConfig:
     def test_missing_file_uses_defaults(self, work_dir):
         use_config(work_dir)
@@ -68,6 +48,8 @@ class TestLoadConfig:
             assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
             assert cfg["behavior"]["conflict_policy"] == "warn"
             assert cfg["behavior"]["unrecognized_warn_ratio"] == 0.10
+            assert cfg["mihomo"]["kernel_sha256"] == ""
+            assert cfg["mihomo"]["kernel_sha256_arm64"] == ""
             assert cfg["merges"] == []
         finally:
             reset_config()
@@ -153,6 +135,14 @@ class TestGet:
         finally:
             reset_config()
 
+    def test_release_keep_days_over_list_capacity_is_rejected(self, work_dir):
+        use_config(work_dir, "behavior:\n  release_keep_days: 26\n")
+        try:
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
     def test_zero_unrecognized_ratio_is_not_treated_as_missing(self, work_dir):
         use_config(work_dir, "behavior:\n  unrecognized_warn_ratio: 0\n")
         try:
@@ -166,3 +156,89 @@ class TestGet:
             assert config_loader.get("behavior", "allow_partial", default=True) is False
         finally:
             reset_config()
+
+
+class TestWindowsPathValues:
+    @pytest.mark.parametrize("value", ["foo:bar", "NUL", "NUL.txt", "CON", "COM1.txt"])
+    def test_windows_unsafe_path_values_are_rejected(self, work_dir, value):
+        use_config(work_dir, f"paths:\n  rulesets_dir: \"{value}\"\n")
+        try:
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+
+class TestValidationMatrix:
+    @pytest.mark.parametrize("body", [
+        BASE.replace("max_source_bytes: 67108864", 'max_source_bytes: "67108864"'),
+        BASE.replace("allow_partial: false", 'allow_partial: "false"'),
+        BASE.replace("timeout_seconds: 15", "timeout_seconds: -1"),
+        BASE.replace("max_source_bytes: 67108864", "max_source_bytes: 0"),
+        BASE + 'merges: "oops"\n',
+        BASE + "merges:\n  - strategy: block\n    filename: a.txt\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: a.txt\n    inputs: []\n",
+        BASE + '  conflict_policy: "explode"\n',
+        "merges\n  - strategy: block\n",
+        BASE.replace('sources_file: "sources.urls"', 'sources_file: "sources.urls"\n  rulesets_dir: ""'),
+        BASE.replace('sources_file: "sources.urls"', 'sources_file: "  "'),
+        BASE + '  unrecognized_warn_ratio: 5\n',
+        BASE + '  min_source_success_ratio: -1\n',
+        BASE + '  unrecognized_warn_ratio: 1' + '0' * 400 + '\n',
+        BASE + "behaviour:\n  release_keep_days: 3\n",
+        BASE + "  allow_particals: true\n",
+        BASE + "foo: {}\n",
+        BASE + "merges:\n  - strategy: '../../outside'\n    type: domain\n"
+               "    owner: o\n    filename: a.txt\n    inputs: ['x.txt']\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: '../PWNED.txt'\n    inputs: ['x.txt']\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: a.txt\n    inputs: ['/etc/hosts']\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: a.txt\n    inputs: [123]\n",
+    ])
+    def test_invalid_config_is_rejected(self, work_dir, body):
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    @pytest.mark.parametrize("body", [
+        BASE,
+        BASE + "merges: []\n",
+        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+               "    filename: a.txt\n    inputs: ['x.txt']\n",
+    ])
+    def test_supported_config_variants_load(self, work_dir, body):
+        use_config(work_dir, body)
+        try:
+            config_loader.load_config()
+        finally:
+            reset_config()
+
+
+class TestPyYamlMissing:
+    def test_missing_pyyaml_is_hard_error(self, work_dir, monkeypatch):
+        (work_dir / "config.yaml").write_text(BASE, encoding="utf-8")
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        child = (
+            "import config_loader as C\n"
+            "C._HAS_YAML = False\n"
+            "try:\n"
+            "    C.load_config()\n"
+            "    print('NO_ERROR')\n"
+            "except C.ConfigError as e:\n"
+            "    print('CONFIG_ERROR', str(e)[:80])\n"
+        )
+        env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-c", child],
+            cwd=str(work_dir), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60, env=env,
+        )
+        assert proc.stdout.strip().startswith("CONFIG_ERROR")
