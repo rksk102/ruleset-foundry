@@ -72,7 +72,7 @@ def auth_headers(url):
     return {"Authorization": f"Bearer {token}"}
 
 
-def parse_retry_after(value, default):
+def parse_retry_after(value, default, max_seconds=MAX_RETRY_AFTER):
     if not value:
         return default
     text = value.strip()
@@ -88,7 +88,9 @@ def parse_retry_after(value, default):
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
         seconds = int((when - datetime.now(UTC)).total_seconds())
-    return max(0, min(seconds, MAX_RETRY_AFTER))
+    if max_seconds is not None:
+        seconds = min(seconds, max_seconds)
+    return max(0, seconds)
 
 
 def source_repo_slug(url):
@@ -437,11 +439,15 @@ async def read_capped(stream):
     return b"".join(chunks)
 
 
-def _retry_delay(resp, attempt):
+def _retry_delay(resp, attempt, backoff_budget):
     header = resp.headers.get("Retry-After") if resp.headers else None
     if header:
-        return parse_retry_after(header, 1 * (attempt + 1))
-    return 1 * (attempt + 1)
+        requested = parse_retry_after(header, None, max_seconds=None)
+        if requested is not None:
+            if requested > MAX_RETRY_AFTER or requested > backoff_budget:
+                return requested, True
+            return requested, False
+    return 1 * (attempt + 1), False
 
 
 async def download_one(session, task):
@@ -475,7 +481,13 @@ async def download_one(session, task):
                 if attempt == RETRIES:
                     return (task, None, f"HTTP {resp.status}")
 
-                delay = _retry_delay(resp, attempt)
+                delay, exceeds_budget = _retry_delay(resp, attempt, backoff_budget)
+                if exceeds_budget:
+                    warning(
+                        f"  Retry-After {delay}s 超过退避上限/预算"
+                        f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {url}"
+                    )
+                    return (task, None, f"HTTP {resp.status}（Retry-After {delay}s 超过退避预算）")
                 warning(f"  下载失败，{delay}s 后重试 [{attempt+1}/{RETRIES+1}]: "
                         f"{url} -> HTTP {resp.status}")
 

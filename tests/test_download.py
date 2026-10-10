@@ -118,9 +118,13 @@ class TestRetryPolicy:
         _s, _r, slept = self.retry_with(429, {"Retry-After": "30"})
         assert slept == [30, 30]
 
-    def test_retry_after_is_capped(self):
-        _s, _r, slept = self.retry_with(429, {"Retry-After": "3600"})
-        assert slept == [main.MAX_RETRY_AFTER, main.MAX_RETRY_AFTER]
+    def test_retry_after_over_budget_is_not_retried(self):
+        session, (_task, content, err), slept = self.retry_with(
+            429, {"Retry-After": "3600"})
+        assert len(session.calls) == 1
+        assert slept == []
+        assert content is None
+        assert "Retry-After" in (err or "")
 
     def test_retry_after_zero_means_no_wait(self):
         _s, _r, slept = self.retry_with(503, {"Retry-After": "0"})
@@ -156,8 +160,8 @@ class TestBackoffBudget:
             asyncio.sleep = original_sleep
             main.RETRIES = original_retries
         assert content is None
-        assert "退避预算" in (err or "")
-        assert sum(slept) <= main.MAX_RETRY_AFTER * 2
+        assert "Retry-After" in (err or "")
+        assert slept == []
 
 
 class TestSourceDisambiguation:
