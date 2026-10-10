@@ -1,4 +1,3 @@
-import inspect
 import os
 import subprocess
 import sys
@@ -17,6 +16,13 @@ def asset(name, digest="sha256:" + "0" * 64):
         "browser_download_url": f"https://example.com/{name}",
         "digest": digest,
     }
+
+
+def elf_binary(machine):
+    data = bytearray(20)
+    data[:4] = b"\x7fELF"
+    data[18:20] = machine.to_bytes(2, "little")
+    return bytes(data)
 
 
 class TestWriteSummary:
@@ -49,6 +55,65 @@ class TestReleaseApiUrl:
         root = "https://api.github.com/repos/X/Y/releases"
         assert convert_mrs.release_api_url("v1.0", root) == f"{root}/tags/v1.0"
         assert convert_mrs.release_api_url("", root) == f"{root}/latest"
+
+
+class TestKernelArchitecture:
+    @pytest.mark.parametrize(
+        "machine, expected",
+        [("x86_64", "amd64"), ("AMD64", "amd64"), ("aarch64", "arm64"), ("ARM64", "arm64")],
+    )
+    def test_machine_names_are_normalized(self, machine, expected):
+        assert convert_mrs.normalize_kernel_arch(machine) == expected
+
+    def test_unsupported_machine_is_rejected(self):
+        assert convert_mrs.normalize_kernel_arch("riscv64") is None
+
+    def test_asset_name_encodes_architecture(self):
+        assert convert_mrs.expected_kernel_asset_name("v1.19.32", "amd64") == \
+            "mihomo-linux-amd64-v1.19.32.gz"
+        assert convert_mrs.expected_kernel_asset_name("v1.19.32", "arm64") == \
+            "mihomo-linux-arm64-v1.19.32.gz"
+
+    def test_arm64_asset_is_selected(self):
+        assets = [
+            asset("mihomo-linux-amd64-v1.19.32.gz"),
+            asset("mihomo-linux-arm64-v1.19.32.gz"),
+        ]
+        got = convert_mrs.select_kernel_asset(assets, "v1.19.32", "arm64")
+        assert got["name"] == "mihomo-linux-arm64-v1.19.32.gz"
+
+    def test_linux_arm64_is_supported(self, monkeypatch):
+        monkeypatch.setattr(convert_mrs.sys, "platform", "linux")
+        monkeypatch.setattr(convert_mrs.platform, "machine", lambda: "aarch64")
+        convert_mrs.ensure_kernel_platform()
+
+    def test_unsupported_linux_architecture_fails_before_download(self, monkeypatch):
+        monkeypatch.setattr(convert_mrs.sys, "platform", "linux")
+        monkeypatch.setattr(convert_mrs.platform, "machine", lambda: "riscv64")
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.ensure_kernel_platform()
+        assert exc.value.code == 1
+
+    def test_kernel_hash_key_keeps_amd64_compatibility(self):
+        assert convert_mrs.kernel_sha_key("amd64") == "kernel_sha256"
+        assert convert_mrs.kernel_sha_key("arm64") == "kernel_sha256_arm64"
+
+    def test_verify_current_kernel_runs_version_and_smoke_checks(
+            self, monkeypatch, work_dir):
+        calls = []
+        monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo", lambda: calls.append("load"))
+        monkeypatch.setattr(
+            convert_mrs, "_verify_kernel", lambda *a, **k: calls.append("version") or "Mihomo")
+        monkeypatch.setattr(
+            convert_mrs, "_smoke_convert", lambda *a, **k: calls.append("smoke"))
+        monkeypatch.setattr(
+            convert_mrs.sys, "argv", ["convert_mrs.py", "--verify-current-kernel"])
+
+        convert_mrs.main()
+
+        assert calls == ["load", "version", "smoke"]
 
 
 class TestSelectKernelAsset:
@@ -233,12 +298,35 @@ class TestVerifyKernelRequireSha:
         raise AssertionError("哈希不匹配应报错")
 
 
+class TestVerifyKernelArchitecture:
+    def test_expected_arch_mismatch_rejected(self, work_dir):
+        target = work_dir / "kernel"
+        target.write_bytes(elf_binary(0xB7))
+        with pytest.raises(ValueError, match="架构"):
+            convert_mrs.verify_kernel_file(
+                str(target), "", expected_arch="amd64", require_sha=False)
+
+    def test_expected_arch_match_accepted(self, work_dir):
+        target = work_dir / "kernel"
+        target.write_bytes(elf_binary(0xB7))
+        actual = convert_mrs.verify_kernel_file(
+            str(target), "", expected_arch="arm64", require_sha=False)
+        assert len(actual) == 64
+
+
 class TestSetConfigField:
     def test_replaces_single_occurrence(self):
         text = 'mihomo:\n  pinned_version: "v1.19.30"\n'
         out = convert_mrs._set_config_field(text, "pinned_version", "v1.19.32")
         assert '"v1.19.32"' in out
         assert "v1.19.30" not in out
+
+    def test_accepts_unquoted_values(self):
+        text = 'mihomo:\n  pinned_version: v1.0\n  kernel_sha256: \'aa\'\n'
+        assert 'pinned_version: "v2.0"' in convert_mrs._set_config_field(
+            text, "pinned_version", "v2.0")
+        assert 'kernel_sha256: "bb"' in convert_mrs._set_config_field(
+            text, "kernel_sha256", "bb")
 
     def test_missing_key_exits(self):
         try:
@@ -326,6 +414,7 @@ class TestBumpConfigExactAsset:
         'mihomo:\n'
         '  pinned_version: "v1.0.0"\n'
         '  kernel_sha256: "' + "a" * 64 + '"\n'
+        '  kernel_sha256_arm64: "' + "b" * 64 + '"\n'
     )
 
     def _bump(self, monkeypatch, work_dir, tag, assets):
@@ -353,34 +442,59 @@ class TestBumpConfigExactAsset:
     def test_selection_receives_the_target_tag(self, monkeypatch, work_dir):
         seen = {}
 
-        def fake_select(assets, tag_name):
-            seen["tag_name"] = tag_name
+        def fake_select(assets, tag_name, arch="amd64"):
+            seen.setdefault("calls", []).append((tag_name, arch))
             return None
 
         monkeypatch.setattr(convert_mrs, "select_kernel_asset", fake_select)
         with pytest.raises(SystemExit):
             self._bump(monkeypatch, work_dir, "v9.9.9", [asset("mihomo-linux-amd64-v9.9.9.gz")])
-        assert seen == {"tag_name": "v9.9.9"}
+        assert seen == {"calls": [("v9.9.9", "amd64")]}
 
     def test_exact_name_selects_that_asset(self):
         assets = [asset("mihomo-linux-amd64-v9.9.8.gz"), asset("mihomo-linux-amd64-v9.9.9.gz")]
         got = convert_mrs.select_kernel_asset(assets, "v9.9.9")
         assert got["name"] == "mihomo-linux-amd64-v9.9.9.gz"
 
+    def test_dual_bump_requires_arm64_asset(self, monkeypatch, work_dir):
+        assets = [asset("mihomo-linux-amd64-v9.9.9.gz")]
+        with pytest.raises(SystemExit):
+            self._bump(monkeypatch, work_dir, "v9.9.9", assets)
+
 
 class TestNoTokenInjection:
-    def test_source_carries_no_token_injection(self):
-        src = Path(convert_mrs.__file__).read_text(encoding="utf-8")
-        assert "GH_TOKEN" not in src
-        assert "Authorization" not in src
-        assert "Bearer" not in src
+    def capture_requests(self, monkeypatch):
+        requests = []
 
-    def test_request_helpers_take_no_headers(self):
-        for fn in (convert_mrs._fetch_latest_release_info, convert_mrs._download_kernel):
-            names = list(inspect.signature(fn).parameters)
-            assert not any(
-                k in n for n in names for k in ("header", "auth", "token")
-            ), f"{fn.__name__} 不应再接受鉴权参数: {names}"
+        def stop_after_capture(request, timeout=None):
+            requests.append(request)
+            raise RuntimeError("capture-only")
+
+        monkeypatch.setattr(convert_mrs.urllib.request, "urlopen", stop_after_capture)
+        monkeypatch.setattr(convert_mrs.time, "sleep", lambda _seconds: None)
+        return requests
+
+    def assert_unauthenticated(self, requests):
+        assert requests
+        for request in requests:
+            headers = {key.lower() for key, _value in request.header_items()}
+            assert "authorization" not in headers
+            assert "proxy-authorization" not in headers
+
+    def test_release_request_has_no_auth_headers(self, monkeypatch):
+        requests = self.capture_requests(monkeypatch)
+        with pytest.raises(RuntimeError, match="capture-only"):
+            convert_mrs._fetch_latest_release_info(max_retries=1)
+        self.assert_unauthenticated(requests)
+
+    def test_download_request_has_no_auth_headers(self, monkeypatch):
+        requests = self.capture_requests(monkeypatch)
+        with pytest.raises(RuntimeError, match="capture-only"):
+            convert_mrs._download_kernel(
+                "https://example.com/kernel.gz",
+                expected_digest="sha256:" + "0" * 64,
+                max_retries=1)
+        self.assert_unauthenticated(requests)
 
 
 class TestConfigGuard:
@@ -499,7 +613,7 @@ class TestGetLatestMihomo:
         return {"tag_name": tag, "assets": [asset("mihomo-linux-amd64-v1.2.3.gz")]}
 
     def downloaded(self, monkeypatch, bin_path):
-        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, tag_name: {
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, tag_name, arch="amd64": {
             "name": "mihomo-linux-amd64-v1.2.3.gz",
             "url": "https://example.com/kernel.gz",
             "digest": "sha256:" + "b" * 64,
@@ -530,7 +644,7 @@ class TestGetLatestMihomo:
         self.downloaded(monkeypatch, bin_path)
         verifications = []
 
-        def fake_verify(path, expected_sha, require_sha=False):
+        def fake_verify(path, expected_sha, require_sha=False, **_kwargs):
             verifications.append(require_sha)
             if len(verifications) == 1:
                 raise ValueError("缓存损坏")
@@ -686,7 +800,8 @@ class TestBumpConfigSuccess:
         cfg = work_dir / "config.yaml"
         cfg.write_text(
             'pinned_version: "v1.0.0"\n'
-            'kernel_sha256: "old"\n',
+            'kernel_sha256: "old"\n'
+            'kernel_sha256_arm64: "old-arm"\n',
             encoding="utf-8",
         )
         gh_output = work_dir / "gh_output.txt"
@@ -696,23 +811,33 @@ class TestBumpConfigSuccess:
         monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(work_dir / "cache" / "mihomo"))
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info",
                             lambda *a, **k: {"tag_name": "v9.9.9", "assets": []})
-        monkeypatch.setattr(convert_mrs, "select_kernel_asset", lambda assets, tag_name: {
-            "name": "mihomo-linux-amd64-v9.9.9.gz",
-            "url": "https://example.com/kernel.gz",
-            "digest": "sha256:" + "c" * 64,
-        })
+        def fake_select(_assets, _tag_name, arch="amd64"):
+            return {
+                "name": f"mihomo-linux-{arch}-v9.9.9.gz",
+                "url": f"https://example.com/{arch}-kernel.gz",
+                "digest": "sha256:" + "c" * 64,
+            }
+
+        monkeypatch.setattr(convert_mrs, "select_kernel_asset", fake_select)
         downloads = []
         monkeypatch.setattr(
             convert_mrs, "_download_kernel",
-            lambda url, expected_digest=None: downloads.append((url, expected_digest)))
+            lambda url, expected_digest=None, output_path=None: downloads.append(
+                (url, expected_digest, str(output_path))))
         verifications = []
         monkeypatch.setattr(
             convert_mrs, "verify_kernel_file",
-            lambda path, expected_sha, *a, **k: verifications.append(
-                (str(path), expected_sha)) or "d" * 64)
-        monkeypatch.setattr(convert_mrs, "file_sha256", lambda path: "e" * 64)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v9.9.9")
-        monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda: None)
+            lambda path, expected_sha, *a, expected_arch=None, **k: verifications.append(
+                (str(path), expected_arch)) or "d" * 64)
+        hashes = {
+            str(work_dir / "cache" / "mihomo-amd64"): "e" * 64,
+            str(work_dir / "cache" / "mihomo-arm64"): "f" * 64,
+        }
+        monkeypatch.setattr(convert_mrs, "file_sha256", lambda path: hashes[str(path)])
+        monkeypatch.setattr(
+            convert_mrs, "_verify_kernel", lambda *a, **k: "Mihomo Meta v9.9.9")
+        monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda *a, **k: None)
+        monkeypatch.setattr(convert_mrs, "current_kernel_arch", lambda: "amd64")
         for name in ("info", "warning", "error", "group_start", "group_end"):
             monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
 
@@ -721,6 +846,15 @@ class TestBumpConfigSuccess:
         text = cfg.read_text(encoding="utf-8")
         assert 'pinned_version: "v9.9.9"' in text
         assert f'kernel_sha256: "{"e" * 64}"' in text
+        assert f'kernel_sha256_arm64: "{"f" * 64}"' in text
         assert gh_output.read_text(encoding="utf-8") == "changed=true\ntag=v9.9.9\n"
-        assert downloads == [("https://example.com/kernel.gz", "sha256:" + "c" * 64)]
-        assert verifications == [(str(work_dir / "cache" / "mihomo"), "")]
+        assert downloads == [
+            ("https://example.com/amd64-kernel.gz", "sha256:" + "c" * 64,
+             str(work_dir / "cache" / "mihomo-amd64")),
+            ("https://example.com/arm64-kernel.gz", "sha256:" + "c" * 64,
+             str(work_dir / "cache" / "mihomo-arm64")),
+        ]
+        assert verifications == [
+            (str(work_dir / "cache" / "mihomo-amd64"), "amd64"),
+            (str(work_dir / "cache" / "mihomo-arm64"), "arm64"),
+        ]
