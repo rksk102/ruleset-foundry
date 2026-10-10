@@ -1,61 +1,40 @@
 # 安全策略
 
-## 项目做什么、执行什么
+## 范围
 
-`mihomo-rule-library` 是一条 CI 流水线：从公开上游拉取规则列表，清洗合并后发布为
-`.txt` / `.mrs` 规则集（`artifacts` 分支与 GitHub Releases）。
+本项目维护一条 CI 流水线：从公开上游下载规则，清洗合并后发布 `.txt` / `.mrs`。
 
-需要明确的两条执行/信任事实：
+在范围内：
 
-1. **流水线会下载并执行 mihomo 内核二进制。** `scripts/convert_mrs.py` 从
-   `MetaCubeX/mihomo` 的 Release 下载 `config.yaml` 中 `mihomo.asset_name` 指定的资产，
-   校验解压后二进制的 SHA-256 是否等于 `mihomo.kernel_sha256`（缺失该字段时**拒绝**降级使用），
-   随后 `chmod +x` 并在 GitHub Actions 的 `ubuntu-latest` runner 上执行，用于把 `.txt` 编译成 `.mrs`。
-   该二进制**在运行脚本的机器上执行**：CI 里是临时 runner，本地手动运行
-   `scripts/convert_mrs.py`（含 `--print-kernel-hash`、`--bump-config`）时则是你自己的机器。
-   校验最多四重（GitHub 资产摘要、解压后 SHA-256、ELF magic、`-v` 可运行性）：上游资产**未提供
-   `digest`** 时拒绝下载该资产并回落到已校验的缓存内核（`--bump-config` 直接失败），此时实际生效
-   的是后三重；这些命令需要执行 Linux 版内核，请在 Linux/WSL 上运行或交给 CI。
-    本地运行前请自行确认你信任该版本。该 pin 由 `kernel-bump.yml` 每周一自动跟随上游最新正式版并
-    直接提交到 main（无 PR 评审，该 push 不触发 CI）；如不接受这一信任模型，请禁用该 workflow
-    的 commit job。
-2. **上游规则列表是不可信数据。** 它们只被当作文本解析为域名/IP 规则，不参与脚本拼接、
-   不作为代码执行；但它们的内容会**原样进入发布产物**。若某个上游列表被投毒，
-   产物中的规则也会被污染（这属于上游仓库的问题，见下）。
+- `scripts/`、`.github/`、`sources.urls`、`config.yaml`
+- 产物生成逻辑、路径约束、清单一致性和发布前校验
 
-## 信任边界
+不在范围内：
 
-| 组件 | 是否在本项目范围内 | 说明 |
-| :--- | :--- | :--- |
-| `scripts/`、`.github/`、`sources.urls`、`config.yaml` | ✅ 在范围内 | 本仓库维护，欢迎报告问题 |
-| 发布产物（`.txt` / `.mrs`）的**生成逻辑**与清单完整性 | ✅ 在范围内 | 缺失、串源、语义错误、哈希不一致等 |
-| `MetaCubeX/mihomo` 内核本身 | ❌ 上游 | 请报告给 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo/security) |
-| 上游规则列表内容（MetaCubeX / Loyalsoldier / DustinWin 等） | ❌ 上游 | 请报告给对应仓库 |
-| GitHub Actions 市场中的第三方 action | ❌ 上游 | 本仓库已把全部 action 钉扎到 commit SHA |
-| 使用产物的代理客户端（mihomo / Clash 系 GUI 等） | ❌ 不在范围内 | 请报告给对应客户端项目 |
+- `MetaCubeX/mihomo` 内核本身
+- 上游规则列表的内容准确性或是否被投毒
+- 代理客户端行为
+- 使用产物造成的直接或间接后果
+
+## 信任模型
+
+- 流水线会下载并执行 mihomo 内核，仅用于把 `.txt` 编译成 `.mrs`。内核按架构选择
+  amd64 或 arm64，校验 GitHub asset digest、解压后 SHA-256、ELF 架构和可运行性。
+- `kernel-bump.yml` 会自动把新版本及两个架构哈希提交到 `main`，没有 PR 评审。
+  如果不接受该模型，请禁用该 workflow 的 commit job。
+- 上游规则是不可信文本，不会被当作代码执行，但内容会原样进入发布产物。
+- 第三方 GitHub Actions 均按 commit SHA 固定。
 
 ## 报告漏洞
 
-- **首选**：通过本仓库 **Security → Report a vulnerability** 提交私密报告
-  （GitHub Private Vulnerability Reporting）。
-- 若该入口不可用，请先开一个**不含利用细节**的 Issue，说明需要私下沟通渠道。
-- 请尽量包含：受影响的 commit 或 Release 版本、复现步骤、影响面
-  （例如产物被污染、CI 权限提升、供应链投毒、密钥泄漏）。
-- 我们会在确认后尽快回复（通常 7 天内），并在修复发布后再公开细节。
+请优先通过 GitHub Security 的 **Report a vulnerability** 私密入口提交。
+如果该入口不可用，请创建不含利用细节的 Issue 请求私下沟通。
 
-## 不在范围内（示例）
+报告请包含受影响的 commit 或 Release、复现步骤和影响面。我们确认后会协调修复与披露。
 
-- 上游规则列表本身的误报/漏报（例如某域名被错误拦截）——请向上游仓库反馈。
-- mihomo 内核的漏洞与崩溃。
-- 单纯"规则集可以被 MITM 替换"这类不针对本仓库托管渠道的通用网络风险。
-- 使用本仓库产物所产生的任何直接或间接后果（见 README 的许可与免责声明）。
+## 不在范围内
 
-## 维护者自查
-
-- 内核哈希：`python scripts/convert_mrs.py --print-kernel-hash` 打印解压后二进制的 SHA-256，
-  与上游 Release 资产核对后写入 `config.yaml`。
-- 产物完整性：`rulesets` / `merged-rules` / `merged-rules-mrs` 三个制品任一缺失或哈希不匹配都会
-  让发布作业失败；更新 `artifacts` 分支之前还会先跑一次产物一致性预检（清单基线 + txt↔mrs
-  逐一配对），不存在"先发布后校验"。
-- 依赖与工作流：Dependabot 维护 `pip` 与 `github-actions` 依赖，CI 对 workflow 文件做静态检查；
-  所有 action 以完整 commit SHA 钉扎。
+- 上游规则的误报、漏报或内容变更
+- mihomo 内核漏洞与崩溃
+- 通用网络攻击、第三方镜像或代理服务问题
+- 由使用本仓库产物产生的后果
