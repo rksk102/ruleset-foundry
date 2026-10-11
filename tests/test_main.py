@@ -172,6 +172,11 @@ class TestParseRetryAfter:
     def test_capped_at_max(self):
         assert main.parse_retry_after(str(main.MAX_RETRY_AFTER + 1000), 5) == main.MAX_RETRY_AFTER
 
+    def test_uncapped_parse_keeps_server_request(self):
+        assert main.parse_retry_after(
+            str(main.MAX_RETRY_AFTER + 1000), 5, max_seconds=None
+        ) == main.MAX_RETRY_AFTER + 1000
+
     def test_negative_rejected_as_non_decimal(self):
         assert main.parse_retry_after("-5", 5) == 5
         assert main.parse_retry_after("  -5  ", 5) == 5

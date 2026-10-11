@@ -44,6 +44,7 @@ _TYPES = {
     ("mihomo", "repo_api"): str,
     ("mihomo", "pinned_version"): str,
     ("mihomo", "kernel_sha256"): str,
+    ("mihomo", "kernel_sha256_arm64"): str,
 }
 
 _POSITIVE_INTS = {
@@ -112,6 +113,7 @@ def _defaults():
             "repo_api": "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest",
             "pinned_version": "",
             "kernel_sha256": "",
+            "kernel_sha256_arm64": "",
         },
     }
 
@@ -125,6 +127,11 @@ def _merge_dict(base, override):
 
 
 _PATH_FORBIDDEN_NAMES = {"", ".", "..", "./", "../", "/", "\\"}
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 def _validate_path_value(label, value):
@@ -143,6 +150,12 @@ def _validate_path_value(label, value):
             f"{label} 必须是指向仓库内的子目录/文件，不能是 {value!r}"
             "（'.'、'..'、绝对路径与盘符会让他处的清理逻辑波及仓库或系统）"
         )
+    if ":" in normalized:
+        raise ConfigError(f"{label} 不能包含 ':'（Windows ADS/设备路径）")
+    for part in normalized.split("/"):
+        stem = part.rstrip(" .").split(".", 1)[0].upper()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            raise ConfigError(f"{label} 不能使用 Windows 保留设备名: {value!r}")
     return value
 
 
@@ -165,6 +178,11 @@ def _validate_scalar(section, key, value):
         _validate_path_value(f"{section}.{key}", value)
     if (section, key) in _POSITIVE_INTS and value <= 0:
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
+    if (section, key) == ("behavior", "release_keep_days") and value > 25:
+        raise ConfigError(
+            f"{section}.{key} 不能超过 25，实际 {value!r}"
+            "（发布清理每次最多读取 50 条 release）"
+        )
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
         raise ConfigError(f"{section}.{key} 必须在 0..1 之间，实际 {value!r}")
     if (section, key) == ("behavior", "conflict_policy") and value not in CONFLICT_POLICIES:

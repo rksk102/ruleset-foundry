@@ -5,6 +5,7 @@ import manifest
 import merger
 import pytest
 import release_handler
+from support import GhStub
 
 
 def write(path, text):
@@ -62,20 +63,20 @@ class TestFinalizeProducts:
         assert "产物清单与磁盘不一致" in capsys.readouterr().out
 
 
-class GhStub:
-    def __init__(self):
-        self.calls = []
+class TestCleanOrphans:
+    def test_directory_named_txt_does_not_crash_cleanup(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        product = root / "block" / "domain" / "Owner" / "a.txt"
+        product.parent.mkdir(parents=True)
+        product.write_text("a.example\n", encoding="utf-8")
+        (root / "foo.txt").mkdir()
+        (root / "foo.txt" / "inner.txt").write_text("x.example\n", encoding="utf-8")
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
 
-    def __call__(self, cmd):
-        self.calls.append(list(cmd))
-        if cmd[:2] == ["release", "list"]:
-            return "[]"
-        if cmd[:2] == ["release", "view"]:
-            return "2" if "assets" in cmd else None
-        return "ok"
+        main.clean_orphans([product])
 
-    def actions(self):
-        return [tuple(call[:2]) for call in self.calls]
+        assert product.exists()
+        assert not (root / "foo.txt").exists()
 
 
 class ReleaseRun:
@@ -83,7 +84,7 @@ class ReleaseRun:
 
     def __init__(self, root):
         self.root = root
-        self.stub = GhStub()
+        self.stub = GhStub(release_exists=False)
 
     def __enter__(self):
         self._cwd = os.getcwd()

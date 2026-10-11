@@ -52,3 +52,4 @@ mihomo:
   repo_api: "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
   pinned_version: "v1.19.32"
   kernel_sha256: "3122d100e8177501776109f1a6253a694611627cf4d7c7ec82705855cf8626a8"
+  kernel_sha256_arm64: "c80df2ca5159567804da883401e0118908fc1155e05df2baf3dbd4d3ecfc3754"

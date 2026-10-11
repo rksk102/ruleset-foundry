@@ -105,7 +105,7 @@ class TestWriteTableRows:
         assert row.startswith("| ") and row.endswith(" |")
         assert "\n" not in row
 
-    def test_links_point_at_artifacts_branch_for_all_three_cdn(self, tmp_path):
+    def test_links_point_at_artifacts_branch_for_raw_and_jsdelivr(self, tmp_path):
         root = tmp_path / "merged-rules"
         target = root / "block" / "domain" / "Owner" / "a.txt"
         write(target, "x" * 10)
@@ -115,8 +115,7 @@ class TestWriteTableRows:
         full = "merged-rules/block/domain/Owner/a.txt"
         assert f"{gen_readme.BASE_RAW}/{full}" in row
         assert f"{gen_readme.BASE_JSDELIVR}/{full}" in row
-        assert f"{gen_readme.BASE_GHPROXY}/{full}" in row
-        assert gen_readme.BASE_GHPROXY.endswith(gen_readme.BASE_RAW)
+        assert "ghproxy" not in row.lower()
         assert "/artifacts" in gen_readme.BASE_RAW
         assert "@artifacts" in gen_readme.BASE_JSDELIVR
         assert not re.search(r"/(main|master)/", row)
@@ -146,7 +145,7 @@ class TestMakeSection:
         assert "### 标题" in out and "*说明*" in out
         assert "1 个文件" in out
         assert "<details open>" in out and "</details>" in out
-        assert "| 文件名称 | 大小 | CDN 下载 | 源文件 |" in out
+        assert "| 文件名称 | 大小 | 下载 | 源文件 |" in out
 
     def test_empty_dir_still_renders(self, tmp_path):
         buf = io.StringIO()
@@ -223,22 +222,23 @@ class TestResolveBadgeTime:
 
 
 class TestStaticSections:
-    def test_documents_all_four_syntax_forms(self):
+    def test_keeps_core_usage_and_semantics(self):
         text = gen_readme.make_static_sections()
         for token in ("`+.example.com`", "`.example.com`", "`*.example.com`",
                       "`*.*.example.com`"):
             assert token in text, f"语义表缺少 {token}"
-        assert "仅子域" in text or "不含 apex" in text
+        assert "使用方式" in text
+        assert "format: text" in text and "format: mrs" in text
+        assert "config.yaml" in text and "sources.urls" in text
+        assert "SECURITY.md" in text
 
-    def test_documents_artifacts_branch(self):
-        text = gen_readme.make_static_sections()
-        assert "artifacts" in text
-        assert "不进入 git 历史" in text
-
-    def test_keeps_priority_and_release_semantics(self):
+    def test_keeps_priority(self):
         text = gen_readme.make_static_sections()
         assert "block > direct > policy" in text
-        assert "conflict_policy" in text
+
+    def test_never_mentions_ghproxy(self):
+        text = gen_readme.make_static_sections()
+        assert "ghproxy" not in text.lower()
 
 
 class TestMakePageHeader:
@@ -253,13 +253,6 @@ class TestMakePageHeader:
     def test_now_badge_when_no_time(self):
         html = gen_readme.make_page_header(None)
         assert gen_readme.BADGE_TIME_RE.search(html)
-
-    def test_all_links_point_at_artifacts_branch(self):
-        html = gen_readme.make_page_header("2026--01--02%2003%3A04")
-        assert gen_readme.ARTIFACTS_BRANCH == "artifacts"
-        assert not re.search(r"/(main|master)(/|\?|\"|$)", html)
-        assert f"github.com/{gen_readme.REPO_NAME}" in html
-
 
 class TestMain:
     def run_main(self, tmp_path):
@@ -281,6 +274,7 @@ class TestMain:
         assert "### 基础规则集合" in out
         assert "### Mihomo 专用集合" in out
         assert "a.txt" in out and "a.mrs" in out
+        assert "ghproxy" not in out.lower()
 
     def test_readme_links_use_artifacts_branch(self, tmp_path):
         out = self.run_main(tmp_path)
@@ -307,17 +301,3 @@ class TestMain:
         assert "README 生成报告" in text
         assert "标准规则" in text and "MRS 规则" in text
         assert "**总计**" in text
-
-
-class TestOutputSemantics:
-    def test_bare_and_prefixed_forms_stay_distinct_in_readme_table(self, tmp_path):
-        rules = tmp_path / "merged-rules"
-        write(rules / "block" / "A" / "x.txt",
-              "+.a.com\n.a.com\na.com\n*.a.com\n")
-        files = gen_readme.scan_files(str(rules))
-        buf = io.StringIO()
-        gen_readme.write_table_rows(buf, files, str(rules))
-        assert "x.txt" in buf.getvalue()
-        static = gen_readme.make_static_sections()
-        assert re.search(r"`\+\.example\.com`", static)
-        assert re.search(r"`\.example\.com`", static)
