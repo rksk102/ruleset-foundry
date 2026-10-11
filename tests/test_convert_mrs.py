@@ -458,8 +458,13 @@ class TestBumpConfigExactAsset:
 
     def test_dual_bump_requires_arm64_asset(self, monkeypatch, work_dir):
         assets = [asset("mihomo-linux-amd64-v9.9.9.gz")]
-        with pytest.raises(SystemExit):
+        downloads = []
+        monkeypatch.setattr(
+            convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(a))
+        with pytest.raises(SystemExit) as exc:
             self._bump(monkeypatch, work_dir, "v9.9.9", assets)
+        assert exc.value.code == 1
+        assert downloads == []
 
 
 class TestNoTokenInjection:

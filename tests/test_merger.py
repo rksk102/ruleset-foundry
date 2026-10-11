@@ -322,8 +322,12 @@ class TestConflictPolicyIgnore:
 
 
 class TestMergerGuards:
-    def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch):
+    def test_merge_task_and_passthrough_may_not_share_a_path(
+            self, work_dir, monkeypatch, capsys):
         source = work_dir / "rulesets"
+        cfg = work_dir / "config.yaml"
+        cfg.write_text("merges: []\n", encoding="utf-8")
+        monkeypatch.setattr(merger, "CONFIG_FILE", str(cfg))
         write(source / "block" / "domain" / "Owner" / "ads.txt", "a.example\n")
         tasks = [{
             "strategy": "block", "type": "domain", "owner": "Owner",
@@ -337,6 +341,7 @@ class TestMergerGuards:
             merger.main()
 
         assert exc.value.code == 1
+        assert "同一路径" in capsys.readouterr().out
 
     def test_zero_rule_merge_result_is_refused(self, work_dir, monkeypatch):
         source = work_dir / "rulesets"
