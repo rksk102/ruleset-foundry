@@ -366,6 +366,21 @@ class TestGetOwnerFromUrl:
             "https://gist.githubusercontent.com/someuser/abc123/raw/x.txt"
         ) == "someuser"
 
+    def test_uppercase_host_still_github(self):
+        assert utils.get_owner_from_url(
+            "https://GITHUB.COM/Loyalsoldier/clash-rules/raw/release/reject.txt"
+        ) == "Loyalsoldier"
+
+    def test_userinfo_not_confused_with_host(self):
+        assert utils.get_owner_from_url(
+            "https://github.com.evil.example.com/o/r/raw/m/x.txt"
+        ) == "github.com.evil.example.com"
+
+    def test_host_with_port_still_github(self):
+        assert utils.get_owner_from_url(
+            "https://github.com:8443/Loyalsoldier/clash-rules/raw/release/reject.txt"
+        ) == "Loyalsoldier"
+
 
 class TestNormalizePath:
     def test_posix_form_from_path_object_has_no_backslash(self):

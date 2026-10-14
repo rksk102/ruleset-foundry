@@ -230,6 +230,7 @@ class TestProcessGroupUnrecognizedGate:
             "policy": "block",
             "type": "domain",
             "members": [(0, {"url": "https://raw.githubusercontent.com/o/r/ads.txt"})],
+            "sources": ["https://raw.githubusercontent.com/o/r/ads.txt"],
         }
 
     def run_group(self, raw):
@@ -252,6 +253,36 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = self.run_group(raw)
         assert count == 1
         assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+    def test_unrecognized_gate_entry_uses_source_url_not_path(self):
+        lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
+        raw = ("\n".join(lines) + "\n").encode()
+        _count, errors = self.run_group(raw)
+        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        assert flagged == ["https://raw.githubusercontent.com/o/r/ads.txt"]
+
+    def test_unrecognized_gate_label_uses_contributing_member(self):
+        dead = "https://raw.githubusercontent.com/o/r/dead.txt"
+        alive = "https://raw.githubusercontent.com/o/r/ads.txt"
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": dead}), (1, {"url": alive})],
+            "sources": [dead, alive],
+        }
+        lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
+        raw = ("\n".join(lines) + "\n").encode()
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: None
+        try:
+            count, errors = main.process_group(group, {1: raw})
+        finally:
+            main.atomic_write = original
+        assert count == 1
+        assert errors["download"] == [(dead, "下载失败")]
+        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        assert flagged == [alive]
 
     def test_small_sample_ratio_only_warns(self):
         lines = [f"bad line {i}" for i in range(5)] + ["good.com"]

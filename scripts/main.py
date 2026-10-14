@@ -145,7 +145,7 @@ def ensure_within_rulesets(abs_path):
 def _base_rel_path(task):
     owner = clean_path_component(get_owner_from_url(task["url"]), "unknown")
     last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
-    filename = clean_path_component(last_segment.split(".")[0], "rules") + ".txt"
+    filename = clean_path_component(last_segment.rsplit(".", 1)[0], "rules") + ".txt"
     policy = clean_path_component(task["policy"], "policy")
     type_name = clean_path_component(task["type"], "domain")
     return Path(policy) / type_name / owner / filename
@@ -274,6 +274,7 @@ def _process_ip_group(all_lines):
 def process_group(group, raw_by_index):
     all_lines = []
     errors = {"download": [], "parse": []}
+    contributing = []
     for idx, task in group["members"]:
         raw = raw_by_index.get(idx)
         if raw is None:
@@ -281,6 +282,7 @@ def process_group(group, raw_by_index):
             continue
         try:
             all_lines.extend(processor.parse_lines(processor.safe_decode(raw)))
+            contributing.append(task["url"])
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
 
@@ -330,8 +332,11 @@ def process_group(group, raw_by_index):
             ratio = unrecognized / len(all_lines)
             warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
             if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
+                sources_label = contributing[0] + (
+                    f" 等 {len(contributing)} 个源" if len(contributing) > 1 else ""
+                )
                 errors["parse"].append((
-                    group["path"],
+                    sources_label,
                     f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
                     f"（{unrecognized}/{len(all_lines)}），疑似上游格式变更",
                 ))
@@ -418,12 +423,19 @@ def parse_sources():
 
         url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
+            url = url_match.group(0)
+            if not url.startswith("https://"):
+                _fail_marker(line_no, line,
+                             "仅接受 https:// 来源（规则即配置，明文 http 可被中间人篡改）")
             tasks.append({
                 "policy": current_policy,
                 "type": current_type,
                 "domain_kind": current_domain_kind,
-                "url": url_match.group(0),
+                "url": url,
             })
+        elif re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", line):
+            _fail_marker(line_no, line,
+                         "仅接受 https:// 来源（其他协议/写法的行不允许静默跳过）")
 
     return tasks
 

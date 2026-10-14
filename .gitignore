@@ -36,3 +36,5 @@ pytest-cache-files-*/
 
 .tools/
 
+
+docs/
