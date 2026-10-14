@@ -67,6 +67,18 @@ class TestDocumentedConfigAndWorkflow:
         assert "config.yaml" in text
         assert "sources.urls" in text
 
+    def test_behavior_keys_are_documented(self):
+        text = gen_readme.make_static_sections()
+        for key in (
+            "release_change_detection",
+            "release_keep_days",
+            "conflict_policy",
+            "unrecognized_warn_ratio",
+            "min_source_success_ratio",
+            "allow_partial",
+        ):
+            assert key in text, f"behavior.{key} 未在 README 语义表中"
+
     def test_core_commands_are_documented(self):
         text = gen_readme.make_static_sections()
         assert "python scripts/gen_readme.py" in text

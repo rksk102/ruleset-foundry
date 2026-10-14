@@ -192,13 +192,25 @@ rule-providers:
 
 ## 配置与维护
 
-`config.yaml` 是运行参数来源，`sources.urls` 是上游来源清单。常用命令：
+`config.yaml` 是运行参数来源，`sources.urls` 是上游来源清单（仅接受 `https://`）。
+常用命令：
 
 ```bash
 python scripts/gen_readme.py
 python -m pytest tests/ -q --cov=scripts --cov-branch --cov-fail-under=70
 ruff check scripts tests
 ```
+
+`behavior.*` 各键语义：
+
+| 键 | 含义 |
+| :--- | :--- |
+| `release_change_detection` | 产物哈希与上次发布一致时跳过发布 |
+| `release_keep_days` | 旧 Release 保留天数；上限 25（清理每次最多读 50 条 release，每日 2 轮） |
+| `conflict_policy` | 跨策略冲突处理：`ignore` / `warn` / `fail` |
+| `unrecognized_warn_ratio` | 单源未识别行占比超此值记解析错误（疑似上游格式变更） |
+| `min_source_success_ratio` | 输出组成功率门禁；`0.0` = 禁用（当前由 `allow_partial` 承担 fail-closed） |
+| `allow_partial` | `false` = 任一源下载/解析失败即整轮不发布，保留上一版产物 |
 
 内核由 `mihomo.pinned_version` 和两个架构哈希钉扎；`kernel-bump.yml` 自动更新，
 提交前会验证 amd64/arm64 内核。详细信任模型见 [SECURITY.md](SECURITY.md)。
