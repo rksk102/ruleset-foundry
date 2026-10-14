@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -182,22 +183,22 @@ def normalize_type(t):
 
 
 def get_owner_from_url(url):
-    parts = url.split("/")
-    if len(parts) < 3:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if not host:
         return "unknown"
 
-    domain = parts[2]
+    path = [seg for seg in parts.path.strip("/").split("/") if seg]
 
-    if "github" in domain:
-        if len(parts) > 3 and parts[3]:
-            return parts[3]
-        return "github"
-    elif domain == "cdn.jsdelivr.net":
-        if len(parts) > 4 and parts[3] == "gh" and parts[4]:
-            return parts[4]
+    if host in ("github.com", "www.github.com", "raw.githubusercontent.com",
+                "objects.githubusercontent.com", "codeload.github.com",
+                "gist.githubusercontent.com", "github.io") or host.endswith(".github.io"):
+        return path[0] if path else "github"
+    if host == "cdn.jsdelivr.net":
+        if len(path) >= 2 and path[0] == "gh":
+            return path[1]
         return "jsdelivr"
-    else:
-        return domain
+    return host
 
 
 def normalize_path(p):

@@ -64,8 +64,8 @@ class TestUrlDerivedComponents:
     def test_userinfo_host_cannot_become_drive(self, monkeypatch, work_dir):
         task = single_task(monkeypatch, work_dir, "https://u:p@evil.com:8443/x.txt\n")
         owner, name, rel, abs_path = main.build_filepath(task)
-        assert (owner, name) == ("u_p_evil.com_8443", "x.txt")
-        assert rel.as_posix() == "policy/domain/u_p_evil.com_8443/x.txt"
+        assert (owner, name) == ("evil.com", "x.txt")
+        assert rel.as_posix() == "policy/domain/evil.com/x.txt"
         assert Path(abs_path).resolve().is_relative_to((work_dir / "rulesets").resolve())
         assert main.ensure_within_rulesets(abs_path) == Path(abs_path).resolve()
 
