@@ -431,6 +431,9 @@ def parse_sources():
                 "domain_kind": current_domain_kind,
                 "url": url,
             })
+        elif re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", line):
+            _fail_marker(line_no, line,
+                         "仅接受 https:// 来源（其他协议/写法的行不允许静默跳过）")
 
     return tasks
 

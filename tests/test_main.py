@@ -551,6 +551,20 @@ class TestParseSources:
         else:
             raise AssertionError("http 明文源应 SystemExit(1)")
 
+    def test_non_https_scheme_lines_rejected(self, tmp_path):
+        for bad in ("ftp://example.com/x.txt", "HTTP://example.com/x.txt",
+                    "htp://example.com/x.txt"):
+            try:
+                self.load(tmp_path, bad + "\n")
+            except SystemExit as e:
+                assert e.code == 1, bad
+            else:
+                raise AssertionError(f"{bad} 不应被静默跳过，应 SystemExit(1)")
+
+    def test_prose_line_without_scheme_still_skipped(self, tmp_path):
+        tasks = self.load(tmp_path, "这行没有协议前缀\nhttps://github.com/a/b/raw/m/x.txt\n")
+        assert len(tasks) == 1
+
 
 class TestProcessIpGroup:
 
