@@ -230,6 +230,7 @@ class TestProcessGroupUnrecognizedGate:
             "policy": "block",
             "type": "domain",
             "members": [(0, {"url": "https://raw.githubusercontent.com/o/r/ads.txt"})],
+            "sources": ["https://raw.githubusercontent.com/o/r/ads.txt"],
         }
 
     def run_group(self, raw):
@@ -252,6 +253,13 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = self.run_group(raw)
         assert count == 1
         assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+    def test_unrecognized_gate_entry_uses_source_url_not_path(self):
+        lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
+        raw = ("\n".join(lines) + "\n").encode()
+        _count, errors = self.run_group(raw)
+        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        assert flagged == ["https://raw.githubusercontent.com/o/r/ads.txt"]
 
     def test_small_sample_ratio_only_warns(self):
         lines = [f"bad line {i}" for i in range(5)] + ["good.com"]

@@ -330,8 +330,11 @@ def process_group(group, raw_by_index):
             ratio = unrecognized / len(all_lines)
             warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
             if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
+                sources_label = group["sources"][0] + (
+                    f" 等 {len(group['sources'])} 个源" if len(group["sources"]) > 1 else ""
+                )
                 errors["parse"].append((
-                    group["path"],
+                    sources_label,
                     f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
                     f"（{unrecognized}/{len(all_lines)}），疑似上游格式变更",
                 ))
