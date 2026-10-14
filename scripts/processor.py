@@ -267,8 +267,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             stats["wildcard"] += 1
             valid_domains.add(s.lower())
             continue
-        if domain_kind == 'suffix' and semantic is None and s.startswith('+.'):
-            semantic = 'suffix'
         if s.startswith('+.'):
             semantic = 'suffix'
             s = s[2:]
