@@ -274,6 +274,7 @@ def _process_ip_group(all_lines):
 def process_group(group, raw_by_index):
     all_lines = []
     errors = {"download": [], "parse": []}
+    contributing = []
     for idx, task in group["members"]:
         raw = raw_by_index.get(idx)
         if raw is None:
@@ -281,6 +282,7 @@ def process_group(group, raw_by_index):
             continue
         try:
             all_lines.extend(processor.parse_lines(processor.safe_decode(raw)))
+            contributing.append(task["url"])
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
 
@@ -330,8 +332,8 @@ def process_group(group, raw_by_index):
             ratio = unrecognized / len(all_lines)
             warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
             if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
-                sources_label = group["sources"][0] + (
-                    f" 等 {len(group['sources'])} 个源" if len(group["sources"]) > 1 else ""
+                sources_label = contributing[0] + (
+                    f" 等 {len(contributing)} 个源" if len(contributing) > 1 else ""
                 )
                 errors["parse"].append((
                     sources_label,
