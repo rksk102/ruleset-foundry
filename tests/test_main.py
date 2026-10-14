@@ -270,6 +270,36 @@ class TestBaseRelPath:
         rel = main._base_rel_path(self.task("https://github.com/o/r/raw/m/x.txt", type_="ipcidr"))
         assert rel.as_posix().startswith("block/ipcidr/")
 
+    EXPECTED_REAL_SOURCE_PATHS = (
+        "block/domain/MetaCubeX/category-ads-all.txt",
+        "block/domain/DustinWin/ads.txt",
+        "block/domain/Loyalsoldier/reject.txt",
+        "block/domain/Loyalsoldier/reject-list.txt",
+        "block/domain/Loyalsoldier/win-extra.txt",
+        "block/domain/Loyalsoldier/win-spy.txt",
+        "direct/domain/Loyalsoldier/private.txt",
+        "direct/domain/MetaCubeX/geolocation-cn.txt",
+        "direct/domain/DustinWin/microsoft-cn.txt",
+        "direct/domain/Loyalsoldier/direct-list.txt",
+        "policy/domain/Loyalsoldier/proxy.txt",
+        "policy/domain/Loyalsoldier/gfw.txt",
+        "policy/domain/MetaCubeX/category-ai-!cn.txt",
+        "policy/domain/Loyalsoldier/proxy-list.txt",
+        "policy/domain/Loyalsoldier/gfw.txt",
+        "direct/ipcidr/Loyalsoldier/cncidr.txt",
+        "direct/ipcidr/MetaCubeX/cn.txt",
+        "direct/ipcidr/Loyalsoldier/lancidr.txt",
+    )
+
+    def test_real_sources_output_paths_unchanged(self):
+        tasks = main.parse_sources()
+        actual = [main._base_rel_path(t).as_posix() for t in tasks]
+        assert actual == list(self.EXPECTED_REAL_SOURCE_PATHS)
+
+    def test_multi_dot_filename_keeps_stem(self):
+        rel = main._base_rel_path(self.task("https://github.com/o/r/raw/m/foo.bar.list"))
+        assert rel.name == "foo.bar.txt"
+
 
 class TestCollidingOutputPaths:
     def task(self, url, policy="policy", type_="domain"):

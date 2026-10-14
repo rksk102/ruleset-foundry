@@ -145,7 +145,7 @@ def ensure_within_rulesets(abs_path):
 def _base_rel_path(task):
     owner = clean_path_component(get_owner_from_url(task["url"]), "unknown")
     last_segment = task["url"].split("/")[-1].split("?")[0].split("#")[0]
-    filename = clean_path_component(last_segment.split(".")[0], "rules") + ".txt"
+    filename = clean_path_component(last_segment.rsplit(".", 1)[0], "rules") + ".txt"
     policy = clean_path_component(task["policy"], "policy")
     type_name = clean_path_component(task["type"], "domain")
     return Path(policy) / type_name / owner / filename
