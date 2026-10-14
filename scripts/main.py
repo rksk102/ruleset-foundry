@@ -418,11 +418,15 @@ def parse_sources():
 
         url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
+            url = url_match.group(0)
+            if not url.startswith("https://"):
+                _fail_marker(line_no, line,
+                             "仅接受 https:// 来源（规则即配置，明文 http 可被中间人篡改）")
             tasks.append({
                 "policy": current_policy,
                 "type": current_type,
                 "domain_kind": current_domain_kind,
-                "url": url_match.group(0),
+                "url": url,
             })
 
     return tasks

@@ -511,7 +511,15 @@ class TestParseSources:
         for t in tasks:
             assert t["policy"] in ("block", "direct", "policy")
             assert t["type"] in ("domain", "ipcidr")
-            assert t["url"].startswith("http")
+            assert t["url"].startswith("https://")
+
+    def test_http_source_rejected(self, tmp_path):
+        try:
+            self.load(tmp_path, "http://example.com/x.txt\n")
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("http 明文源应 SystemExit(1)")
 
 
 class TestProcessIpGroup:
