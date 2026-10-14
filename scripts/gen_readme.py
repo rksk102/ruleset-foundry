@@ -23,6 +23,8 @@ REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH", "artifacts")
 BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{ARTIFACTS_BRANCH}"
 BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{ARTIFACTS_BRANCH}"
+# jsDelivr 单文件上限，超限返回 403；超出时 Download 列回退为仅 Source
+JSDELIVR_MAX_BYTES = 20 * 1024 * 1024
 STYLE = "flat-square"
 
 
@@ -83,7 +85,8 @@ def collect_stats(files):
 def write_table_rows(f, files, root_dir):
     for filepath in files:
         filename = os.path.basename(filepath)
-        filesize = format_size(os.path.getsize(filepath))
+        size_bytes = os.path.getsize(filepath)
+        filesize = format_size(size_bytes)
         rel_path = os.path.relpath(filepath, root_dir).replace(os.sep, "/")
         root_name = os.path.basename(root_dir)
         category = os.path.dirname(rel_path)
@@ -92,11 +95,17 @@ def write_table_rows(f, files, root_dir):
             "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
         )
         full_rel = f"{root_name}/{rel_path}"
-        download = (
-            f'<a href="{BASE_JSDELIVR}/{full_rel}">'
-            f'<img src="https://img.shields.io/badge/Download-34D399?style={STYLE}" '
-            'alt="Download"></a>'
-        )
+        if size_bytes <= JSDELIVR_MAX_BYTES:
+            download = (
+                f'<a href="{BASE_JSDELIVR}/{full_rel}">'
+                f'<img src="https://img.shields.io/badge/Download-34D399?style={STYLE}" '
+                'alt="Download"></a>'
+            )
+        else:
+            download = (
+                '<img src="https://img.shields.io/badge/over20MB-Source_only-lightgrey'
+                f'?style={STYLE}" alt="超出 jsDelivr 20MB 上限">'
+            )
         source = (
             f'<a href="{BASE_RAW}/{full_rel}">'
             f'<img src="https://img.shields.io/badge/Source-181717?style={STYLE}&logo=github" '

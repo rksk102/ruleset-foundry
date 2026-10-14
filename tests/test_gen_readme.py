@@ -133,6 +133,18 @@ class TestWriteTableRows:
         row = self.render(tmp_path, "a.txt")
         assert "`10.00 B`" in row
 
+    def test_over_jsdelivr_limit_falls_back_to_source_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "JSDELIVR_MAX_BYTES", 5)
+        row = self.render(tmp_path, "block/domain/Owner/big.txt")
+        assert gen_readme.BASE_JSDELIVR not in row
+        assert f"{gen_readme.BASE_RAW}/merged-rules/block/domain/Owner/big.txt" in row
+        assert "over20MB" in row
+
+    def test_under_jsdelivr_limit_keeps_download_badge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "JSDELIVR_MAX_BYTES", 100)
+        row = self.render(tmp_path, "block/domain/Owner/a.txt")
+        assert gen_readme.BASE_JSDELIVR in row
+
 
 class TestMakeSection:
     def test_emits_header_table_and_details(self, tmp_path):
