@@ -26,7 +26,6 @@ reviews:
     - "!rulesets/**"
     - "!state/**"
     - "!README.md"
-    - "!AUDIT-REPORT*.md"
     - "!logs/**"
     - "!.cache/**"
     - "!.tools/**"
