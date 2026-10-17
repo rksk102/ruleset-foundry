@@ -264,11 +264,32 @@ def _process_ip_group(all_lines):
     ):
         if count:
             warning(f"    {label} 规则不可放入 ipcidr 产物，已丢弃: {count} 行")
+    stats["unrecognized"] += len(ip_errors)
     if stats["dropped_default_route"]:
         warning(f"    默认路由(/0) 已按设计丢弃: {stats['dropped_default_route']} 行")
     for type_name, count in sorted(stats["dropped_rule_type"].items()):
         warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
     return result, stats
+
+
+def _gate_unrecognized(unrecognized, total, contributing, errors):
+    """未识别行占比门禁：domain 与 ipcidr 组共用，超阈值记 parse 错误（fail-closed）。"""
+    if not unrecognized:
+        return
+    ratio = unrecognized / total
+    warning(f"    未识别/已丢弃行: {unrecognized}/{total} ({ratio:.1%})")
+    if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
+        sources_label = contributing[0] + (
+            f" 等 {len(contributing)} 个源" if len(contributing) > 1 else ""
+        )
+        errors["parse"].append((
+            sources_label,
+            f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
+            f"（{unrecognized}/{total}），疑似上游格式变更",
+        ))
+    elif ratio >= UNRECOGNIZED_WARN_RATIO:
+        warning(f"    占比超阈值但未识别行只有 {unrecognized} 行"
+                f"（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
 
 
 def process_group(group, raw_by_index):
@@ -294,6 +315,8 @@ def process_group(group, raw_by_index):
 
     if group["type"] == "ipcidr":
         result, _special = _process_ip_group(all_lines)
+        _gate_unrecognized(
+            _special.get("unrecognized", 0), len(all_lines), contributing, errors)
     else:
         effective_kind = group.get("domain_kind", "exact")
         if effective_kind == "mixed":
@@ -327,22 +350,8 @@ def process_group(group, raw_by_index):
         for type_name, count in sorted((special.get("dropped_rule_type") or {}).items()):
             warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
 
-        unrecognized = special.get("unrecognized", 0)
-        if unrecognized:
-            ratio = unrecognized / len(all_lines)
-            warning(f"    未识别/已丢弃行: {unrecognized}/{len(all_lines)} ({ratio:.1%})")
-            if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
-                sources_label = contributing[0] + (
-                    f" 等 {len(contributing)} 个源" if len(contributing) > 1 else ""
-                )
-                errors["parse"].append((
-                    sources_label,
-                    f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
-                    f"（{unrecognized}/{len(all_lines)}），疑似上游格式变更",
-                ))
-            elif ratio >= UNRECOGNIZED_WARN_RATIO:
-                warning(f"    占比超阈值但未识别行只有 {unrecognized} 行"
-                        f"（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
+        _gate_unrecognized(
+            special.get("unrecognized", 0), len(all_lines), contributing, errors)
 
     if not result:
         for _idx, task in group["members"]:
@@ -401,8 +410,11 @@ def parse_sources():
                 current_policy = normalize_policy(
                     safe_marker_value(value, "policy", line_no))
             elif key == "type":
-                current_type = normalize_type(
-                    safe_marker_value(value, "type", line_no))
+                try:
+                    current_type = normalize_type(
+                        safe_marker_value(value, "type", line_no))
+                except ValueError as e:
+                    _fail_marker(line_no, line, str(e))
             elif key == "domain-kind":
                 kind = value.lower()
                 if kind not in ("exact", "suffix"):

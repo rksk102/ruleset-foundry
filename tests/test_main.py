@@ -459,6 +459,14 @@ class TestParseSources:
         ]) + "\n")
         assert [t["type"] for t in tasks] == ["ipcidr", "domain"]
 
+    def test_unknown_type_marker_rejected(self, tmp_path):
+        try:
+            self.load(tmp_path, "[type:ip]\nhttps://github.com/a/b/raw/m/x.txt\n")
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("非法 [type:] 标记应 SystemExit(1)")
+
     def test_comments_and_blank_lines_ignored(self, tmp_path):
         tasks = self.load(tmp_path, "\n".join([
             "# comment",

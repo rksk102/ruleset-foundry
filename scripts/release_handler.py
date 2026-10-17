@@ -366,11 +366,9 @@ def main():
         try:
             releases = json.loads(releases_json)
         except (TypeError, ValueError) as e:
-            error(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
-            gh_error(f"旧 Release 清理失败: gh 返回的列表无法解析（{e}）")
-            if os.path.exists(zip_file):
-                os.unlink(zip_file)
-            sys.exit(1)
+            # 发布与哈希保存已完成，清理失败只告警不标红（下轮运行自愈）
+            warning(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}），本轮跳过清理")
+            releases = []
 
         cutoff_time = utc_now - datetime.timedelta(days=KEEP_DAYS)
 

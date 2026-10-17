@@ -54,12 +54,12 @@ class TestTimeBadge:
 
 class TestScanFiles:
     def test_missing_dir_returns_empty(self, tmp_path):
-        assert gen_readme.scan_files(str(tmp_path / "nope")) == []
+        assert gen_readme.scan_files(str(tmp_path / "nope"), ".txt") == []
 
     def test_recursive_and_sorted(self, tmp_path):
         write(tmp_path / "b" / "y.txt", "y")
         write(tmp_path / "a" / "x.txt", "x")
-        found = gen_readme.scan_files(str(tmp_path))
+        found = gen_readme.scan_files(str(tmp_path), ".txt")
         assert [os.path.relpath(f, tmp_path).replace(os.sep, "/") for f in found] == [
             "a/x.txt", "b/y.txt"]
         assert found == sorted(found)
@@ -67,12 +67,19 @@ class TestScanFiles:
     def test_hidden_files_skipped(self, tmp_path):
         write(tmp_path / ".hidden.txt", "h")
         write(tmp_path / "keep.txt", "k")
-        found = gen_readme.scan_files(str(tmp_path))
+        found = gen_readme.scan_files(str(tmp_path), ".txt")
         assert len(found) == 1 and found[0].endswith("keep.txt")
 
     def test_empty_dir_not_a_file(self, tmp_path):
         (tmp_path / "emptydir").mkdir()
-        assert gen_readme.scan_files(str(tmp_path)) == []
+        assert gen_readme.scan_files(str(tmp_path), ".txt") == []
+
+    def test_other_suffixes_filtered(self, tmp_path):
+        write(tmp_path / "keep.txt", "k")
+        write(tmp_path / "notes.md", "n")
+        write(tmp_path / "data.mrs", "m")
+        found = gen_readme.scan_files(str(tmp_path), ".txt")
+        assert [os.path.basename(f) for f in found] == ["keep.txt"]
 
 
 class TestCollectStats:
@@ -151,7 +158,7 @@ class TestMakeSection:
         write(tmp_path / "o" / "a.txt", "abc")
         buf = io.StringIO()
         count, size = gen_readme.make_section(
-            buf, "标题", "说明", gen_readme.scan_files(str(tmp_path)), str(tmp_path))
+            buf, "标题", "说明", gen_readme.scan_files(str(tmp_path), ".txt"), str(tmp_path))
         out = buf.getvalue()
         assert count == 1 and size == 3
         assert "### 标题" in out and "*说明*" in out

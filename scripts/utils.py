@@ -166,6 +166,9 @@ def is_safe_component(value):
     return bool(_COMPONENT_RE.fullmatch(value))
 
 
+RULE_TYPES = ("domain", "ipcidr")
+
+
 def normalize_policy(p):
     p = p.lower()
     if any(x in p for x in ["reject", "block", "deny", "ads", "adblock"]):
@@ -179,7 +182,9 @@ def normalize_policy(p):
 
 def normalize_type(t):
     t = t.lower()
-    return "ipcidr" if "ip" in t or "cidr" in t else "domain"
+    if t in RULE_TYPES:
+        return t
+    raise ValueError(f"非法规则类型: {t!r}（仅允许 {'/'.join(RULE_TYPES)}）")
 
 
 def get_owner_from_url(url):

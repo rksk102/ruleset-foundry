@@ -347,6 +347,10 @@ class TestGetRuleType:
     def test_unknown(self):
         assert convert_mrs.get_rule_type(["misc", "Owner", "x.txt"]) is None
 
+    def test_policy_segment_with_ip_substring_does_not_leak(self):
+        assert convert_mrs.get_rule_type(["skip", "domain", "Owner", "ads.txt"]) == "domain"
+        assert convert_mrs.get_rule_type(["skip", "ipcidr", "Owner", "cn.txt"]) == "ipcidr"
+
 
 class TestHasValidContent:
     def test_only_comments_is_invalid(self, work_dir):

@@ -6,6 +6,7 @@ import manifest
 from config_loader import CONFLICT_POLICIES, get, load_config
 from logger import error, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
+    RULE_TYPES,
     DomainTrie,
     anchor_cwd_to_repo_root,
     atomic_write_with_header,
@@ -23,7 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def detect_mode(type_str):
-    return "IP-CIDR" if "ipcidr" in str(type_str).lower() else "DOMAIN"
+    t = str(type_str).lower()
+    if t not in RULE_TYPES:
+        raise ValueError(f"非法规则类型: {type_str!r}（仅允许 {'/'.join(RULE_TYPES)}）")
+    return "IP-CIDR" if t == "ipcidr" else "DOMAIN"
 
 
 def merge_product_paths(merge_tasks):

@@ -1,6 +1,7 @@
 import hashlib
 import os
 
+import pytest
 import utils
 
 
@@ -324,13 +325,14 @@ class TestNormalizePolicy:
 
 
 class TestNormalizeType:
-    def test_ip_variants(self):
-        for raw in ["ip", "ipcidr", "IP-CIDR", "cidr", "IPCidr"]:
-            assert utils.normalize_type(raw) == "ipcidr", raw
+    def test_accepts_enum_case_insensitively(self):
+        for raw in ["domain", "DOMAIN", "ipcidr", "IPCIDR", "IpCidr"]:
+            assert utils.normalize_type(raw) == raw.lower()
 
-    def test_everything_else_is_domain(self):
-        for raw in ["domain", "general", "", "domain-suffix"]:
-            assert utils.normalize_type(raw) == "domain", raw
+    def test_rejects_non_enum_values(self):
+        for raw in ["ip", "cidr", "IP-CIDR", "general", "", "domain-suffix"]:
+            with pytest.raises(ValueError):
+                utils.normalize_type(raw)
 
 
 class TestGetOwnerFromUrl:

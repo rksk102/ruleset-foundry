@@ -46,7 +46,7 @@ behavior:
   release_keep_days: 3
   # 跨策略冲突处理：ignore | warn | fail
   conflict_policy: "warn"
-  # 单源未识别行占比超过该值时记 parse 错误（疑似上游格式变更）
+  # 单输出组未识别行占比超过该值时记 parse 错误（疑似上游格式变更）
   unrecognized_warn_ratio: 0.10
   # 输出组成功率门禁；0.0 = 禁用（fail-closed 模式下由 allow_partial 兜底）
   min_source_success_ratio: 0.0

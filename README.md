@@ -149,7 +149,7 @@ ruff check scripts tests
 | `release_change_detection` | 产物哈希与上次发布一致时跳过发布 |
 | `release_keep_days` | 旧 Release 保留天数；上限 25（清理每次最多读 50 条 release，每日 2 轮） |
 | `conflict_policy` | 跨策略冲突处理：`ignore` / `warn` / `fail` |
-| `unrecognized_warn_ratio` | 单源未识别行占比超此值记解析错误（疑似上游格式变更） |
+| `unrecognized_warn_ratio` | 单输出组未识别行占比超此值记解析错误（疑似上游格式变更） |
 | `min_source_success_ratio` | 输出组成功率门禁；`0.0` = 禁用（当前由 `allow_partial` 承担 fail-closed） |
 | `allow_partial` | `false` = 任一源下载/解析失败即整轮不发布，保留上一版产物 |
 

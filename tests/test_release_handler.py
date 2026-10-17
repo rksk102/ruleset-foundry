@@ -355,14 +355,15 @@ class TestMainOrchestration:
         assert "发布报告" in text
         assert "文本规则" in text and "MRS 规则" in text
 
-    def test_unparsable_release_listing_exits(self, publish_workspace, monkeypatch):
+    def test_unparsable_release_listing_degrades_to_warning(
+            self, publish_workspace, monkeypatch):
         stub = GhStub(responses={("release", "list"): "not-json"})
         stub_hash_state(monkeypatch)
 
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+        run_with_stub(stub, release_handler.main)
 
-        assert exc.value.code == 1
+        flat = " ".join(stub.commands())
+        assert "release delete" not in flat, "列表无法解析时不得误删任何 Release"
 
     def test_unparsable_entry_is_skipped_and_others_pruned(
             self, publish_workspace, monkeypatch):

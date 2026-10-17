@@ -148,6 +148,13 @@ class TestDomainCleaning:
         assert result == ["localhost"]
         assert stats["bare_single_label"] == 1
 
+    def test_bare_rule_type_keywords_not_treated_as_domains(self):
+        result, stats = processor.process_domain_detailed(
+            ["MATCH", "DOMAIN", "GEOIP", "RULE-SET", "DST-IP-CIDR"])
+        assert result == []
+        assert stats["unrecognized"] == 5
+        assert stats["bare_single_label"] == 0
+
     def test_path_and_port_stripped(self):
         assert self.clean(["example.com/ads/path"]) == ["example.com"]
         assert self.clean(["example.com:8080"]) == ["example.com"]

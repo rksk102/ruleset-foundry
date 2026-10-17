@@ -18,7 +18,7 @@ from pathlib import Path
 import config_loader
 from config_loader import get
 from logger import error, group_end, group_start, info, success, warning
-from utils import anchor_cwd_to_repo_root, clean_directory, file_sha256
+from utils import RULE_TYPES, anchor_cwd_to_repo_root, clean_directory, file_sha256
 
 SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
 DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
@@ -321,14 +321,11 @@ def get_latest_mihomo(skip_hash_check=False):
 
 
 def get_rule_type(path_parts):
-    for part in path_parts:
-        p = part.lower()
-        if "domain" in p:
-            return "domain"
-        if "ip" in p and "cidr" in p:
-            return "ipcidr"
-        if "ip" in p:
-            return "ipcidr"
+    """类型取固定层级（<策略>/<类型>/<所有者>/<文件> 的第 2 段），不做子串猜测。"""
+    if len(path_parts) >= 2:
+        candidate = path_parts[1].lower()
+        if candidate in RULE_TYPES:
+            return candidate
     return None
 
 

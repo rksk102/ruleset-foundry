@@ -199,6 +199,8 @@ class TestValidationMatrix:
                "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n",
         BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
                "    filename: a.txt\n    inputs: [123]\n",
+        BASE + "merges:\n  - strategy: block\n    type: classical\n    owner: o\n"
+               "    filename: a.txt\n    inputs: ['x.txt']\n",
     ])
     def test_invalid_config_is_rejected(self, work_dir, body):
         use_config(work_dir, body)
