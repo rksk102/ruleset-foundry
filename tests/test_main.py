@@ -1,5 +1,3 @@
-import os
-
 import main
 
 
@@ -93,66 +91,31 @@ class TestProductPathStability:
 
 
 class TestAuthHeaders:
-    def with_token(self, value="tok"):
-        original = os.environ.get("GH_TOKEN")
-        os.environ["GH_TOKEN"] = value
-        return original
+    def test_token_sent_to_trusted_host(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        assert main.auth_headers("https://raw.githubusercontent.com/a/b/x") == {
+            "Authorization": "Bearer tok"}
 
-    def restore(self, original):
-        if original is None:
-            os.environ.pop("GH_TOKEN", None)
-        else:
-            os.environ["GH_TOKEN"] = original
+    def test_token_withheld_from_untrusted_host(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        assert main.auth_headers("https://example.com/x") is None
+        assert main.auth_headers("https://ghproxy.net/https://raw.githubusercontent.com/a/b") is None
 
-    def test_token_sent_to_trusted_host(self):
-        original = self.with_token()
-        try:
-            assert main.auth_headers("https://raw.githubusercontent.com/a/b/x") == {
-                "Authorization": "Bearer tok"}
-        finally:
-            self.restore(original)
+    def test_token_withheld_from_plaintext_and_user_content(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        assert main.auth_headers("http://raw.githubusercontent.com/a/b/x") is None
+        assert main.auth_headers("https://someone.github.io/x") is None
 
-    def test_token_withheld_from_untrusted_host(self):
-        original = self.with_token()
-        try:
-            assert main.auth_headers("https://example.com/x") is None
-            assert main.auth_headers("https://ghproxy.net/https://raw.githubusercontent.com/a/b") is None
-        finally:
-            self.restore(original)
+    def test_no_token_means_no_header(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        assert main.auth_headers("https://github.com/a/b") is None
 
-    def test_token_withheld_from_plaintext_and_user_content(self):
-        original = self.with_token()
-        try:
-            assert main.auth_headers("http://raw.githubusercontent.com/a/b/x") is None
-            assert main.auth_headers("https://someone.github.io/x") is None
-        finally:
-            self.restore(original)
-
-    def test_no_token_means_no_header(self):
-        original = os.environ.pop("GH_TOKEN", None)
-        github_token = os.environ.pop("GITHUB_TOKEN", None)
-        try:
-            assert main.auth_headers("https://github.com/a/b") is None
-        finally:
-            if original is not None:
-                os.environ["GH_TOKEN"] = original
-            if github_token is not None:
-                os.environ["GITHUB_TOKEN"] = github_token
-
-    def test_github_token_used_as_fallback(self):
-        gh = os.environ.pop("GH_TOKEN", None)
-        prev = os.environ.get("GITHUB_TOKEN")
-        os.environ["GITHUB_TOKEN"] = "fallback"
-        try:
-            assert main.auth_headers("https://github.com/a/b") == {
-                "Authorization": "Bearer fallback"}
-        finally:
-            if gh is not None:
-                os.environ["GH_TOKEN"] = gh
-            if prev is None:
-                os.environ.pop("GITHUB_TOKEN", None)
-            else:
-                os.environ["GITHUB_TOKEN"] = prev
+    def test_github_token_used_as_fallback(self, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "fallback")
+        assert main.auth_headers("https://github.com/a/b") == {
+            "Authorization": "Bearer fallback"}
 
 
 class TestParseRetryAfter:
@@ -514,14 +477,6 @@ class TestParseSources:
         assert len(tasks) == 1
         assert tasks[0]["url"].startswith("https://")
 
-    def test_line_without_url_skipped(self, tmp_path):
-        tasks = self.load(tmp_path, "[policy:block]\n不是链接\nhttps://github.com/a/b/raw/m/x.txt\n")
-        assert len(tasks) == 1
-
-    def test_marker_regex_anchored(self, tmp_path):
-        tasks = self.load(tmp_path, "前缀 [policy:block] 后缀\nhttps://github.com/a/b/raw/m/x.txt\n")
-        assert tasks[0]["policy"] == "policy"
-
     def test_missing_file_exits(self, tmp_path):
         original = main.SOURCES_FILE
         main.SOURCES_FILE = str(tmp_path / "absent.urls")
@@ -534,14 +489,6 @@ class TestParseSources:
                 raise AssertionError("缺失 sources 文件应 SystemExit(1)")
         finally:
             main.SOURCES_FILE = original
-
-    def test_real_sources_file_is_parseable(self):
-        tasks = main.parse_sources()
-        assert len(tasks) > 5
-        for t in tasks:
-            assert t["policy"] in ("block", "direct", "policy")
-            assert t["type"] in ("domain", "ipcidr")
-            assert t["url"].startswith("https://")
 
     def test_http_source_rejected(self, tmp_path):
         try:

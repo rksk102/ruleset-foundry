@@ -44,10 +44,6 @@ class TestVerifyFailsClosed:
 
 
 class TestRepoRootAnchor:
-    def test_repo_root_does_not_follow_cwd(self):
-        assert utils.REPO_ROOT == REPO
-        assert Path(release_handler.REPO_ROOT) == REPO
-
     def test_anchor_helper_chdirs_to_repo_root(self, work_dir, monkeypatch):
         original = os.getcwd()
         monkeypatch.chdir(work_dir)

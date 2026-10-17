@@ -167,70 +167,38 @@ class TestMakeSection:
 
 
 class TestResolveBadgeTime:
-    def test_disabled_change_detection_returns_none(self, tmp_path, monkeypatch=None):
-        original = gen_readme.get
-        gen_readme.get = lambda *a, **k: False
-        try:
-            assert gen_readme.resolve_badge_time() is None
-        finally:
-            gen_readme.get = original
+    def test_disabled_change_detection_returns_none(self, monkeypatch):
+        monkeypatch.setattr(gen_readme, "get", lambda *a, **k: False)
+        assert gen_readme.resolve_badge_time() is None
 
-    def test_missing_readme_returns_none(self, tmp_path):
-        original_file = gen_readme.README_FILE
-        original_hash = gen_readme.combined_products_hash
-        original_last = gen_readme.load_last_hash
-        gen_readme.README_FILE = str(tmp_path / "absent.md")
-        gen_readme.combined_products_hash = lambda *a, **k: ("h", 1, 1)
-        gen_readme.load_last_hash = lambda: "h"
-        try:
-            assert gen_readme.resolve_badge_time() is None
-        finally:
-            gen_readme.README_FILE = original_file
-            gen_readme.combined_products_hash = original_hash
-            gen_readme.load_last_hash = original_last
+    def test_missing_readme_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "absent.md"))
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", lambda: "h")
+        assert gen_readme.resolve_badge_time() is None
 
-    def test_unchanged_products_reuse_existing_badge(self, tmp_path):
+    def test_unchanged_products_reuse_existing_badge(self, tmp_path, monkeypatch):
         readme = tmp_path / "README.md"
         write(readme, "x\n" + gen_readme.get_time_badge("2026--01--02%2003%3A04") + "\n")
-        original_file = gen_readme.README_FILE
-        original_hash = gen_readme.combined_products_hash
-        original_last = gen_readme.load_last_hash
-        gen_readme.README_FILE = str(readme)
-        gen_readme.combined_products_hash = lambda *a, **k: ("same", 1, 1)
-        gen_readme.load_last_hash = lambda: "same"
-        try:
-            assert gen_readme.resolve_badge_time() == "2026--01--02%2003%3A04"
-        finally:
-            gen_readme.README_FILE = original_file
-            gen_readme.combined_products_hash = original_hash
-            gen_readme.load_last_hash = original_last
+        monkeypatch.setattr(gen_readme, "README_FILE", str(readme))
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("same", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", lambda: "same")
+        assert gen_readme.resolve_badge_time() == "2026--01--02%2003%3A04"
 
-    def test_changed_products_start_fresh(self, tmp_path):
+    def test_changed_products_start_fresh(self, tmp_path, monkeypatch):
         readme = tmp_path / "README.md"
         write(readme, gen_readme.get_time_badge("2026--01--02%2003%3A04") + "\n")
-        original_file = gen_readme.README_FILE
-        original_hash = gen_readme.combined_products_hash
-        original_last = gen_readme.load_last_hash
-        gen_readme.README_FILE = str(readme)
-        gen_readme.combined_products_hash = lambda *a, **k: ("new", 1, 1)
-        gen_readme.load_last_hash = lambda: "old"
-        try:
-            assert gen_readme.resolve_badge_time() is None
-        finally:
-            gen_readme.README_FILE = original_file
-            gen_readme.combined_products_hash = original_hash
-            gen_readme.load_last_hash = original_last
+        monkeypatch.setattr(gen_readme, "README_FILE", str(readme))
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("new", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", lambda: "old")
+        assert gen_readme.resolve_badge_time() is None
 
-    def test_hash_error_returns_none(self, tmp_path):
+    def test_hash_error_returns_none(self, monkeypatch):
         def boom():
             raise OSError("no products")
 
-        original_hash = gen_readme.combined_products_hash
-        gen_readme.combined_products_hash = boom
-        try:
-            assert gen_readme.resolve_badge_time() is None
-        finally:
-            gen_readme.combined_products_hash = original_hash
+        monkeypatch.setattr(gen_readme, "combined_products_hash", boom)
+        assert gen_readme.resolve_badge_time() is None
 
 
 class TestStaticSections:
@@ -267,48 +235,37 @@ class TestMakePageHeader:
         assert gen_readme.BADGE_TIME_RE.search(html)
 
 class TestMain:
-    def run_main(self, tmp_path):
-        original = (gen_readme.DIR_RULES, gen_readme.DIR_MRS, gen_readme.README_FILE)
-        gen_readme.DIR_RULES = str(tmp_path / "merged-rules")
-        gen_readme.DIR_MRS = str(tmp_path / "merged-rules-mrs")
-        gen_readme.README_FILE = str(tmp_path / "README.md")
+    def run_main(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
+        monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
+        monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
         write(tmp_path / "merged-rules" / "block" / "A" / "a.txt", "a.com\n")
         write(tmp_path / "merged-rules-mrs" / "block" / "A" / "a.mrs", "MRS!")
-        try:
-            gen_readme.main()
-        finally:
-            gen_readme.DIR_RULES, gen_readme.DIR_MRS, gen_readme.README_FILE = original
+        gen_readme.main()
         return (tmp_path / "README.md").read_text(encoding="utf-8")
 
-    def test_writes_readme_with_both_sections(self, tmp_path):
-        out = self.run_main(tmp_path)
+    def test_writes_readme_with_both_sections(self, tmp_path, monkeypatch):
+        out = self.run_main(tmp_path, monkeypatch)
         assert "## 规则列表" in out
         assert "### 基础规则集合" in out
         assert "### Mihomo 专用集合" in out
         assert "a.txt" in out and "a.mrs" in out
         assert "ghproxy" not in out.lower()
 
-    def test_readme_links_use_artifacts_branch(self, tmp_path):
-        out = self.run_main(tmp_path)
+    def test_readme_links_use_artifacts_branch(self, tmp_path, monkeypatch):
+        out = self.run_main(tmp_path, monkeypatch)
         assert "/artifacts/merged-rules/block/A/a.txt" in out
         assert "/artifacts/merged-rules-mrs/block/A/a.mrs" in out
 
-    def test_no_tmp_or_partial_file_left(self, tmp_path):
-        self.run_main(tmp_path)
+    def test_no_tmp_or_partial_file_left(self, tmp_path, monkeypatch):
+        self.run_main(tmp_path, monkeypatch)
         leftovers = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
         assert leftovers == []
 
-    def test_step_summary_appended_when_env_set(self, tmp_path):
+    def test_step_summary_appended_when_env_set(self, tmp_path, monkeypatch):
         summary = tmp_path / "summary.md"
-        original_env = os.environ.get("GITHUB_STEP_SUMMARY")
-        os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
-        try:
-            self.run_main(tmp_path)
-        finally:
-            if original_env is None:
-                os.environ.pop("GITHUB_STEP_SUMMARY", None)
-            else:
-                os.environ["GITHUB_STEP_SUMMARY"] = original_env
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        self.run_main(tmp_path, monkeypatch)
         text = summary.read_text(encoding="utf-8")
         assert "README 生成报告" in text
         assert "标准规则" in text and "MRS 规则" in text

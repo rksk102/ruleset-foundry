@@ -121,6 +121,20 @@ class TestMainFlow:
             "block/domain/o/drop.txt", "block/domain/o/keep.txt"]
         assert self.manifest_entries(rulesets) == before
 
+    def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
+        rulesets = self.setup_run(monkeypatch, work_dir)
+        main.main()
+        before = self.manifest_entries(rulesets)
+
+        payloads = dict(PAYLOADS, **{"drop.txt": None})
+        self.setup_run(monkeypatch, work_dir, payloads=payloads, allow_partial=True)
+        monkeypatch.setattr(main, "MIN_SUCCESS_RATIO", 0.9)
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert self.manifest_entries(rulesets) == before
+
 class TestConvertMrsFlow:
     def test_print_kernel_hash_prints_the_file_digest(self, monkeypatch, work_dir, capsys):
         kernel = work_dir / "mihomo"

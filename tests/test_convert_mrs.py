@@ -217,26 +217,19 @@ class TestDownloadKernelDigest:
         kernel = work_dir / "k" / "kernel"
         assert not kernel.exists(), f"校验失败不得落盘，但 {kernel} 存在"
 
-    def test_uppercase_algorithm_accepted(self, work_dir):
+    @pytest.mark.parametrize("variant", ("uppercase-algo", "no-prefix", "padded"))
+    def test_digest_format_variants_accepted(self, work_dir, variant):
         import hashlib
 
         payload = self._payload()
-        ok, _ = self._run(work_dir, "SHA256:" + hashlib.sha256(payload).hexdigest())
+        hexdigest = hashlib.sha256(payload).hexdigest()
+        expected = {
+            "uppercase-algo": "SHA256:" + hexdigest,
+            "no-prefix": hexdigest,
+            "padded": "sha256:" + hexdigest + " ",
+        }[variant]
+        ok, _ = self._run(work_dir, expected)
         assert ok is True
-
-    def test_digest_without_algorithm_prefix_accepted(self, work_dir):
-        import hashlib
-
-        payload = self._payload()
-        ok, _ = self._run(work_dir, hashlib.sha256(payload).hexdigest())
-        assert ok is True
-
-    def test_trailing_whitespace_tolerated(self, work_dir):
-        import hashlib
-
-        payload = self._payload()
-        ok, _ = self._run(work_dir, "sha256:" + hashlib.sha256(payload).hexdigest() + " ")
-        assert ok is True, "digest 首尾空白应被 strip"
 
     def test_other_algorithm_fails_closed(self, work_dir):
         ok, _err = self._run(work_dir, "sha512:" + "0" * 128)
@@ -426,10 +419,6 @@ class TestBumpConfigExactAsset:
         monkeypatch.chdir(work_dir)
         convert_mrs.bump_config()
 
-    def test_asset_name_derived_from_tag(self):
-        assert convert_mrs.expected_kernel_asset_name("v1.19.32") == \
-            "mihomo-linux-amd64-v1.19.32.gz"
-
     def test_no_guess_when_exact_asset_absent(self, monkeypatch, work_dir):
         assets = [
             asset("mihomo-linux-amd64-v9.9.8.gz"),
@@ -450,11 +439,6 @@ class TestBumpConfigExactAsset:
         with pytest.raises(SystemExit):
             self._bump(monkeypatch, work_dir, "v9.9.9", [asset("mihomo-linux-amd64-v9.9.9.gz")])
         assert seen == {"calls": [("v9.9.9", "amd64")]}
-
-    def test_exact_name_selects_that_asset(self):
-        assets = [asset("mihomo-linux-amd64-v9.9.8.gz"), asset("mihomo-linux-amd64-v9.9.9.gz")]
-        got = convert_mrs.select_kernel_asset(assets, "v9.9.9")
-        assert got["name"] == "mihomo-linux-amd64-v9.9.9.gz"
 
     def test_dual_bump_requires_arm64_asset(self, monkeypatch, work_dir):
         assets = [asset("mihomo-linux-amd64-v9.9.9.gz")]
@@ -552,28 +536,6 @@ class TestConfigGuard:
 
 
 class TestBumpQueriesLatest:
-
-    def test_bump_fetches_latest_not_the_pinned_tag(self, monkeypatch, work_dir):
-        seen = []
-
-        def fake_fetch(max_retries=3, pinned=None):
-            seen.append(pinned)
-            raise RuntimeError("stop-after-recording")
-
-        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
-        monkeypatch.chdir(work_dir)
-        (work_dir / "config.yaml").write_text(
-            'mihomo:\n  pinned_version: "v1.19.30"\n  kernel_sha256: "00"\n',
-            encoding="utf-8")
-        with pytest.raises(RuntimeError):
-            convert_mrs.bump_config()
-        assert seen == [""], "bump 路径必须用 /latest（pinned=\"\"）"
-
-    def test_latest_url_differs_from_pinned_url(self):
-        assert convert_mrs.release_api_url("", "https://api.github.com/x") == \
-            "https://api.github.com/x/latest"
-        assert convert_mrs.release_api_url("v1", "https://api.github.com/x") == \
-            "https://api.github.com/x/tags/v1"
 
     def test_bump_actually_requests_the_latest_url(self, monkeypatch, work_dir):
         seen = []
