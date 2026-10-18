@@ -297,6 +297,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             stats["unrecognized"] += 1
             continue
         if '.' not in s:
+            if s.upper() in (_MIHOMO_RULE_TYPES | _UNSUPPORTED_TYPES):
+                stats["unrecognized"] += 1
+                continue
             valid = all(c.isalnum() or c in '-_' for c in s) and s[0] != '-' and s[-1] != '-'
             if valid and semantic == 'suffix':
                 stats["suffix"] += 1

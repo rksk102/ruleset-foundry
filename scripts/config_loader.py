@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from utils import is_safe_component
+from utils import RULE_TYPES, is_safe_component
 
 try:
     import yaml
@@ -211,6 +211,11 @@ def _validate_merges(merges):
                     f"merges[{idx}].{field} 必须是以字母/数字开头的单段名字"
                     f"（允许 [A-Za-z0-9._-]，不得含 '..'、路径分隔符或空白）: {task[field]!r}"
                 )
+        if task["type"] not in RULE_TYPES:
+            raise ConfigError(
+                f"merges[{idx}].type 非法: {task['type']!r}"
+                f"（仅允许 {'/'.join(RULE_TYPES)}）"
+            )
         for pos, rel in enumerate(task["inputs"]):
             if not isinstance(rel, str) or not rel.strip():
                 raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")

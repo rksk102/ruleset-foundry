@@ -199,6 +199,8 @@ class TestValidationMatrix:
                "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n",
         BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
                "    filename: a.txt\n    inputs: [123]\n",
+        BASE + "merges:\n  - strategy: block\n    type: classical\n    owner: o\n"
+               "    filename: a.txt\n    inputs: ['x.txt']\n",
     ])
     def test_invalid_config_is_rejected(self, work_dir, body):
         use_config(work_dir, body)
@@ -218,6 +220,28 @@ class TestValidationMatrix:
         use_config(work_dir, body)
         try:
             config_loader.load_config()
+        finally:
+            reset_config()
+
+
+class TestResolveConfigFile:
+    def test_cwd_config_wins_over_repo_root(self, work_dir, monkeypatch):
+        (work_dir / "config.yaml").write_text("behavior:\n  conflict_policy: fail\n",
+                                              encoding="utf-8")
+        monkeypatch.chdir(work_dir)
+        config_loader._CONFIG_FILE = Path("config.yaml")
+        try:
+            assert Path(config_loader.resolve_config_file()) == Path("config.yaml")
+        finally:
+            reset_config()
+
+    def test_falls_back_to_repo_root_config(self, work_dir, monkeypatch):
+        monkeypatch.chdir(work_dir)
+        config_loader._CONFIG_FILE = Path("config.yaml")
+        try:
+            resolved = Path(config_loader.resolve_config_file())
+            assert resolved == config_loader._REPO_CONFIG_FILE
+            assert resolved.exists()
         finally:
             reset_config()
 

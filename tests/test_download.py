@@ -296,3 +296,37 @@ class TestProcessGroupUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         _count, errors = self.run_group(raw)
         assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+
+class TestProcessGroupIpUnrecognizedGate:
+    def make_group(self):
+        return {
+            "path": "rulesets/direct/ipcidr/Owner/cn.txt",
+            "policy": "direct",
+            "type": "ipcidr",
+            "members": [(0, {"url": "https://raw.githubusercontent.com/o/r/cn.txt"})],
+            "sources": ["https://raw.githubusercontent.com/o/r/cn.txt"],
+        }
+
+    def run_group(self, raw):
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: None
+        try:
+            return main.process_group(self.make_group(), {0: raw})
+        finally:
+            main.atomic_write = original
+
+    def test_large_invalid_cidr_count_flagged(self):
+        lines = [f"garbage row {i}" for i in range(25)] + ["1.0.1.0/24"]
+        raw = ("\n".join(lines) + "\n").encode()
+        count, errors = self.run_group(raw)
+        assert count == 1
+        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        assert flagged == ["https://raw.githubusercontent.com/o/r/cn.txt"]
+
+    def test_low_invalid_ratio_not_flagged(self):
+        lines = ["garbage row"] + [f"10.{i}.0.0/16" for i in range(0, 100, 2)]
+        raw = ("\n".join(lines) + "\n").encode()
+        count, errors = self.run_group(raw)
+        assert count == 50
+        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])

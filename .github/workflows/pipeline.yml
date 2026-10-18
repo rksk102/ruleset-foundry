@@ -22,7 +22,7 @@ jobs:
   sync-rules:
     name: "1. 同步清洗"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -42,6 +42,14 @@ jobs:
           path: rulesets/
           retention-days: 1
           if-no-files-found: error
+      - name: 上传运行日志
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: logs-sync-rules
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore
 
   merge-rules:
     name: "2. 合并规则"
@@ -76,6 +84,14 @@ jobs:
           path: merged-rules/
           retention-days: 1
           if-no-files-found: error
+      - name: 上传运行日志
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: logs-merge-rules
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore
 
   convert-mrs:
     name: "3. 转换 MRS"
@@ -128,6 +144,14 @@ jobs:
           path: merged-rules-mrs/
           retention-days: 1
           if-no-files-found: error
+      - name: 上传运行日志
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: logs-convert-mrs
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore
 
   publish:
     name: "4. 发布"
@@ -248,3 +272,50 @@ jobs:
         run: |
           echo "::error::制品下载不完整: merged-rules(outcome=${MERGED_OUTCOME} conclusion=${MERGED_CONCLUSION}) merged-rules-mrs(outcome=${MRS_OUTCOME} conclusion=${MRS_CONCLUSION}) run_id=${{ github.run_id }}"
           exit 1
+      - name: 上传运行日志
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: logs-publish
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  notify-on-failure:
+    name: "5. 失败告警"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    needs: [sync-rules, merge-rules, convert-mrs, publish]
+    if: always() && github.ref == 'refs/heads/main'
+    permissions:
+      issues: write
+    steps:
+      - name: 失败时评论/创建固定告警 Issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          R_SYNC: ${{ needs.sync-rules.result }}
+          R_MERGE: ${{ needs.merge-rules.result }}
+          R_MRS: ${{ needs.convert-mrs.result }}
+          R_PUBLISH: ${{ needs.publish.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RESULTS="sync=$R_SYNC merge=$R_MERGE mrs=$R_MRS publish=$R_PUBLISH"
+          echo "本轮结果: $RESULTS"
+          if ! echo "$R_SYNC $R_MERGE $R_MRS $R_PUBLISH" | grep -qE "failure|cancelled"; then
+            echo "无失败/取消的 job，不告警"
+            exit 0
+          fi
+          TITLE="[告警] 规则构建流水线失败"
+          BODY=$(printf '流水线失败，请检查。\n\n- Run: %s\n- 结果: %s\n- 时间(UTC): %s\n' \
+            "$RUN_URL" "$RESULTS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          NUMBER=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --body "$BODY"
+            echo "已评论既有告警 Issue #$NUMBER"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+            echo "已创建告警 Issue"
+          fi

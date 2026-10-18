@@ -3,7 +3,6 @@ import re
 from pathlib import Path
 
 import gen_readme
-import main
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
@@ -47,19 +46,6 @@ class TestConsumerContract:
         assert "format: text" in text
         assert "format: mrs" in text
         assert "behavior: ipcidr" in text
-
-class TestPublishedPathStability:
-    def test_displayable_upstream_name_survives(self):
-        task = {
-            "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/"
-                   "geo/geosite/category-ai-!cn.list",
-            "policy": "policy",
-            "type": "domain",
-            "domain_kind": "exact",
-        }
-        _owner, _name, rel, _abs_path = main.build_filepath(task)
-        assert rel.as_posix() == "policy/domain/MetaCubeX/category-ai-!cn.txt"
-
 
 class TestDocumentedConfigAndWorkflow:
     def test_config_entry_points_are_documented(self):

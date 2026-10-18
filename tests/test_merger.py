@@ -16,10 +16,11 @@ class TestDetectMode:
 
     def test_domain(self):
         assert merger.detect_mode("domain") == "DOMAIN"
-        assert merger.detect_mode("General") == "DOMAIN"
 
-    def test_hyphenated_form_falls_back_to_domain(self):
-        assert merger.detect_mode("IP-CIDR") == "DOMAIN"
+    def test_unknown_type_raises(self):
+        for raw in ["General", "IP-CIDR", "skip"]:
+            with pytest.raises(ValueError):
+                merger.detect_mode(raw)
 
 
 class TestResolveConflictAction:

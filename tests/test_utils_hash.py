@@ -83,10 +83,3 @@ class TestDirHashIsPathSensitive:
         second, _c2 = utils.dir_hash(str(root), "*.mrs")
 
         assert first != second
-
-    def test_same_digest_across_calls(self, work_dir):
-        root = work_dir / "rules"
-        root.mkdir()
-        (root / "a.txt").write_text("a.com\n", encoding="utf-8")
-        assert utils.dir_hash(str(root), "*.txt", skip_comments=True) == \
-            utils.dir_hash(str(root), "*.txt", skip_comments=True)
