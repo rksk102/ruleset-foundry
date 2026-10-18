@@ -293,6 +293,7 @@ jobs:
       - name: 失败时评论/创建固定告警 Issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           R_SYNC: ${{ needs.sync-rules.result }}
           R_MERGE: ${{ needs.merge-rules.result }}
           R_MRS: ${{ needs.convert-mrs.result }}
