@@ -1,4 +1,5 @@
 """sources.urls 标记契约：大小写、尾随注释、未知标记 fail-closed。"""
+
 from pathlib import Path
 
 import main
@@ -19,15 +20,13 @@ def parse(monkeypatch, work_dir, body):
 
 class TestMarkerParsing:
     def test_keys_are_case_insensitive(self, work_dir, monkeypatch):
-        tasks = parse(monkeypatch, work_dir,
-                      "[Policy:direct]\n[Type:ipcidr]\n[Domain-Kind:suffix]\n" + URL + "\n")
+        tasks = parse(monkeypatch, work_dir, "[Policy:direct]\n[Type:ipcidr]\n[Domain-Kind:suffix]\n" + URL + "\n")
         assert tasks[0]["policy"] == "direct"
         assert tasks[0]["type"] == "ipcidr"
         assert tasks[0]["domain_kind"] == "suffix"
 
     def test_trailing_comment_is_allowed(self, work_dir, monkeypatch):
-        tasks = parse(monkeypatch, work_dir,
-                      "[policy:block] # 广告拦截\n[type:domain]  # 说明\n" + URL + "\n")
+        tasks = parse(monkeypatch, work_dir, "[policy:block] # 广告拦截\n[type:domain]  # 说明\n" + URL + "\n")
         assert tasks[0]["policy"] == "block"
         assert tasks[0]["type"] == "domain"
 
@@ -54,11 +53,8 @@ class TestMarkerParsing:
 
     def test_marker_after_url_does_not_apply_backwards(self, work_dir, monkeypatch):
         other = "https://raw.githubusercontent.com/other/repo/main/list.txt"
-        tasks = parse(
-            monkeypatch, work_dir,
-            f"[domain-kind:exact]\n{URL}\n[domain-kind:suffix]\n{other}\n")
-        assert {task["url"]: task["domain_kind"] for task in tasks} == {
-            URL: "exact", other: "suffix"}
+        tasks = parse(monkeypatch, work_dir, f"[domain-kind:exact]\n{URL}\n[domain-kind:suffix]\n{other}\n")
+        assert {task["url"]: task["domain_kind"] for task in tasks} == {URL: "exact", other: "suffix"}
 
     def test_inline_marker_is_ignored(self, work_dir, monkeypatch):
         tasks = parse(monkeypatch, work_dir, "前缀 [policy:block] 后缀\n" + URL + "\n")
@@ -86,17 +82,12 @@ class TestRealSourcesContract:
 class TestNoMixedKindPerProduct:
     def test_single_kind_source_is_not_mixed(self, work_dir, monkeypatch):
         url = "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt"
-        tasks = parse(
-            monkeypatch, work_dir,
-            f"[policy:block]\n[type:domain]\n[domain-kind:suffix]\n{url}\n")
+        tasks = parse(monkeypatch, work_dir, f"[policy:block]\n[type:domain]\n[domain-kind:suffix]\n{url}\n")
         assert [g["domain_kind"] for g in main.plan_groups(tasks)] == ["suffix"]
 
-    def test_same_url_declared_twice_with_same_kind_is_not_mixed(
-            self, work_dir, monkeypatch):
+    def test_same_url_declared_twice_with_same_kind_is_not_mixed(self, work_dir, monkeypatch):
         url = "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt"
-        tasks = parse(
-            monkeypatch, work_dir,
-            f"[policy:block]\n[type:domain]\n[domain-kind:suffix]\n{url}\n{url}\n")
+        tasks = parse(monkeypatch, work_dir, f"[policy:block]\n[type:domain]\n[domain-kind:suffix]\n{url}\n{url}\n")
         assert [g["domain_kind"] for g in main.plan_groups(tasks)] == ["suffix"]
 
     def test_real_sources_file_has_no_mixed_products(self, monkeypatch):
@@ -108,8 +99,7 @@ class TestNoMixedKindPerProduct:
     def test_real_sources_file_marks_dlc_sources_as_suffix(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
         suffix = {t["url"] for t in main.parse_sources() if t.get("domain_kind") == "suffix"}
-        for name in ("reject-list.txt", "win-extra.txt", "win-spy.txt",
-                     "direct-list.txt", "proxy-list.txt"):
+        for name in ("reject-list.txt", "win-extra.txt", "win-spy.txt", "direct-list.txt", "proxy-list.txt"):
             assert any(u.endswith(name) for u in suffix)
 
     def test_no_url_declared_with_two_kinds(self, monkeypatch):

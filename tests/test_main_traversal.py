@@ -21,8 +21,7 @@ def single_task(monkeypatch, work_dir, content):
 class TestMarkerWhitelistRejected:
     def test_policy_parent_traversal_rejected(self, monkeypatch, work_dir):
         with pytest.raises(SystemExit) as exc:
-            load_sources(monkeypatch, work_dir,
-                         f"[policy:../../../etc]\n{SOURCE_URL}\n")
+            load_sources(monkeypatch, work_dir, f"[policy:../../../etc]\n{SOURCE_URL}\n")
         assert exc.value.code == 1
 
     def test_policy_absolute_path_rejected(self, monkeypatch, work_dir):
@@ -51,11 +50,23 @@ class TestMarkerWhitelistRejected:
             load_sources(monkeypatch, work_dir, f"[type:C:/win]\n{SOURCE_URL}\n")
 
     def test_valid_markers_still_accepted(self, monkeypatch, work_dir):
-        tasks = load_sources(monkeypatch, work_dir, "\n".join([
-            "[policy:reject]", "[type:ipcidr]", SOURCE_URL,
-            "[policy:direct]", "[type:domain]", SOURCE_URL,
-            "[policy:custom-list]", SOURCE_URL,
-        ]) + "\n")
+        tasks = load_sources(
+            monkeypatch,
+            work_dir,
+            "\n".join(
+                [
+                    "[policy:reject]",
+                    "[type:ipcidr]",
+                    SOURCE_URL,
+                    "[policy:direct]",
+                    "[type:domain]",
+                    SOURCE_URL,
+                    "[policy:custom-list]",
+                    SOURCE_URL,
+                ]
+            )
+            + "\n",
+        )
         assert [t["policy"] for t in tasks] == ["block", "direct", "custom-list"]
         assert [t["type"] for t in tasks] == ["ipcidr", "domain", "domain"]
 
@@ -83,8 +94,7 @@ class TestUrlDerivedComponents:
         assert Path(abs_path).resolve().is_relative_to((work_dir / "rulesets").resolve())
 
     def test_collision_slug_is_sanitised(self, monkeypatch, work_dir):
-        task = single_task(monkeypatch, work_dir,
-                           "https://github.com/u:x/repo/raw/m/x.txt\n")
+        task = single_task(monkeypatch, work_dir, "https://github.com/u:x/repo/raw/m/x.txt\n")
         plan = {str(main.Path("policy/domain/u_x/x.txt")): ["u:x__repo"]}
         owner, _name, rel, abs_path = main.build_filepath(task, plan, {})
         assert owner == "u_x__repo"
@@ -94,10 +104,18 @@ class TestUrlDerivedComponents:
 
 class TestNormalPaths:
     def test_normal_source_lands_where_expected(self, monkeypatch, work_dir):
-        task = single_task(monkeypatch, work_dir, "\n".join([
-            "[policy:block]", "[type:domain]",
-            "https://github.com/Loyalsoldier/clash-rules/raw/r/reject.txt",
-        ]) + "\n")
+        task = single_task(
+            monkeypatch,
+            work_dir,
+            "\n".join(
+                [
+                    "[policy:block]",
+                    "[type:domain]",
+                    "https://github.com/Loyalsoldier/clash-rules/raw/r/reject.txt",
+                ]
+            )
+            + "\n",
+        )
         owner, name, rel, abs_path = main.build_filepath(task)
         assert (owner, name) == ("Loyalsoldier", "reject.txt")
         assert rel.as_posix() == "block/domain/Loyalsoldier/reject.txt"
@@ -125,8 +143,7 @@ class TestLandingAssertion:
 
     def test_absolute_outside_paths_rejected(self, monkeypatch, work_dir):
         monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
-        for target in ("C:/Windows/Temp/x.txt", "U:/p@evil.com:8443/x.txt",
-                       "\\tmp\\evil\\x.txt", "../outside/x.txt"):
+        for target in ("C:/Windows/Temp/x.txt", "U:/p@evil.com:8443/x.txt", "\\tmp\\evil\\x.txt", "../outside/x.txt"):
             with pytest.raises(SystemExit):
                 main.ensure_within_rulesets(target)
 
@@ -172,4 +189,7 @@ class TestLandingAssertion:
         assert count == 2
         assert errors == {"download": [], "parse": []}
         assert target.read_text(encoding="utf-8").splitlines() == [
-            f"# Source: {SOURCE_URL}", "example.com", "sub.example.org"]
+            f"# Source: {SOURCE_URL}",
+            "example.com",
+            "sub.example.org",
+        ]

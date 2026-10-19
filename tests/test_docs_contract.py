@@ -1,4 +1,5 @@
 """文档与实现的契约：语义表、产物路径、消费方式（behavior/format）的改动都必须在这里失败。"""
+
 import re
 from pathlib import Path
 
@@ -20,9 +21,7 @@ class TestSemanticsTable:
     def test_every_row_matches_mihomo_semantics(self):
         text = gen_readme.make_static_sections()
         for form, cells in SEMANTICS_ROWS.items():
-            row = next(
-                (line for line in text.splitlines() if line.startswith(f"| `{form}`")), None
-            )
+            row = next((line for line in text.splitlines() if line.startswith(f"| `{form}`")), None)
             assert row is not None, f"语义表缺少 {form} 行"
             assert tuple(re.findall(r"[✅❌]", row)) == cells, row
 
@@ -34,9 +33,7 @@ class TestConsumerContract:
     def test_behavior_format_table_has_one_row_per_product_kind(self):
         text = gen_readme.make_static_sections()
         rows = [line for line in text.splitlines() if line.startswith("| `merged-rules")]
-        cells = {
-            tuple(cell.strip() for cell in row.strip("|").split("|")) for row in rows
-        }
+        cells = {tuple(cell.strip() for cell in row.strip("|").split("|")) for row in rows}
         assert ("`merged-rules/<策略>/domain/**/*.txt`", "`domain`", "`text`") in cells
         assert ("`merged-rules/<策略>/ipcidr/**/*.txt`", "`ipcidr`", "`text`") in cells
         assert ("`merged-rules-mrs/**/*.mrs`", "与同名 `.txt` 相同", "`mrs`") in cells
@@ -46,6 +43,7 @@ class TestConsumerContract:
         assert "format: text" in text
         assert "format: mrs" in text
         assert "behavior: ipcidr" in text
+
 
 class TestDocumentedConfigAndWorkflow:
     def test_config_entry_points_are_documented(self):

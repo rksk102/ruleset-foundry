@@ -20,15 +20,15 @@ class TestFormatSize:
 
     def test_exact_unit_boundaries(self):
         assert gen_readme.format_size(1024) == "1.00 KB"
-        assert gen_readme.format_size(1024 ** 2) == "1.00 MB"
-        assert gen_readme.format_size(1024 ** 3) == "1.00 GB"
+        assert gen_readme.format_size(1024**2) == "1.00 MB"
+        assert gen_readme.format_size(1024**3) == "1.00 GB"
 
     def test_fractional(self):
         assert gen_readme.format_size(1536) == "1.50 KB"
         assert gen_readme.format_size(4_529_923) == "4.32 MB"
 
     def test_does_not_exceed_last_unit(self):
-        out = gen_readme.format_size(1024 ** 5)
+        out = gen_readme.format_size(1024**5)
         assert out.endswith(" GB")
 
 
@@ -45,8 +45,7 @@ class TestTimeBadge:
 
     def test_badge_regex_roundtrip(self):
         encoded = "2026--10--05%2006%3A12"
-        assert gen_readme.BADGE_TIME_RE.search(
-            gen_readme.get_time_badge(encoded)).group(1) == encoded
+        assert gen_readme.BADGE_TIME_RE.search(gen_readme.get_time_badge(encoded)).group(1) == encoded
 
     def test_badge_regex_rejects_wrong_style(self):
         assert gen_readme.BADGE_TIME_RE.search("Updated-2026--10--05%2006%3A12-green") is None
@@ -60,8 +59,7 @@ class TestScanFiles:
         write(tmp_path / "b" / "y.txt", "y")
         write(tmp_path / "a" / "x.txt", "x")
         found = gen_readme.scan_files(str(tmp_path), ".txt")
-        assert [os.path.relpath(f, tmp_path).replace(os.sep, "/") for f in found] == [
-            "a/x.txt", "b/y.txt"]
+        assert [os.path.relpath(f, tmp_path).replace(os.sep, "/") for f in found] == ["a/x.txt", "b/y.txt"]
         assert found == sorted(found)
 
     def test_hidden_files_skipped(self, tmp_path):
@@ -86,8 +84,7 @@ class TestCollectStats:
     def test_counts_and_sums(self, tmp_path):
         write(tmp_path / "a.txt", "abc")
         write(tmp_path / "b.txt", "de")
-        count, total = gen_readme.collect_stats(
-            [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")])
+        count, total = gen_readme.collect_stats([str(tmp_path / "a.txt"), str(tmp_path / "b.txt")])
         assert count == 2
         assert total == 5
 
@@ -158,7 +155,8 @@ class TestMakeSection:
         write(tmp_path / "o" / "a.txt", "abc")
         buf = io.StringIO()
         count, size = gen_readme.make_section(
-            buf, "标题", "说明", gen_readme.scan_files(str(tmp_path), ".txt"), str(tmp_path))
+            buf, "标题", "说明", gen_readme.scan_files(str(tmp_path), ".txt"), str(tmp_path)
+        )
         out = buf.getvalue()
         assert count == 1 and size == 3
         assert "### 标题" in out and "*说明*" in out
@@ -211,8 +209,7 @@ class TestResolveBadgeTime:
 class TestStaticSections:
     def test_keeps_core_usage_and_semantics(self):
         text = gen_readme.make_static_sections()
-        for token in ("`+.example.com`", "`.example.com`", "`*.example.com`",
-                      "`*.*.example.com`"):
+        for token in ("`+.example.com`", "`.example.com`", "`*.example.com`", "`*.*.example.com`"):
             assert token in text, f"语义表缺少 {token}"
         assert "使用方式" in text
         assert "format: text" in text and "format: mrs" in text
@@ -240,6 +237,7 @@ class TestMakePageHeader:
     def test_now_badge_when_no_time(self):
         html = gen_readme.make_page_header(None)
         assert gen_readme.BADGE_TIME_RE.search(html)
+
 
 class TestMain:
     def run_main(self, tmp_path, monkeypatch):
