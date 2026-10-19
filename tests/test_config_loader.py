@@ -13,7 +13,7 @@ BASE = (
     "  max_retries: 2\n"
     "  max_source_bytes: 67108864\n"
     "paths:\n"
-    "  sources_file: \"sources.urls\"\n"
+    '  sources_file: "sources.urls"\n'
     "behavior:\n"
     "  allow_partial: false\n"
 )
@@ -96,6 +96,48 @@ class TestLoadConfig:
         finally:
             reset_config()
 
+    def test_https_repo_api_is_accepted(self, work_dir):
+        use_config(work_dir, BASE + 'mihomo:\n  repo_api: "https://api.github.com/repos/X/Y/releases"\n')
+        try:
+            assert config_loader.get("mihomo", "repo_api").startswith("https://")
+        finally:
+            reset_config()
+
+    def test_valid_kernel_pin_formats_are_accepted(self, work_dir):
+        use_config(
+            work_dir,
+            BASE
+            + (
+                "mihomo:\n"
+                '  pinned_version: "v1.19.32-rc1"\n'
+                f'  kernel_sha256: "{"a" * 64}"\n'
+                f'  kernel_sha256_arm64: "{"b" * 64}"\n'
+            ),
+        )
+        try:
+            cfg = config_loader.load_config()
+            assert cfg["mihomo"]["pinned_version"] == "v1.19.32-rc1"
+            assert cfg["mihomo"]["kernel_sha256"] == "a" * 64
+        finally:
+            reset_config()
+
+    @pytest.mark.parametrize(
+        "repo_api",
+        [
+            "http://api.github.com/repos/X/Y/releases",
+            "https://",
+            "not-a-url",
+        ],
+    )
+    def test_non_https_repo_api_is_rejected(self, work_dir, repo_api):
+        use_config(work_dir, BASE + f'mihomo:\n  repo_api: "{repo_api}"\n')
+        try:
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+
 class TestGet:
     def test_single_key(self, work_dir):
         use_config(work_dir)
@@ -161,7 +203,7 @@ class TestGet:
 class TestWindowsPathValues:
     @pytest.mark.parametrize("value", ["foo:bar", "NUL", "NUL.txt", "CON", "COM1.txt"])
     def test_windows_unsafe_path_values_are_rejected(self, work_dir, value):
-        use_config(work_dir, f"paths:\n  rulesets_dir: \"{value}\"\n")
+        use_config(work_dir, f'paths:\n  rulesets_dir: "{value}"\n')
         try:
             with pytest.raises(config_loader.ConfigError):
                 config_loader.load_config()
@@ -170,38 +212,44 @@ class TestWindowsPathValues:
 
 
 class TestValidationMatrix:
-    @pytest.mark.parametrize("body", [
-        BASE.replace("max_source_bytes: 67108864", 'max_source_bytes: "67108864"'),
-        BASE.replace("allow_partial: false", 'allow_partial: "false"'),
-        BASE.replace("timeout_seconds: 15", "timeout_seconds: -1"),
-        BASE.replace("max_source_bytes: 67108864", "max_source_bytes: 0"),
-        BASE + 'merges: "oops"\n',
-        BASE + "merges:\n  - strategy: block\n    filename: a.txt\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: a.txt\n    inputs: []\n",
-        BASE + '  conflict_policy: "explode"\n',
-        "merges\n  - strategy: block\n",
-        BASE.replace('sources_file: "sources.urls"', 'sources_file: "sources.urls"\n  rulesets_dir: ""'),
-        BASE.replace('sources_file: "sources.urls"', 'sources_file: "  "'),
-        BASE + '  unrecognized_warn_ratio: 5\n',
-        BASE + '  min_source_success_ratio: -1\n',
-        BASE + '  unrecognized_warn_ratio: 1' + '0' * 400 + '\n',
-        BASE + "behaviour:\n  release_keep_days: 3\n",
-        BASE + "  allow_particals: true\n",
-        BASE + "foo: {}\n",
-        BASE + "merges:\n  - strategy: '../../outside'\n    type: domain\n"
-               "    owner: o\n    filename: a.txt\n    inputs: ['x.txt']\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: '../PWNED.txt'\n    inputs: ['x.txt']\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: a.txt\n    inputs: ['/etc/hosts']\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: a.txt\n    inputs: [123]\n",
-        BASE + "merges:\n  - strategy: block\n    type: classical\n    owner: o\n"
-               "    filename: a.txt\n    inputs: ['x.txt']\n",
-    ])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            BASE.replace("max_source_bytes: 67108864", 'max_source_bytes: "67108864"'),
+            BASE.replace("allow_partial: false", 'allow_partial: "false"'),
+            BASE.replace("timeout_seconds: 15", "timeout_seconds: -1"),
+            BASE.replace("max_source_bytes: 67108864", "max_source_bytes: 0"),
+            BASE + 'merges: "oops"\n',
+            BASE + "merges:\n  - strategy: block\n    filename: a.txt\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: a.txt\n    inputs: []\n",
+            BASE + '  conflict_policy: "explode"\n',
+            "merges\n  - strategy: block\n",
+            BASE.replace('sources_file: "sources.urls"', 'sources_file: "sources.urls"\n  rulesets_dir: ""'),
+            BASE.replace('sources_file: "sources.urls"', 'sources_file: "  "'),
+            BASE + "  unrecognized_warn_ratio: 5\n",
+            BASE + "  min_source_success_ratio: -1\n",
+            BASE + "  unrecognized_warn_ratio: 1" + "0" * 400 + "\n",
+            BASE + "behaviour:\n  release_keep_days: 3\n",
+            BASE + "  allow_particals: true\n",
+            BASE + "foo: {}\n",
+            BASE + "merges:\n  - strategy: '../../outside'\n    type: domain\n"
+            "    owner: o\n    filename: a.txt\n    inputs: ['x.txt']\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: '../PWNED.txt'\n    inputs: ['x.txt']\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: a.txt\n    inputs: ['/etc/hosts']\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: a.txt\n    inputs: ['../../../../etc/passwd']\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: a.txt\n    inputs: [123]\n",
+            BASE + "merges:\n  - strategy: block\n    type: classical\n    owner: o\n"
+            "    filename: a.txt\n    inputs: ['x.txt']\n",
+            BASE + 'mihomo:\n  kernel_sha256: "00"\n',
+            BASE + 'mihomo:\n  kernel_sha256_arm64: "zz"\n',
+            BASE + 'mihomo:\n  pinned_version: "../v1"\n',
+        ],
+    )
     def test_invalid_config_is_rejected(self, work_dir, body):
         use_config(work_dir, body)
         try:
@@ -210,12 +258,15 @@ class TestValidationMatrix:
         finally:
             reset_config()
 
-    @pytest.mark.parametrize("body", [
-        BASE,
-        BASE + "merges: []\n",
-        BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-               "    filename: a.txt\n    inputs: ['x.txt']\n",
-    ])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            BASE,
+            BASE + "merges: []\n",
+            BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
+            "    filename: a.txt\n    inputs: ['x.txt']\n",
+        ],
+    )
     def test_supported_config_variants_load(self, work_dir, body):
         use_config(work_dir, body)
         try:
@@ -226,8 +277,7 @@ class TestValidationMatrix:
 
 class TestResolveConfigFile:
     def test_cwd_config_wins_over_repo_root(self, work_dir, monkeypatch):
-        (work_dir / "config.yaml").write_text("behavior:\n  conflict_policy: fail\n",
-                                              encoding="utf-8")
+        (work_dir / "config.yaml").write_text("behavior:\n  conflict_policy: fail\n", encoding="utf-8")
         monkeypatch.chdir(work_dir)
         config_loader._CONFIG_FILE = Path("config.yaml")
         try:
@@ -246,6 +296,33 @@ class TestResolveConfigFile:
             reset_config()
 
 
+class TestEntryPointConfigErrors:
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "merger",
+            "convert_mrs",
+            "release_handler",
+            "gen_readme",
+        ],
+    )
+    def test_entry_scripts_report_config_error(self, work_dir, module):
+        (work_dir / "config.yaml").write_text("behavior: [broken\n", encoding="utf-8")
+        env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-c", f"import {module}"],
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=env,
+        )
+        assert proc.returncode == 1, proc.stderr
+        assert "::error::配置校验失败" in proc.stdout
+
+
 class TestPyYamlMissing:
     def test_missing_pyyaml_is_hard_error(self, work_dir, monkeypatch):
         (work_dir / "config.yaml").write_text(BASE, encoding="utf-8")
@@ -262,7 +339,12 @@ class TestPyYamlMissing:
         env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
         proc = subprocess.run(
             [sys.executable, "-c", child],
-            cwd=str(work_dir), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=60, env=env,
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=env,
         )
         assert proc.stdout.strip().startswith("CONFIG_ERROR")

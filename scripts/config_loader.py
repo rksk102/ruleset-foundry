@@ -1,9 +1,12 @@
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from utils import RULE_TYPES, is_safe_component
 
 try:
     import yaml
+
     _HAS_YAML = True
 except ImportError:
     _HAS_YAML = False
@@ -21,6 +24,7 @@ def resolve_config_file():
     if str(_CONFIG_FILE) == "config.yaml" and _REPO_CONFIG_FILE.exists():
         return _REPO_CONFIG_FILE
     return _CONFIG_FILE
+
 
 _TYPES = {
     ("network", "timeout_seconds"): int,
@@ -63,6 +67,7 @@ _RATIOS = {
 }
 
 CONFLICT_POLICIES = ("ignore", "warn", "fail")
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 _PATH_KEYS = {
     ("paths", "sources_file"),
@@ -128,7 +133,10 @@ def _merge_dict(base, override):
 
 _PATH_FORBIDDEN_NAMES = {"", ".", "..", "./", "../", "/", "\\"}
 _WINDOWS_RESERVED_NAMES = {
-    "CON", "PRN", "AUX", "NUL",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
@@ -171,24 +179,34 @@ def _validate_scalar(section, key, value):
         except OverflowError as e:
             raise ConfigError(f"{section}.{key} 数值超出 float 范围（{value!r}）") from e
     if not isinstance(value, expected):
-        raise ConfigError(
-            f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）"
-        )
+        raise ConfigError(f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）")
     if expected is not None and expected is str and (section, key) in _PATH_KEYS:
         _validate_path_value(f"{section}.{key}", value)
+    if (section, key) == ("mihomo", "repo_api"):
+        try:
+            parts = urlsplit(value)
+        except ValueError as e:
+            raise ConfigError(f"mihomo.repo_api 不是有效 URL: {value!r}") from e
+        if parts.scheme != "https" or not parts.hostname:
+            raise ConfigError(f"mihomo.repo_api 必须为 https:// 且包含有效主机名: {value!r}")
+    if (
+        (section, key) in (("mihomo", "kernel_sha256"), ("mihomo", "kernel_sha256_arm64"))
+        and value
+        and not _SHA256_RE.fullmatch(value)
+    ):
+        raise ConfigError(f"{section}.{key} 必须为 64 位十六进制字符串，实际 {value!r}")
+    if (section, key) == ("mihomo", "pinned_version") and value and not is_safe_component(value):
+        raise ConfigError(
+            f"mihomo.pinned_version 必须为安全版本标识（[A-Za-z0-9._-]，不得含 '..' 或路径分隔符）: {value!r}"
+        )
     if (section, key) in _POSITIVE_INTS and value <= 0:
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
     if (section, key) == ("behavior", "release_keep_days") and value > 25:
-        raise ConfigError(
-            f"{section}.{key} 不能超过 25，实际 {value!r}"
-            "（发布清理每次最多读取 50 条 release）"
-        )
+        raise ConfigError(f"{section}.{key} 不能超过 25，实际 {value!r}（发布清理每次最多读取 50 条 release）")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
         raise ConfigError(f"{section}.{key} 必须在 0..1 之间，实际 {value!r}")
     if (section, key) == ("behavior", "conflict_policy") and value not in CONFLICT_POLICIES:
-        raise ConfigError(
-            f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(CONFLICT_POLICIES)}）"
-        )
+        raise ConfigError(f"behavior.conflict_policy 取值非法: {value!r}（允许 {'/'.join(CONFLICT_POLICIES)}）")
     return value
 
 
@@ -212,10 +230,7 @@ def _validate_merges(merges):
                     f"（允许 [A-Za-z0-9._-]，不得含 '..'、路径分隔符或空白）: {task[field]!r}"
                 )
         if task["type"] not in RULE_TYPES:
-            raise ConfigError(
-                f"merges[{idx}].type 非法: {task['type']!r}"
-                f"（仅允许 {'/'.join(RULE_TYPES)}）"
-            )
+            raise ConfigError(f"merges[{idx}].type 非法: {task['type']!r}（仅允许 {'/'.join(RULE_TYPES)}）")
         for pos, rel in enumerate(task["inputs"]):
             if not isinstance(rel, str) or not rel.strip():
                 raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")
@@ -233,8 +248,7 @@ def load_config():
     if config_file.exists():
         if not _HAS_YAML:
             raise ConfigError(
-                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；"
-                "请运行 pip install -r requirements.txt"
+                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；请运行 pip install -r requirements.txt"
             )
         try:
             with open(config_file, encoding="utf-8") as f:
@@ -247,9 +261,7 @@ def load_config():
         if user_data is None:
             user_data = {}
         if not isinstance(user_data, dict):
-            raise ConfigError(
-                f"配置文件 {config_file} 顶层必须是映射，实际 {type(user_data).__name__}"
-            )
+            raise ConfigError(f"配置文件 {config_file} 顶层必须是映射，实际 {type(user_data).__name__}")
 
         _merge_dict(cfg, user_data)
 
@@ -259,9 +271,7 @@ def load_config():
         if section == "merges":
             continue
         if not isinstance(values, dict):
-            raise ConfigError(
-                f"配置节 {section!r} 必须是映射，实际 {type(values).__name__}"
-            )
+            raise ConfigError(f"配置节 {section!r} 必须是映射，实际 {type(values).__name__}")
         for key, value in values.items():
             if (section, key) not in _TYPES:
                 raise ConfigError(f"未知配置项: {section}.{key}（请检查拼写）")

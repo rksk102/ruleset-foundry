@@ -15,10 +15,12 @@ class FakeStream:
 
 
 class FakeResponse:
-    def __init__(self, status, chunks, headers=None):
+    def __init__(self, status, chunks, headers=None, url=None, history=None):
         self.status = status
         self.content = FakeStream(chunks)
         self.headers = headers or {}
+        self.url = url or "https://example.com/list.txt"
+        self.history = history or []
 
     async def __aenter__(self):
         return self
@@ -43,6 +45,21 @@ TASK = {"url": "https://example.com/list.txt", "policy": "block", "type": "domai
 def download(chunks, status=200, headers=None):
     session = FakeSession(FakeResponse(status, chunks, headers))
     return asyncio.run(main.download_one(session, TASK))
+
+
+class TestHttpsRedirects:
+    def test_final_http_url_is_rejected(self):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"], url="http://mirror.example.com/list.txt"))
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+        assert content is None
+        assert "HTTPS" in err
+
+    def test_http_hop_in_history_is_rejected(self):
+        history = [FakeResponse(302, [], url="http://mirror.example.com/list.txt")]
+        session = FakeSession(FakeResponse(200, [b"example.com\n"], history=history))
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+        assert content is None
+        assert "HTTPS" in err
 
 
 def with_limit(value, fn):
@@ -119,8 +136,7 @@ class TestRetryPolicy:
         assert slept == [30, 30]
 
     def test_retry_after_over_budget_is_not_retried(self):
-        session, (_task, content, err), slept = self.retry_with(
-            429, {"Retry-After": "3600"})
+        session, (_task, content, err), slept = self.retry_with(429, {"Retry-After": "3600"})
         assert len(session.calls) == 1
         assert slept == []
         assert content is None
@@ -141,6 +157,7 @@ class TestRetryPolicy:
     def test_invalid_retry_after_falls_back(self):
         _s, _r, slept = self.retry_with(429, {"Retry-After": "not-a-date"})
         assert slept == [1, 2]
+
 
 class TestBackoffBudget:
     def test_budget_stops_endless_retries(self):
@@ -165,7 +182,6 @@ class TestBackoffBudget:
 
 
 class TestSourceDisambiguation:
-
     def _task(self, url):
         return {"url": url, "policy": "policy", "type": "domain"}
 
@@ -178,8 +194,7 @@ class TestSourceDisambiguation:
         groups = main.plan_groups([self._task(u) for u in urls])
         for g in groups:
             slugs = {main.source_repo_slug(t["url"]) for _i, t in g["members"]}
-            assert len(g["members"]) == 1 or len(slugs) == 1, \
-                f"多来源共享输出: {g['path']} <- {slugs}"
+            assert len(g["members"]) == 1 or len(slugs) == 1, f"多来源共享输出: {g['path']} <- {slugs}"
 
     def test_lookalike_host_not_merged_with_real_source(self):
         urls = [
@@ -251,8 +266,21 @@ class TestProcessGroupUnrecognizedGate:
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
-        assert count == 1
+        assert count is None
         assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+    def test_gate_failure_does_not_write_output(self):
+        lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
+        raw = ("\n".join(lines) + "\n").encode()
+        written = []
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: written.append(path)
+        try:
+            count, _errors = main.process_group(self.make_group(), {0: raw})
+        finally:
+            main.atomic_write = original
+        assert count is None
+        assert written == []
 
     def test_unrecognized_gate_entry_uses_source_url_not_path(self):
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
@@ -279,7 +307,7 @@ class TestProcessGroupUnrecognizedGate:
             count, errors = main.process_group(group, {1: raw})
         finally:
             main.atomic_write = original
-        assert count == 1
+        assert count is None
         assert errors["download"] == [(dead, "下载失败")]
         flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
         assert flagged == [alive]
@@ -320,7 +348,7 @@ class TestProcessGroupIpUnrecognizedGate:
         lines = [f"garbage row {i}" for i in range(25)] + ["1.0.1.0/24"]
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
-        assert count == 1
+        assert count is None
         flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/cn.txt"]
 

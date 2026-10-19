@@ -2,6 +2,9 @@ network:
   timeout_seconds: 15
   max_retries: 2
   max_source_bytes: 67108864
+  max_concurrency: 6
+  max_per_host: 2
+  max_retry_after_seconds: 60
 
 paths:
   sources_file: "sources.urls"

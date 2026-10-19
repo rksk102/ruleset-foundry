@@ -72,6 +72,13 @@ def auth_headers(url):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _is_https_url(value):
+    try:
+        return urlsplit(str(value)).scheme == "https"
+    except ValueError:
+        return False
+
+
 def parse_retry_after(value, default, max_seconds=MAX_RETRY_AFTER):
     if not value:
         return default
@@ -81,7 +88,7 @@ def parse_retry_after(value, default, max_seconds=MAX_RETRY_AFTER):
     else:
         try:
             when = parsedate_to_datetime(text)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
         if when is None:
             return default
@@ -98,9 +105,15 @@ def source_repo_slug(url):
     host = (parts.hostname or "").lower()
     path = [p for p in parts.path.strip("/").split("/") if p]
 
-    if host in ("github.com", "www.github.com", "raw.githubusercontent.com",
-                "objects.githubusercontent.com", "codeload.github.com",
-                "gist.githubusercontent.com", "github.io") or host.endswith(".github.io"):
+    if host in (
+        "github.com",
+        "www.github.com",
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "codeload.github.com",
+        "gist.githubusercontent.com",
+        "github.io",
+    ) or host.endswith(".github.io"):
         if len(path) >= 2:
             return f"{path[0]}__{path[1]}"
         return ""
@@ -119,8 +132,9 @@ _UNSAFE_COMPONENT_CHARS_RE = re.compile(r'[/\\:*?"<>|#%@\s\x00-\x1f\x7f]')
 def safe_marker_value(value, label, line_no=None):
     if not is_safe_component(value):
         where = f"sources.urls:{line_no}: " if line_no else ""
-        gh_error(f"{where}非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，"
-                 f"不得含 '..'、前导点、盘符或路径分隔符）")
+        gh_error(
+            f"{where}非法 [{label}:] 标记: {value!r}（仅允许 [A-Za-z0-9._-]，不得含 '..'、前导点、盘符或路径分隔符）"
+        )
         sys.exit(1)
     return value
 
@@ -199,14 +213,17 @@ def plan_groups(tasks):
     for idx, task in enumerate(tasks):
         _, _, _, abs_path = build_filepath(task, collide_plan, taken)
         key = str(abs_path)
-        group = groups.setdefault(key, {
-            "path": key,
-            "policy": task["policy"],
-            "type": task["type"],
-            "domain_kind": task.get("domain_kind", "exact"),
-            "members": [],
-            "sources": [],
-        })
+        group = groups.setdefault(
+            key,
+            {
+                "path": key,
+                "policy": task["policy"],
+                "type": task["type"],
+                "domain_kind": task.get("domain_kind", "exact"),
+                "members": [],
+                "sources": [],
+            },
+        )
         group["members"].append((idx, task))
         group["sources"].append(task["url"])
         if task.get("domain_kind") != group["domain_kind"]:
@@ -233,37 +250,12 @@ def plan_groups(tasks):
 
 
 def _process_ip_group(all_lines):
-    ip_lines = []
-    stats = processor.new_stats()
-    for line in all_lines:
-        kind, payload, type_name = processor.classify_rule_line(line)
-        if kind == "ip":
-            if payload:
-                ip_lines.append(payload)
-            else:
-                stats["unrecognized"] += 1
-        elif kind in ("suffix", "exact"):
-            stats["suffix" if kind == "suffix" else "relaxed_exact"] += 1
-        elif kind == "opaque":
-            stats["dropped_rule_type"][type_name] = \
-                stats["dropped_rule_type"].get(type_name, 0) + 1
-        else:
-            ip_lines.append(line)
-
-    result, ip_errors, ip_stats = processor.process_ip_detailed(ip_lines)
-    stats["dropped_default_route"] = ip_stats["dropped_default_route"]
+    result, ip_errors, stats = processor.process_ip_detailed(all_lines)
     for bad, why in ip_errors[:10]:
         warning(f"    无效 CIDR 已丢弃: {bad} -> {why}")
     if len(ip_errors) > 10:
         warning(f"    ... 及其他 {len(ip_errors) - 10} 条无效 CIDR")
 
-    for label, count in (
-        ("后缀(+./domain:)", stats["suffix"]),
-        ("精确(full:/host:/DOMAIN,)", stats["relaxed_exact"]),
-        ("空负载", stats["unrecognized"]),
-    ):
-        if count:
-            warning(f"    {label} 规则不可放入 ipcidr 产物，已丢弃: {count} 行")
     stats["unrecognized"] += len(ip_errors)
     if stats["dropped_default_route"]:
         warning(f"    默认路由(/0) 已按设计丢弃: {stats['dropped_default_route']} 行")
@@ -275,21 +267,22 @@ def _process_ip_group(all_lines):
 def _gate_unrecognized(unrecognized, total, contributing, errors):
     """未识别行占比门禁：domain 与 ipcidr 组共用，超阈值记 parse 错误（fail-closed）。"""
     if not unrecognized:
-        return
+        return True
     ratio = unrecognized / total
     warning(f"    未识别/已丢弃行: {unrecognized}/{total} ({ratio:.1%})")
     if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
-        sources_label = contributing[0] + (
-            f" 等 {len(contributing)} 个源" if len(contributing) > 1 else ""
+        sources_label = contributing[0] + (f" 等 {len(contributing)} 个源" if len(contributing) > 1 else "")
+        errors["parse"].append(
+            (
+                sources_label,
+                f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
+                f"（{unrecognized}/{total}），疑似上游格式变更",
+            )
         )
-        errors["parse"].append((
-            sources_label,
-            f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
-            f"（{unrecognized}/{total}），疑似上游格式变更",
-        ))
-    elif ratio >= UNRECOGNIZED_WARN_RATIO:
-        warning(f"    占比超阈值但未识别行只有 {unrecognized} 行"
-                f"（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
+        return False
+    if ratio >= UNRECOGNIZED_WARN_RATIO:
+        warning(f"    占比超阈值但未识别行只有 {unrecognized} 行（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
+    return True
 
 
 def process_group(group, raw_by_index):
@@ -315,14 +308,11 @@ def process_group(group, raw_by_index):
 
     if group["type"] == "ipcidr":
         result, _special = _process_ip_group(all_lines)
-        _gate_unrecognized(
-            _special.get("unrecognized", 0), len(all_lines), contributing, errors)
+        gate_ok = _gate_unrecognized(_special.get("unrecognized", 0), len(all_lines), contributing, errors)
     else:
         effective_kind = group.get("domain_kind", "exact")
         if effective_kind == "mixed":
-            promoted = sum(
-                1 for _i, t in group["members"] if t.get("domain_kind") == "suffix"
-            )
+            promoted = sum(1 for _i, t in group["members"] if t.get("domain_kind") == "suffix")
             warning(
                 f"    同一输出混用精确/后缀语义源（后缀源 {promoted}/"
                 f"{len(group['members'])}），按精确语义处理: {group['path']}"
@@ -350,9 +340,10 @@ def process_group(group, raw_by_index):
         for type_name, count in sorted((special.get("dropped_rule_type") or {}).items()):
             warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
 
-        _gate_unrecognized(
-            special.get("unrecognized", 0), len(all_lines), contributing, errors)
+        gate_ok = _gate_unrecognized(special.get("unrecognized", 0), len(all_lines), contributing, errors)
 
+    if not gate_ok:
+        return None, errors
     if not result:
         for _idx, task in group["members"]:
             errors["parse"].append((task["url"], "未解析出有效规则"))
@@ -407,47 +398,43 @@ def parse_sources():
             key = marker.group(1).lower()
             value = marker.group(2).strip()
             if key == "policy":
-                current_policy = normalize_policy(
-                    safe_marker_value(value, "policy", line_no))
+                current_policy = normalize_policy(safe_marker_value(value, "policy", line_no))
             elif key == "type":
                 try:
-                    current_type = normalize_type(
-                        safe_marker_value(value, "type", line_no))
+                    current_type = normalize_type(safe_marker_value(value, "type", line_no))
                 except ValueError as e:
                     _fail_marker(line_no, line, str(e))
             elif key == "domain-kind":
                 kind = value.lower()
                 if kind not in ("exact", "suffix"):
-                    _fail_marker(line_no, line,
-                                 "非法 [domain-kind:] 标记（仅允许 exact | suffix）")
+                    _fail_marker(line_no, line, "非法 [domain-kind:] 标记（仅允许 exact | suffix）")
                 current_domain_kind = kind
             else:
-                _fail_marker(line_no, line,
-                             f"无法识别的标记 [{key}:]（仅允许 policy / type / domain-kind）")
+                _fail_marker(line_no, line, f"无法识别的标记 [{key}:]（仅允许 policy / type / domain-kind）")
             continue
 
         if line.startswith("["):
             _fail_marker(
-                line_no, line,
-                "无法识别的标记（标记必须独占一行且形如 "
-                "[policy:...] / [type:...] / [domain-kind:exact|suffix]）",
+                line_no,
+                line,
+                "无法识别的标记（标记必须独占一行且形如 [policy:...] / [type:...] / [domain-kind:exact|suffix]）",
             )
 
         url_match = re.search(r"https?://[^\s#]+", line)
         if url_match:
             url = url_match.group(0)
             if not url.startswith("https://"):
-                _fail_marker(line_no, line,
-                             "仅接受 https:// 来源（规则即配置，明文 http 可被中间人篡改）")
-            tasks.append({
-                "policy": current_policy,
-                "type": current_type,
-                "domain_kind": current_domain_kind,
-                "url": url,
-            })
+                _fail_marker(line_no, line, "仅接受 https:// 来源（规则即配置，明文 http 可被中间人篡改）")
+            tasks.append(
+                {
+                    "policy": current_policy,
+                    "type": current_type,
+                    "domain_kind": current_domain_kind,
+                    "url": url,
+                }
+            )
         elif re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", line):
-            _fail_marker(line_no, line,
-                         "仅接受 https:// 来源（其他协议/写法的行不允许静默跳过）")
+            _fail_marker(line_no, line, "仅接受 https:// 来源（其他协议/写法的行不允许静默跳过）")
 
     return tasks
 
@@ -483,8 +470,15 @@ async def download_one(session, task):
         delay = None
         try:
             async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), headers=headers,
+                url,
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+                headers=headers,
             ) as resp:
+                final_url = getattr(resp, "url", url)
+                history = getattr(resp, "history", ())
+                if not _is_https_url(final_url) or any(not _is_https_url(getattr(item, "url", "")) for item in history):
+                    warning(f"  拒绝非 HTTPS 重定向: {url} -> {final_url}")
+                    return (task, None, "重定向到非 HTTPS 地址")
                 if resp.status == 200:
                     content = await read_capped(resp.content)
                     if content is None:
@@ -512,8 +506,7 @@ async def download_one(session, task):
                         f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {url}"
                     )
                     return (task, None, f"HTTP {resp.status}（Retry-After {delay}s 超过退避预算）")
-                warning(f"  下载失败，{delay}s 后重试 [{attempt+1}/{RETRIES+1}]: "
-                        f"{url} -> HTTP {resp.status}")
+                warning(f"  下载失败，{delay}s 后重试 [{attempt + 1}/{RETRIES + 1}]: {url} -> HTTP {resp.status}")
 
             if delay:
                 if delay > backoff_budget:
@@ -524,7 +517,7 @@ async def download_one(session, task):
 
         except (TimeoutError, aiohttp.ClientError) as e:
             if attempt == RETRIES:
-                warning(f"  下载失败 [{attempt+1}/{RETRIES+1}]: {url} -> {e}")
+                warning(f"  下载失败 [{attempt + 1}/{RETRIES + 1}]: {url} -> {e}")
                 return (task, None, f"{type(e).__name__}: {e}")
             await asyncio.sleep(2 * (attempt + 1))
         except Exception as e:
@@ -577,9 +570,7 @@ def finalize_products(expected_files):
     clean_orphans(expected_files)
 
     produced = manifest.collect_files(RULESETS_DIR)
-    expected_rel = {
-        str(Path(p).relative_to(RULESETS_DIR)).replace("\\", "/") for p in expected_files
-    }
+    expected_rel = {str(Path(p).relative_to(RULESETS_DIR)).replace("\\", "/") for p in expected_files}
     if produced != expected_rel:
         gh_error(
             f"产物清单与磁盘不一致：缺失 {sorted(expected_rel - produced)}，"
@@ -695,13 +686,9 @@ def main():
         if MIN_SUCCESS_RATIO > 0 and ratio < MIN_SUCCESS_RATIO:
             degraded = True
             degraded_reasons.append(
-                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}"
-                f"（成功 {stats.success}/{len(groups)}）"
+                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）"
             )
-            gh_error(
-                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}"
-                f"（成功 {stats.success}/{len(groups)}）"
-            )
+            gh_error(f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）")
         partial_failures = bool(stats.download_errors or stats.parse_errors)
         if partial_failures and not ALLOW_PARTIAL:
             degraded = True
@@ -741,8 +728,10 @@ def main():
 
     generate_summary(stats)
 
-    info(f"\n同步完成: {stats.success} 个输出成功, "
-         f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败")
+    info(
+        f"\n同步完成: {stats.success} 个输出成功, "
+        f"{len(stats.download_errors)} 下载失败, {len(stats.parse_errors)} 解析失败"
+    )
 
 
 if __name__ == "__main__":
