@@ -11,8 +11,22 @@ class TestIsSafeComponent:
             assert utils.is_safe_component(value) is True
 
     def test_rejects_path_and_dot_tricks(self):
-        for value in ("../x", "..", ".", "a/../b", "a\\b", "/abs", "C:/x", "",
-                      "a b", "a..b", ".hidden", None, 5, ["a"]):
+        for value in (
+            "../x",
+            "..",
+            ".",
+            "a/../b",
+            "a\\b",
+            "/abs",
+            "C:/x",
+            "",
+            "a b",
+            "a..b",
+            ".hidden",
+            None,
+            5,
+            ["a"],
+        ):
             assert utils.is_safe_component(value) is False, value
 
 
@@ -258,8 +272,7 @@ class TestCombinedProductsHash:
         assert first != second
 
     def test_missing_dirs_give_zero_counts(self, tmp_path):
-        combined, c1, c2 = utils.combined_products_hash(
-            str(tmp_path / "no-txt"), str(tmp_path / "no-mrs"))
+        combined, c1, c2 = utils.combined_products_hash(str(tmp_path / "no-txt"), str(tmp_path / "no-mrs"))
         assert (c1, c2) == (0, 0)
         assert combined.count("|") == 3
 
@@ -320,6 +333,10 @@ class TestNormalizePolicy:
     def test_substring_match_is_intentional(self):
         assert utils.normalize_policy("adservice") == "block"
 
+    def test_ads_suffix_is_not_a_block_policy(self):
+        for raw in ("downloads", "threads", "uploads"):
+            assert utils.normalize_policy(raw) == raw
+
     def test_unknown_policy_passes_through(self):
         assert utils.normalize_policy("custom") == "custom"
 
@@ -337,17 +354,19 @@ class TestNormalizeType:
 
 class TestGetOwnerFromUrl:
     def test_github_repo_url(self):
-        assert utils.get_owner_from_url(
-            "https://github.com/Loyalsoldier/clash-rules/raw/release/reject.txt"
-        ) == "Loyalsoldier"
+        assert (
+            utils.get_owner_from_url("https://github.com/Loyalsoldier/clash-rules/raw/release/reject.txt")
+            == "Loyalsoldier"
+        )
 
     def test_github_org_only(self):
         assert utils.get_owner_from_url("https://github.com/") == "github"
 
     def test_jsdelivr_gh_form(self):
-        assert utils.get_owner_from_url(
-            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/x.list"
-        ) == "MetaCubeX"
+        assert (
+            utils.get_owner_from_url("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/x.list")
+            == "MetaCubeX"
+        )
 
     def test_jsdelivr_non_gh_falls_back_to_label(self):
         assert utils.get_owner_from_url("https://cdn.jsdelivr.net/npm/foo/index.js") == "jsdelivr"
@@ -359,29 +378,31 @@ class TestGetOwnerFromUrl:
         assert utils.get_owner_from_url("nonsense") == "unknown"
 
     def test_raw_githubusercontent_owner_extracted(self):
-        assert utils.get_owner_from_url(
-            "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt"
-        ) == "Loyalsoldier"
+        assert (
+            utils.get_owner_from_url("https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt")
+            == "Loyalsoldier"
+        )
 
     def test_gist_owner_extracted(self):
-        assert utils.get_owner_from_url(
-            "https://gist.githubusercontent.com/someuser/abc123/raw/x.txt"
-        ) == "someuser"
+        assert utils.get_owner_from_url("https://gist.githubusercontent.com/someuser/abc123/raw/x.txt") == "someuser"
 
     def test_uppercase_host_still_github(self):
-        assert utils.get_owner_from_url(
-            "https://GITHUB.COM/Loyalsoldier/clash-rules/raw/release/reject.txt"
-        ) == "Loyalsoldier"
+        assert (
+            utils.get_owner_from_url("https://GITHUB.COM/Loyalsoldier/clash-rules/raw/release/reject.txt")
+            == "Loyalsoldier"
+        )
 
     def test_userinfo_not_confused_with_host(self):
-        assert utils.get_owner_from_url(
-            "https://github.com.evil.example.com/o/r/raw/m/x.txt"
-        ) == "github.com.evil.example.com"
+        assert (
+            utils.get_owner_from_url("https://github.com.evil.example.com/o/r/raw/m/x.txt")
+            == "github.com.evil.example.com"
+        )
 
     def test_host_with_port_still_github(self):
-        assert utils.get_owner_from_url(
-            "https://github.com:8443/Loyalsoldier/clash-rules/raw/release/reject.txt"
-        ) == "Loyalsoldier"
+        assert (
+            utils.get_owner_from_url("https://github.com:8443/Loyalsoldier/clash-rules/raw/release/reject.txt")
+            == "Loyalsoldier"
+        )
 
 
 class TestNormalizePath:
@@ -415,8 +436,7 @@ class TestBeijingTime:
     def test_timestamp_uses_beijing_clock(self, monkeypatch):
         import datetime
 
-        fixed = datetime.datetime(
-            2026, 10, 11, 12, 34, 56, tzinfo=utils.BEIJING_TZ)
+        fixed = datetime.datetime(2026, 10, 11, 12, 34, 56, tzinfo=utils.BEIJING_TZ)
         monkeypatch.setattr(utils, "beijing_now", lambda: fixed)
         assert utils.beijing_timestamp() == "2026-10-11 12:34:56"
 
@@ -488,10 +508,15 @@ class TestDedupDomainSuffix:
         assert kept == [".google.com", "google.com"]
         assert removed == 0
 
-    def test_subdomain_entries_do_not_cover_each_other(self):
+    def test_subdomain_parent_covers_subdomain_child(self):
         kept, removed = utils.dedup_domain_suffix({".google.com", ".ads.google.com"})
-        assert kept == [".ads.google.com", ".google.com"]
-        assert removed == 0
+        assert kept == [".google.com"]
+        assert removed == 1
+
+    def test_subdomain_parent_covers_exact_child(self):
+        kept, removed = utils.dedup_domain_suffix({".google.com", "ads.google.com"})
+        assert kept == [".google.com"]
+        assert removed == 1
 
     def test_suffix_covers_subdomain_child(self):
         kept, removed = utils.dedup_domain_suffix({"+.google.com", ".ads.google.com"})
@@ -582,6 +607,17 @@ class TestDomainTrie:
         assert trie.covering_parent("sub.exactonly.com", utils.DomainTrie.SUFFIX) is None
         assert trie.covering_parent("sub.exactonly.com") == "exactonly.com"
 
+    def test_covering_parent_checks_multiple_kinds(self):
+        trie = utils.DomainTrie()
+        trie.add("google.com", utils.DomainTrie.SUBDOMAIN)
+        assert (
+            trie.covering_parent(
+                "ads.google.com",
+                (utils.DomainTrie.SUFFIX, utils.DomainTrie.SUBDOMAIN),
+            )
+            == "google.com"
+        )
+
     def test_child_does_not_mark_parent(self):
         trie = utils.DomainTrie()
         trie.add("ads.google.com")
@@ -596,8 +632,7 @@ class TestFlattenIpDefaultRoute:
 
     def test_dropped_default_routes_are_reported(self):
         dropped = []
-        result, _errors = utils.flatten_ip_cidr(
-            ["1.0.0.0/24", "0.0.0.0/0", "::/0"], dropped_default_routes=dropped)
+        result, _errors = utils.flatten_ip_cidr(["1.0.0.0/24", "0.0.0.0/0", "::/0"], dropped_default_routes=dropped)
         assert result == ["1.0.0.0/24"]
         assert dropped == ["0.0.0.0/0", "::/0"]
 
@@ -620,6 +655,16 @@ class TestFlattenIpModes:
         result, errors = utils.flatten_ip_cidr(["1.2.3.0/24 # comment"], extract=True)
         assert result == ["1.2.3.0/24"]
         assert errors == []
+
+    def test_extract_mode_rejects_ip_fragments_inside_text(self):
+        for line in (
+            "v1.2.3.4",
+            "host_1.2.3.4_backup",
+            "http://192.0.2.1/test",
+        ):
+            result, errors = utils.flatten_ip_cidr([line], extract=True)
+            assert result == [], line
+            assert len(errors) == 1, line
 
     def test_extract_mode_matches_processor_pipeline(self):
         import processor
