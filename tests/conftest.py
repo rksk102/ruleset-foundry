@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import sys
@@ -7,6 +8,23 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import logger
+
+
+@pytest.fixture(autouse=True)
+def _isolate_logger():
+    log_dir = Path(__file__).resolve().parent.parent / ".tools" / "pytest-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    previous = logger._LOG_FILE
+    logger._LOG_FILE = log_dir / "run-test.log"
+    yield
+    for handler in logging.getLogger("mihomo-rules").handlers:
+        handler.close()
+    logging.getLogger("mihomo-rules").handlers.clear()
+    logger._logger = None
+    logger._log_file_handle = None
+    logger._LOG_FILE = previous
 
 
 @pytest.fixture
