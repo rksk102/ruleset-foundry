@@ -113,6 +113,19 @@ def _require_https(url, what):
         raise ValueError(f"{what}必须为 https://: {url!r}")
 
 
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_https(newurl, "重定向目标")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_HTTPS_OPENER = urllib.request.build_opener(_HttpsOnlyRedirectHandler())
+
+
+def _open_url(req, timeout):
+    return _HTTPS_OPENER.open(req, timeout=timeout)
+
+
 def select_kernel_asset(assets, tag_name, arch="amd64"):
     """按官方命名规则取指定架构压缩包；命名不符即返回 None（调用方 fail-closed）。"""
     if not tag_name:
@@ -165,7 +178,7 @@ def _fetch_latest_release_info(max_retries=3, pinned=None):
     for attempt in range(max_retries):
         try:
             req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with _open_url(req, timeout=30) as resp:
                 _require_https(getattr(resp, "url", url), "release API 响应")
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
@@ -183,7 +196,7 @@ def _download_kernel(download_url, expected_digest=None, max_retries=3, output_p
     for attempt in range(max_retries):
         try:
             dl_req = urllib.request.Request(download_url)
-            with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
+            with _open_url(dl_req, timeout=120) as dl_resp:
                 _require_https(getattr(dl_resp, "url", download_url), "内核下载响应")
                 digest = hashlib.sha256()
                 buf = io.BytesIO()
@@ -240,14 +253,14 @@ def _verify_kernel(kernel_bin=None):
         return None
 
 
-def _cached_kernel_usable(tag_name, expected_sha, arch):
+def _cached_kernel_usable(tag_name, expected_sha, arch, require_sha=True):
     if not VERSION_FILE.exists() or not os.path.exists(KERNEL_BIN):
         return None
     cached_ver = VERSION_FILE.read_text(encoding="utf-8").strip()
     if cached_ver != tag_name:
         return None
     try:
-        verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=True, expected_arch=arch)
+        verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=require_sha, expected_arch=arch)
     except ValueError as e:
         warning(f"  缓存内核校验失败，将重新下载: {e}")
         with contextlib.suppress(OSError):
@@ -276,7 +289,7 @@ def get_latest_mihomo(skip_hash_check=False):
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
-        cached = _cached_kernel_usable(tag_name, expected_sha, arch)
+        cached = _cached_kernel_usable(tag_name, expected_sha, arch, require_sha=not skip_hash_check)
         if cached:
             info(f"  使用缓存内核 ({tag_name}): {cached}")
             return

@@ -70,25 +70,36 @@ class TestReleaseApiHttps:
             def read(self):
                 return b"{}"
 
-        monkeypatch.setattr(
-            convert_mrs.urllib.request,
-            "urlopen",
-            lambda req, timeout=None: FakeResp(),
-        )
+        monkeypatch.setattr(convert_mrs, "_open_url", lambda req, timeout=None: FakeResp())
         with pytest.raises(ValueError, match="https"):
             convert_mrs._fetch_latest_release_info(max_retries=1)
 
     def test_http_request_url_is_rejected_before_fetch(self, monkeypatch):
         called = []
-        monkeypatch.setattr(
-            convert_mrs.urllib.request,
-            "urlopen",
-            lambda *a, **k: called.append(True),
-        )
+        monkeypatch.setattr(convert_mrs, "_open_url", lambda *a, **k: called.append(True))
         monkeypatch.setattr(convert_mrs, "REPO_API", "http://api.github.com/repos/X/Y/releases")
         with pytest.raises(ValueError, match="https"):
             convert_mrs._fetch_latest_release_info(max_retries=1)
         assert called == []
+
+
+class TestHttpsRedirectHandler:
+    def test_opener_uses_https_only_redirect_handler(self):
+        assert any(
+            isinstance(handler, convert_mrs._HttpsOnlyRedirectHandler) for handler in convert_mrs._HTTPS_OPENER.handlers
+        )
+
+    def test_http_redirect_target_is_rejected(self):
+        handler = convert_mrs._HttpsOnlyRedirectHandler()
+        req = convert_mrs.urllib.request.Request("https://example.com/a")
+        with pytest.raises(ValueError, match="https"):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://example.com/b")
+
+    def test_https_redirect_target_is_allowed(self):
+        handler = convert_mrs._HttpsOnlyRedirectHandler()
+        req = convert_mrs.urllib.request.Request("https://example.com/a")
+        redirected = handler.redirect_request(req, None, 302, "Found", {}, "https://example.com/b")
+        assert redirected.full_url == "https://example.com/b"
 
 
 class TestKernelArchitecture:
@@ -201,7 +212,6 @@ class TestDownloadKernelDigest:
         self, work_dir, expected_digest, payload=None, *, request_url="https://example.com/k.gz", response_url=None
     ):
         import io as _io
-        import urllib.request as _ur
 
         payload = payload if payload is not None else self._payload()
         kernel_dir = work_dir / "k"
@@ -218,9 +228,9 @@ class TestDownloadKernelDigest:
         if response_url is not None:
             FakeResp.url = response_url
 
-        original_urlopen = _ur.urlopen
+        original_open = convert_mrs._open_url
         original_bin = convert_mrs.KERNEL_BIN
-        _ur.urlopen = lambda req, timeout=None: FakeResp(payload)
+        convert_mrs._open_url = lambda req, timeout=None: FakeResp(payload)
         convert_mrs.KERNEL_BIN = str(target)
         try:
             convert_mrs._download_kernel(request_url, expected_digest=expected_digest, max_retries=1)
@@ -228,7 +238,7 @@ class TestDownloadKernelDigest:
         except Exception as e:
             return False, e
         finally:
-            _ur.urlopen = original_urlopen
+            convert_mrs._open_url = original_open
             convert_mrs.KERNEL_BIN = original_bin
 
     def test_correct_digest_accepted(self, work_dir):
@@ -249,11 +259,9 @@ class TestDownloadKernelDigest:
         assert "https" in str(err).lower()
 
     def test_http_request_url_is_rejected_before_fetch(self, work_dir):
-        import urllib.request as _ur
-
         called = []
-        original_urlopen = _ur.urlopen
-        _ur.urlopen = lambda *a, **k: called.append(True)
+        original_open = convert_mrs._open_url
+        convert_mrs._open_url = lambda *a, **k: called.append(True)
         try:
             with pytest.raises(ValueError, match="https"):
                 convert_mrs._download_kernel(
@@ -262,7 +270,7 @@ class TestDownloadKernelDigest:
                     max_retries=1,
                 )
         finally:
-            _ur.urlopen = original_urlopen
+            convert_mrs._open_url = original_open
         assert called == []
 
     def test_wrong_digest_rejected_and_not_written(self, work_dir):
@@ -514,7 +522,7 @@ class TestNoTokenInjection:
             requests.append(request)
             raise RuntimeError("capture-only")
 
-        monkeypatch.setattr(convert_mrs.urllib.request, "urlopen", stop_after_capture)
+        monkeypatch.setattr(convert_mrs, "_open_url", stop_after_capture)
         monkeypatch.setattr(convert_mrs.time, "sleep", lambda _seconds: None)
         return requests
 
@@ -597,7 +605,7 @@ class TestBumpQueriesLatest:
             seen.append(req.full_url)
             raise RuntimeError("stop-after-recording")
 
-        monkeypatch.setattr(convert_mrs.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(convert_mrs, "_open_url", fake_urlopen)
         monkeypatch.setattr(convert_mrs.time, "sleep", lambda _s: None)
         monkeypatch.chdir(work_dir)
         (work_dir / "config.yaml").write_text(
@@ -660,6 +668,26 @@ class TestGetLatestMihomo:
 
         assert downloads == []
         assert fetch_calls == []
+
+    def test_print_hash_mode_preserves_cached_kernel(self, monkeypatch, work_dir):
+        bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", lambda *a, **k: self.release())
+        verifications = []
+
+        def fake_verify(path, expected_sha, require_sha=False, **_kwargs):
+            verifications.append((expected_sha, require_sha))
+            return "a" * 64
+
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        downloads = []
+        monkeypatch.setattr(convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(True))
+
+        convert_mrs.get_latest_mihomo(skip_hash_check=True)
+
+        assert verifications == [("", False)]
+        assert downloads == []
+        assert bin_path.exists()
 
     def test_broken_cache_is_replaced_by_download(self, monkeypatch, work_dir):
         bin_path, version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
