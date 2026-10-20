@@ -81,15 +81,16 @@ class TestGenerateReleaseNotes:
         monkeypatch.setattr(release_handler, "MERGED_DIR", "txt-out")
         monkeypatch.setattr(release_handler, "MRS_DIR", "mrs-out")
         out = release_handler.generate_release_notes(
-            "2026-10-05", "06:12:00",
-            {"txt-out": ["txt-out/a.txt"], "mrs-out": ["mrs-out/b.mrs"]})
+            "2026-10-05", "06:12:00", {"txt-out": ["txt-out/a.txt"], "mrs-out": ["mrs-out/b.mrs"]}
+        )
         assert "| 文本规则 | `txt-out` | **1** |" in out
         assert "| MRS 规则 | `mrs-out` | **1** |" in out
         assert "**2**" in out
 
     def test_empty_manifest_does_not_crash(self):
-        out = release_handler.generate_release_notes("2026-10-05", "00:00:00",
-                                                     {"merged-rules": [], "merged-rules-mrs": []})
+        out = release_handler.generate_release_notes(
+            "2026-10-05", "00:00:00", {"merged-rules": [], "merged-rules-mrs": []}
+        )
         assert isinstance(out, str) and out
 
 
@@ -101,8 +102,7 @@ def posix_paths(paths):
 def zip_workspace(work_dir, monkeypatch):
     """REPO_ROOT 必须是相对路径：zip 的相对名由它算出来。"""
     monkeypatch.setattr(release_handler, "REPO_ROOT", "")
-    monkeypatch.setattr(release_handler, "TARGET_CONFIG",
-                        {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"})
+    monkeypatch.setattr(release_handler, "TARGET_CONFIG", {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"})
     monkeypatch.chdir(work_dir)
     return work_dir
 
@@ -150,9 +150,13 @@ class TestPublishRelease:
         assert result == "ok"
         assert stub.calls[0] == ["release", "upload", "rules-2026-10-05", ZIP, "--clobber"]
         assert stub.calls[1] == [
-            "release", "edit", "rules-2026-10-05",
-            "--title", "title",
-            "--notes", NOTES,
+            "release",
+            "edit",
+            "rules-2026-10-05",
+            "--title",
+            "title",
+            "--notes",
+            NOTES,
             "--latest",
         ]
         assert len(stub.calls) == 2
@@ -209,8 +213,7 @@ class TestPublishRelease:
             stub = GhStub()
             run_with_stub(
                 stub,
-                lambda e=exists: release_handler.publish_release(
-                    "rules-2026-10-05", ZIP, "t", NOTES, e),
+                lambda e=exists: release_handler.publish_release("rules-2026-10-05", ZIP, "t", NOTES, e),
             )
             assert stub.calls[-1][-1] == "--latest"
 
@@ -218,8 +221,7 @@ class TestPublishRelease:
 @pytest.fixture
 def publish_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "REPO_ROOT", "")
-    monkeypatch.setattr(release_handler, "TARGET_CONFIG",
-                        {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"})
+    monkeypatch.setattr(release_handler, "TARGET_CONFIG", {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"})
     monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
     monkeypatch.setattr(release_handler, "KEEP_DAYS", 3)
     (work_dir / "merged-rules" / "A").mkdir(parents=True)
@@ -231,8 +233,7 @@ def publish_workspace(work_dir, monkeypatch):
 
 
 def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
-    monkeypatch.setattr(release_handler, "combined_products_hash",
-                        lambda *a, **k: (current, 1, 1))
+    monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: (current, 1, 1))
     monkeypatch.setattr(release_handler, "load_last_hash", lambda: last)
     if saved is not None:
         monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
@@ -241,7 +242,6 @@ def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
 
 
 class TestMainOrchestration:
-
     def test_publishes_when_hash_changed(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
         saved = []
@@ -250,8 +250,9 @@ class TestMainOrchestration:
         run_with_stub(stub, release_handler.main)
 
         assert saved == ["new"], "发布成功后应保存新哈希"
-        assert not [f for f in os.listdir(".") if f.startswith("merged-rules-")
-                    and f.endswith(".zip")], "发布后应删除临时 zip"
+        assert not [f for f in os.listdir(".") if f.startswith("merged-rules-") and f.endswith(".zip")], (
+            "发布后应删除临时 zip"
+        )
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
         stub = GhStub()
@@ -263,8 +264,7 @@ class TestMainOrchestration:
 
     def test_aborts_when_product_counts_differ(self, publish_workspace, monkeypatch):
         stub = GhStub()
-        monkeypatch.setattr(release_handler, "combined_products_hash",
-                            lambda *a, **k: ("h", 3, 2))
+        monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 3, 2))
 
         with pytest.raises(SystemExit) as exc:
             run_with_stub(stub, release_handler.main)
@@ -273,8 +273,10 @@ class TestMainOrchestration:
         assert stub.calls == []
 
     def test_failed_publish_exits_and_removes_zip(self, publish_workspace, monkeypatch):
-        stub = GhStub(fail_when=lambda cmd: len(cmd) > 1 and cmd[1] in ("create", "upload", "edit"),
-                      responses={("release", "view"): None})
+        stub = GhStub(
+            fail_when=lambda cmd: len(cmd) > 1 and cmd[1] in ("create", "upload", "edit"),
+            responses={("release", "view"): None},
+        )
         saved = []
         stub_hash_state(monkeypatch, current="new", last=None, saved=saved)
 
@@ -287,8 +289,7 @@ class TestMainOrchestration:
 
     def test_prunes_old_releases_and_keeps_current(self, publish_workspace, monkeypatch):
         now_iso = release_handler.beijing_now().strftime("%Y-%m-%d")
-        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": f"rules-{now_iso}", "createdAt": old},
             {"tagName": "rules-1999-01-01", "createdAt": old},
@@ -306,8 +307,7 @@ class TestMainOrchestration:
         assert "v1.0.0" not in flat, "非 rules- 前缀的 Release 一律不得触碰"
 
     def test_prune_never_touches_manual_releases(self, publish_workspace, monkeypatch):
-        old = (release_handler.beijing_now() - datetime.timedelta(days=30)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
+        old = (release_handler.beijing_now() - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "v1.0.0", "createdAt": old},
             {"tagName": "v1.2.3-rc1", "createdAt": old},
@@ -323,14 +323,14 @@ class TestMainOrchestration:
         assert "git/refs/tags" not in flat
 
     def test_prune_delete_failure_is_not_fatal(self, publish_workspace, monkeypatch):
-        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "rules-1999-01-01", "createdAt": old},
             {"tagName": "rules-1999-01-02", "createdAt": old},
         )
-        stub = GhStub(fail_when=lambda cmd: len(cmd) > 1 and cmd[1] == "delete",
-                      responses={("release", "list"): listing})
+        stub = GhStub(
+            fail_when=lambda cmd: len(cmd) > 1 and cmd[1] == "delete", responses={("release", "list"): listing}
+        )
         saved = []
         stub_hash_state(monkeypatch, saved=saved)
 
@@ -355,8 +355,7 @@ class TestMainOrchestration:
         assert "发布报告" in text
         assert "文本规则" in text and "MRS 规则" in text
 
-    def test_unparsable_release_listing_degrades_to_warning(
-            self, publish_workspace, monkeypatch):
+    def test_unparsable_release_listing_degrades_to_warning(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={("release", "list"): "not-json"})
         stub_hash_state(monkeypatch)
 
@@ -365,10 +364,8 @@ class TestMainOrchestration:
         flat = " ".join(stub.commands())
         assert "release delete" not in flat, "列表无法解析时不得误删任何 Release"
 
-    def test_unparsable_entry_is_skipped_and_others_pruned(
-            self, publish_workspace, monkeypatch):
-        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ")
+    def test_unparsable_entry_is_skipped_and_others_pruned(self, publish_workspace, monkeypatch):
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "rules-broken", "createdAt": "not-a-date"},
             {"tagName": "rules-1999-01-01", "createdAt": old},
@@ -410,11 +407,9 @@ def verify_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "MRS_DIR", "merged-rules-mrs")
     monkeypatch.setattr(release_handler, "merge_product_entries", lambda *a, **k: set())
     (work_dir / "rulesets").mkdir(parents=True)
-    (work_dir / "rulesets" / "products.manifest").write_text(
-        "block/domain/A/x.txt\n", encoding="utf-8")
+    (work_dir / "rulesets" / "products.manifest").write_text("block/domain/A/x.txt\n", encoding="utf-8")
     (work_dir / "merged-rules" / "block" / "domain" / "A").mkdir(parents=True)
-    (work_dir / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text(
-        "x", encoding="utf-8")
+    (work_dir / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text("x", encoding="utf-8")
     mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
     mrs_dir.mkdir(parents=True)
     (mrs_dir / "x.mrs").write_text("y", encoding="utf-8")
@@ -423,7 +418,6 @@ def verify_workspace(work_dir, monkeypatch):
 
 
 class TestVerifyOnly:
-
     def test_paired_products_pass_without_gh(self, verify_workspace):
         stub = GhStub()
         run_with_stub(stub, release_handler.verify_only)
@@ -443,26 +437,35 @@ class TestVerifyOnly:
             release_handler.verify_only()
         assert exc.value.code == 1
 
-    def test_main_dispatches_verify_only_without_publishing(
-            self, verify_workspace, monkeypatch):
+    def test_main_dispatches_verify_only_without_publishing(self, verify_workspace, monkeypatch):
         calls = []
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--verify-only"])
         monkeypatch.setattr(release_handler, "verify_only", lambda: calls.append(True))
         run_with_stub(GhStub(), release_handler.main)
         assert calls == [True], "main() 应分发到 verify_only 并提前返回"
 
+    def test_main_dispatches_print_hash_without_publishing(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["release_handler.py", "--print-hash"])
+        monkeypatch.setattr(
+            release_handler,
+            "combined_products_hash",
+            lambda *a, **k: ("abc|def|1|1", 1, 1),
+        )
+        monkeypatch.setattr(release_handler, "product_dirs", lambda: ("txt", "mrs"))
+        release_handler.main()
+        assert capsys.readouterr().out.strip() == "abc|def|1|1"
+
 
 class TestAssetConfirmation:
     def stub_release_flow(self, monkeypatch, calls, asset_count):
-        monkeypatch.setattr(release_handler, "combined_products_hash",
-                            lambda *a, **k: ("new-hash", 1, 1))
+        monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("new-hash", 1, 1))
         monkeypatch.setattr(release_handler, "product_dirs", lambda: ("txt", "mrs"))
-        monkeypatch.setattr(release_handler, "enforce_products",
-                            lambda *a: calls.append("enforce"))
+        monkeypatch.setattr(release_handler, "enforce_products", lambda *a: calls.append("enforce"))
         monkeypatch.setattr(release_handler, "zip_target_files", lambda d: ("z.zip", {}))
         monkeypatch.setattr(release_handler, "generate_release_notes", lambda *a: "notes")
         monkeypatch.setattr(release_handler, "publish_release", lambda *a: "ok")
         monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: asset_count)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
         monkeypatch.setattr(release_handler, "save_last_hash", lambda *a: None)
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "hash")
@@ -520,9 +523,27 @@ class TestAssetConfirmation:
         assert len(attempts) == 2
         assert saved == ["new-hash"]
 
+    def test_zero_asset_count_is_retried_before_succeeding(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        attempts = []
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=None)
+
+        def flaky(tag):
+            attempts.append(tag)
+            return 0 if len(attempts) == 1 else 1
+
+        monkeypatch.setattr(release_handler, "release_asset_count", flaky)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        release_handler.main()
+
+        assert len(attempts) == 2
+        assert saved == ["new-hash"]
+
     def test_release_asset_count_parses_gh_output(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "3")
         assert release_handler.release_asset_count("rules-2026-10-06") == 3
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
         assert release_handler.release_asset_count("rules-2026-10-06") is None
-

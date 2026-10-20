@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import manifest
-from config_loader import CONFLICT_POLICIES, get, load_config
+from config_loader import CONFLICT_POLICIES, ConfigError, get, load_config, resolve_config_file
 from logger import error, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     RULE_TYPES,
@@ -17,9 +17,14 @@ from utils import (
     normalize_path,
 )
 
-CONFIG_FILE = "config.yaml"
-SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
-OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
+try:
+    SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
+    OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
+    ALLOW_PARTIAL = get("behavior", "allow_partial", default=False)
+except ConfigError as _cfg_err:
+    gh_error(f"配置校验失败: {_cfg_err}")
+    sys.exit(1)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -45,15 +50,21 @@ def missing_merge_inputs(merge_tasks, base_dir=None):
     return manifest.merge_inputs(merge_tasks, base_dir or SOURCE_DIR)
 
 
-def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None):
+def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, allow_partial=False):
     out_dir = output_dir or OUTPUT_DIR
     manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
     baseline = manifest.load_manifest(manifest_file)
     if not baseline:
-        raise manifest.ManifestError(
-            f"清单基线缺失: {manifest_file} 不存在或为空（需先运行 scripts/main.py）"
-        )
-    expected = sorted(set(baseline) | merge_product_paths(merge_tasks))
+        raise manifest.ManifestError(f"清单基线缺失: {manifest_file} 不存在或为空（需先运行 scripts/main.py）")
+    tasks = merge_tasks
+    if allow_partial:
+        baseline_set = set(baseline)
+        tasks = [
+            task
+            for task in merge_tasks or []
+            if isinstance(task, dict) and any(rel in baseline_set for rel in task.get("inputs") or [])
+        ]
+    expected = sorted(set(baseline) | merge_product_paths(tasks))
     actual = sorted(manifest.collect_files(out_dir, ".txt"))
     return manifest.verify_matches(expected, actual, f"{out_dir} 绝对基准校验")
 
@@ -74,7 +85,7 @@ def _ensure_repo_anchored(label, path):
         sys.exit(1)
 
 
-def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
+def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow_partial=False):
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
@@ -111,7 +122,9 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
             files_read_count += 1
 
     if missing_files:
-        raise FileNotFoundError(f"合并输入缺失: {', '.join(missing_files)}")
+        if not allow_partial:
+            raise FileNotFoundError(f"合并输入缺失: {', '.join(missing_files)}")
+        warning(f"    合并输入缺失（allow_partial=true，跳过）: {', '.join(missing_files)}")
     if files_read_count == 0 and inputs:
         warning(f"    无可用输入文件，跳过任务: {filename}")
         return None
@@ -121,8 +134,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc):
 
     if mode == "IP-CIDR":
         dropped_default_routes = []
-        final_list, cidr_errors = flatten_ip_cidr(
-            combined_rules, dropped_default_routes=dropped_default_routes)
+        final_list, cidr_errors = flatten_ip_cidr(combined_rules, dropped_default_routes=dropped_default_routes)
         if dropped_default_routes:
             warning(f"    默认路由(/0) 已按设计丢弃: {len(dropped_default_routes)} 条")
         if cidr_errors:
@@ -183,14 +195,16 @@ def auto_discover_files(source_dir=None):
             if len(parts) < 3:
                 continue
 
-            discovered_tasks.append({
-                "strategy": parts[0],
-                "type": parts[1],
-                "owner": parts[2],
-                "filename": file,
-                "inputs": [rel_path_norm],
-                "description": f"自动透传自 {rel_path_norm}",
-            })
+            discovered_tasks.append(
+                {
+                    "strategy": parts[0],
+                    "type": parts[1],
+                    "owner": parts[2],
+                    "filename": file,
+                    "inputs": [rel_path_norm],
+                    "description": f"自动透传自 {rel_path_norm}",
+                }
+            )
 
     return discovered_tasks
 
@@ -251,12 +265,25 @@ def detect_cross_policy_conflicts(merged_dir):
             return DomainTrie.SUBDOMAIN
         return DomainTrie.EXACT
 
+    def coverage(entries):
+        root, subdomain = set(), set()
+        for entry in entries:
+            name = bare(entry)
+            if entry.startswith("+."):
+                root.add(name)
+                subdomain.add(name)
+            elif entry.startswith("."):
+                subdomain.add(name)
+            else:
+                root.add(name)
+        return root, subdomain
+
     explicit_conflicts = {}
     for i, s1 in enumerate(strategies):
-        for s2 in strategies[i + 1:]:
-            left = {bare(d) for d in policy_domains[s1]}
-            right = {bare(d) for d in policy_domains[s2]}
-            overlap = left & right
+        for s2 in strategies[i + 1 :]:
+            left_root, left_sub = coverage(policy_domains[s1])
+            right_root, right_sub = coverage(policy_domains[s2])
+            overlap = (left_root & right_root) | (left_sub & right_sub)
             if overlap:
                 explicit_conflicts[f"{s1} ↔ {s2}"] = sorted(overlap)
 
@@ -275,7 +302,7 @@ def detect_cross_policy_conflicts(merged_dir):
             key = f"{parent_strategy}(父) → {child_strategy}(子)"
             items = []
             for domain in sorted(child_domains):
-                ancestor = parent_trie.covering_parent(bare(domain), DomainTrie.SUFFIX)
+                ancestor = parent_trie.covering_parent(bare(domain), (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN))
                 if ancestor:
                     items.append((domain, ancestor))
             if items:
@@ -293,13 +320,14 @@ def main():
     error_logs = []
     summary_rows = []
 
-    if not os.path.exists(CONFIG_FILE):
-        warning(f"配置文件 '{CONFIG_FILE}' 未找到，仅使用自动模式")
+    config_file = resolve_config_file()
+    if not config_file.exists():
+        warning(f"配置文件 '{config_file}' 未找到，仅使用自动模式")
         config_tasks = []
     else:
         cfg = load_config()
         config_tasks = cfg.get("merges") or []
-        info(f"  从 {CONFIG_FILE} 加载 {len(config_tasks)} 个合并任务")
+        info(f"  从 {config_file} 加载 {len(config_tasks)} 个合并任务")
 
     if not os.path.exists(SOURCE_DIR):
         error(f"源目录 '{SOURCE_DIR}' 不存在！")
@@ -309,14 +337,19 @@ def main():
     if config_tasks:
         missing_inputs = missing_merge_inputs(config_tasks)
         if missing_inputs:
-            error(f"合并输入缺失 {len(missing_inputs)} 项（配置合并任务未执行，产物目录未改动）:")
-            for rel in missing_inputs:
-                error(f"    - {rel}")
-            gh_error(
-                f"合并输入缺失 {len(missing_inputs)} 项，配置合并任务未执行"
-                f"（示例: {', '.join(missing_inputs[:3])}）"
-            )
-            sys.exit(1)
+            if ALLOW_PARTIAL:
+                warning(f"  合并输入缺失 {len(missing_inputs)} 项（allow_partial=true，继续合并剩余输入）:")
+                for rel in missing_inputs:
+                    warning(f"    - {rel}")
+            else:
+                error(f"合并输入缺失 {len(missing_inputs)} 项（配置合并任务未执行，产物目录未改动）:")
+                for rel in missing_inputs:
+                    error(f"    - {rel}")
+                gh_error(
+                    f"合并输入缺失 {len(missing_inputs)} 项，配置合并任务未执行"
+                    f"（示例: {', '.join(missing_inputs[:3])}）"
+                )
+                sys.exit(1)
 
     auto_tasks = auto_discover_files()
     overlap = sorted(merge_product_paths(config_tasks) & merge_product_paths(auto_tasks))
@@ -348,6 +381,7 @@ def main():
                     fname,
                     t["inputs"],
                     t.get("description", "配置合并"),
+                    allow_partial=ALLOW_PARTIAL,
                 )
                 if res:
                     stats["success"] += 1
@@ -366,8 +400,12 @@ def main():
         for t in auto_tasks:
             try:
                 res = process_task_logic(
-                    t["strategy"], t["type"], t["owner"],
-                    t["filename"], t["inputs"], t["description"],
+                    t["strategy"],
+                    t["type"],
+                    t["owner"],
+                    t["filename"],
+                    t["inputs"],
+                    t["description"],
                 )
                 if res:
                     stats["success"] += 1
@@ -385,15 +423,13 @@ def main():
     if stats["failed"] == 0:
         expected_tasks = len(config_tasks) + len(auto_tasks)
         if stats["success"] + stats["skipped"] != expected_tasks:
-            error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
-                  f"成功 {stats['success']} + 跳过 {stats['skipped']}")
+            error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}")
             gh_error(
-                f"合并产出数量不一致: 期望 {expected_tasks}，实得 "
-                f"成功 {stats['success']} + 跳过 {stats['skipped']}"
+                f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}"
             )
             sys.exit(1)
         try:
-            verify_merged_products(config_tasks)
+            verify_merged_products(config_tasks, allow_partial=ALLOW_PARTIAL)
         except manifest.ManifestError as e:
             error(f"  {e}")
             gh_error(f"合并产物与清单基线不一致: {e}")

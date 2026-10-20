@@ -15,6 +15,7 @@ class Colors:
     YELLOW = "\033[33m"
     MAGENTA = "\033[95m"
 
+
 LOG_KEEP_COUNT = 20
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -42,7 +43,6 @@ class _StripAnsiFilter(logging.Filter):
 
 
 class _BeijingFormatter(logging.Formatter):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.converter = lambda *_: beijing_now().timetuple()
@@ -56,6 +56,7 @@ def _resolve_log_file():
     log_dir_name = "logs"
     try:
         from config_loader import get
+
         log_dir_name = get("paths", "log_dir", default="logs") or "logs"
     except Exception:
         pass
@@ -99,10 +100,12 @@ def _init_logger():
 
     _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
     _log_file_handle.setLevel(logging.DEBUG)
-    _log_file_handle.setFormatter(_BeijingFormatter(
-        "[%(asctime)s] %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
+    _log_file_handle.setFormatter(
+        _BeijingFormatter(
+            "[%(asctime)s] %(levelname)-8s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     _log_file_handle.addFilter(_StripAnsiFilter())
     _logger.addHandler(_log_file_handle)
 
@@ -121,23 +124,18 @@ def debug(msg):
 
 def _defang_command_lines(text):
     return "\n".join(
-        ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line
-        for line in text.split("\n")
+        ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line for line in text.split("\n")
     )
 
 
 def warning(msg):
     _init_logger()
-    _logger.warning(
-        f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg))}{Colors.RESET}"
-    )
+    _logger.warning(f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg))}{Colors.RESET}")
 
 
 def error(msg):
     _init_logger()
-    _logger.error(
-        f"{Colors.RED}[错误] {_defang_command_lines(_render(msg))}{Colors.RESET}"
-    )
+    _logger.error(f"{Colors.RED}[错误] {_defang_command_lines(_render(msg))}{Colors.RESET}")
 
 
 def success(msg):

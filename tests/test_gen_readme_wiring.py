@@ -1,4 +1,5 @@
 """README 生成：路径锚定仓库根、写入原子化。"""
+
 from pathlib import Path
 
 import gen_readme
@@ -14,7 +15,6 @@ def isolate(work_dir, monkeypatch, readme):
 
 
 class TestReadmeWiring:
-
     def test_root_does_not_follow_cwd(self):
         assert Path(gen_readme.REPO_ROOT) == REPO
 

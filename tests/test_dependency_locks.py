@@ -1,4 +1,5 @@
 """依赖清单与哈希锁必须同步：Dependabot 只改 requirements*.txt 时这里会红。"""
+
 import re
 from pathlib import Path
 
@@ -18,11 +19,13 @@ def locked_entries(lock_name):
     for line in (REPO / lock_name).read_text(encoding="utf-8").splitlines():
         match = PIN_RE.match(line)
         if match:
-            entries.append({
-                "name": match.group(1).lower().replace("_", "-"),
-                "version": match.group(2),
-                "hashes": 0,
-            })
+            entries.append(
+                {
+                    "name": match.group(1).lower().replace("_", "-"),
+                    "version": match.group(2),
+                    "hashes": 0,
+                }
+            )
         elif entries and "--hash=" in line:
             entries[-1]["hashes"] += line.count("--hash=")
     return entries
@@ -38,7 +41,6 @@ def manifest_requirements(manifest_name):
 
 
 class TestLockSync:
-
     @pytest.mark.parametrize("manifest_name,lock_name", PAIRS)
     def test_locked_versions_match_manifest(self, manifest_name, lock_name):
         locked = {e["name"]: e["version"] for e in locked_entries(lock_name)}
@@ -56,6 +58,16 @@ class TestLockSync:
     def test_every_locked_package_is_hash_pinned(self, _manifest_name, lock_name):
         for entry in locked_entries(lock_name):
             assert entry["hashes"] > 0, (
-                f"{lock_name} 中 {entry['name']}=={entry['version']} 缺少 --hash，"
-                "pip install --require-hashes 会失败"
+                f"{lock_name} 中 {entry['name']}=={entry['version']} 缺少 --hash，pip install --require-hashes 会失败"
             )
+
+    def test_runtime_lock_is_subset_of_dev_lock(self):
+        runtime = {e["name"]: e["version"] for e in locked_entries("requirements.lock")}
+        dev = {e["name"]: e["version"] for e in locked_entries("requirements-dev.lock")}
+        assert runtime, "requirements.lock 未解析出任何锁定版本"
+        missing = sorted(set(runtime) - set(dev))
+        drift = sorted(
+            (name, runtime[name], dev[name]) for name in runtime if name in dev and runtime[name] != dev[name]
+        )
+        assert not missing, f"requirements-dev.lock 缺少运行时依赖: {missing}"
+        assert not drift, f"运行时依赖版本漂移: {drift}"

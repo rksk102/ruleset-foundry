@@ -72,11 +72,9 @@ class TestIsTrustedHost:
 
 
 class TestProductPathStability:
-
     def test_displayable_chars_survive(self):
         task = {
-            "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/"
-                   "geo/geosite/category-ai-!cn.list",
+            "url": "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list",
             "policy": "policy",
             "type": "domain",
             "domain_kind": "exact",
@@ -93,8 +91,7 @@ class TestProductPathStability:
 class TestAuthHeaders:
     def test_token_sent_to_trusted_host(self, monkeypatch):
         monkeypatch.setenv("GH_TOKEN", "tok")
-        assert main.auth_headers("https://raw.githubusercontent.com/a/b/x") == {
-            "Authorization": "Bearer tok"}
+        assert main.auth_headers("https://raw.githubusercontent.com/a/b/x") == {"Authorization": "Bearer tok"}
 
     def test_token_withheld_from_untrusted_host(self, monkeypatch):
         monkeypatch.setenv("GH_TOKEN", "tok")
@@ -114,8 +111,7 @@ class TestAuthHeaders:
     def test_github_token_used_as_fallback(self, monkeypatch):
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "fallback")
-        assert main.auth_headers("https://github.com/a/b") == {
-            "Authorization": "Bearer fallback"}
+        assert main.auth_headers("https://github.com/a/b") == {"Authorization": "Bearer fallback"}
 
 
 class TestParseRetryAfter:
@@ -136,9 +132,9 @@ class TestParseRetryAfter:
         assert main.parse_retry_after(str(main.MAX_RETRY_AFTER + 1000), 5) == main.MAX_RETRY_AFTER
 
     def test_uncapped_parse_keeps_server_request(self):
-        assert main.parse_retry_after(
-            str(main.MAX_RETRY_AFTER + 1000), 5, max_seconds=None
-        ) == main.MAX_RETRY_AFTER + 1000
+        assert (
+            main.parse_retry_after(str(main.MAX_RETRY_AFTER + 1000), 5, max_seconds=None) == main.MAX_RETRY_AFTER + 1000
+        )
 
     def test_negative_rejected_as_non_decimal(self):
         assert main.parse_retry_after("-5", 5) == 5
@@ -172,8 +168,7 @@ class TestSourceRepoSlug:
         assert main.source_repo_slug("https://github.com/a/b/raw/main/x.txt") == "a__b"
 
     def test_raw_githubusercontent(self):
-        assert main.source_repo_slug(
-            "https://raw.githubusercontent.com/a/b/main/x.txt") == "a__b"
+        assert main.source_repo_slug("https://raw.githubusercontent.com/a/b/main/x.txt") == "a__b"
 
     def test_codeload(self):
         assert main.source_repo_slug("https://codeload.github.com/a/b/tar.gz/main") == "a__b"
@@ -186,9 +181,10 @@ class TestSourceRepoSlug:
         assert main.source_repo_slug("https://github.io/x") == ""
 
     def test_jsdelivr_gh_form(self):
-        assert main.source_repo_slug(
-            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/x.list"
-        ) == "MetaCubeX__meta-rules-dat"
+        assert (
+            main.source_repo_slug("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/x.list")
+            == "MetaCubeX__meta-rules-dat"
+        )
 
     def test_jsdelivr_strips_version_tag(self):
         assert main.source_repo_slug("https://cdn.jsdelivr.net/gh/o/r@v1.2.3/x") == "o__r"
@@ -205,8 +201,11 @@ class TestSourceRepoSlug:
         assert main.source_repo_slug("https://cdn.jsdelivr.net/") == ""
 
     def test_hostname_fallback_never_empty(self):
-        for url in ["https://example.com/x", "https://mirror.example.org/a/b",
-                    "https://ghproxy.net/https://raw.githubusercontent.com/a/b"]:
+        for url in [
+            "https://example.com/x",
+            "https://mirror.example.org/a/b",
+            "https://ghproxy.net/https://raw.githubusercontent.com/a/b",
+        ]:
             assert main.source_repo_slug(url) != "", url
 
     def test_empty_for_hostless_url(self):
@@ -272,26 +271,38 @@ class TestCollidingOutputPaths:
         return {main.Path(k).as_posix(): v for k, v in plan.items()}
 
     def test_same_owner_path_same_repo_not_flagged(self):
-        plan = main.colliding_output_paths([
-            self.task("https://github.com/Loyalsoldier/x/raw/r/gfw.txt"),
-            self.task("https://github.com/Loyalsoldier/x/raw/r2/gfw.txt"),
-        ])
+        plan = main.colliding_output_paths(
+            [
+                self.task("https://github.com/Loyalsoldier/x/raw/r/gfw.txt"),
+                self.task("https://github.com/Loyalsoldier/x/raw/r2/gfw.txt"),
+            ]
+        )
         assert plan == {}
 
     def test_different_repos_same_owner_and_filename_flagged(self):
-        plan = self.posix_plan(main.colliding_output_paths([
-            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
-            self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt"),
-        ]))
+        plan = self.posix_plan(
+            main.colliding_output_paths(
+                [
+                    self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
+                    self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt"),
+                ]
+            )
+        )
         assert list(plan) == ["policy/domain/Loyalsoldier/gfw.txt"]
         assert plan["policy/domain/Loyalsoldier/gfw.txt"] == [
-            "Loyalsoldier__clash-rules", "Loyalsoldier__v2ray-rules-dat"]
+            "Loyalsoldier__clash-rules",
+            "Loyalsoldier__v2ray-rules-dat",
+        ]
 
     def test_mirror_host_spoofing_flagged(self):
-        plan = self.posix_plan(main.colliding_output_paths([
-            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
-            self.task("https://raw.githubusercontent.com/Loyalsoldier/other/main/gfw.txt"),
-        ]))
+        plan = self.posix_plan(
+            main.colliding_output_paths(
+                [
+                    self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
+                    self.task("https://raw.githubusercontent.com/Loyalsoldier/other/main/gfw.txt"),
+                ]
+            )
+        )
         assert "policy/domain/Loyalsoldier/gfw.txt" in plan
 
     def test_same_url_repeated_not_flagged(self):
@@ -299,10 +310,12 @@ class TestCollidingOutputPaths:
         assert main.colliding_output_paths([t, dict(t)]) == {}
 
     def test_different_policy_not_colliding(self):
-        plan = main.colliding_output_paths([
-            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt", policy="block"),
-            self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt", policy="policy"),
-        ])
+        plan = main.colliding_output_paths(
+            [
+                self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt", policy="block"),
+                self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt", policy="policy"),
+            ]
+        )
         assert plan == {}
 
 
@@ -312,7 +325,8 @@ class TestBuildFilepath:
 
     def test_default_owner_used_when_no_collision(self):
         owner, name, rel, abs_path = main.build_filepath(
-            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/reject.txt"))
+            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/reject.txt")
+        )
         assert owner == "Loyalsoldier"
         assert name == "reject.txt"
         assert rel.as_posix() == "policy/domain/Loyalsoldier/reject.txt"
@@ -335,8 +349,7 @@ class TestBuildFilepath:
 
     def test_taken_records_slug(self):
         taken = {}
-        main.build_filepath(
-            self.task("https://github.com/o/r/raw/m/x.txt"), None, taken)
+        main.build_filepath(self.task("https://github.com/o/r/raw/m/x.txt"), None, taken)
         assert taken == {key("policy/domain/o/x.txt"): "o__r"}
 
     def test_same_slug_does_not_trigger_disambiguation(self):
@@ -364,20 +377,23 @@ class TestPlanGroups:
         assert len(groups[0]["members"]) == 2
 
     def test_same_owner_different_repos_split_to_avoid_overwrite(self):
-        groups = main.plan_groups([
-            self.task("https://github.com/o/r/raw/m/x.txt"),
-            self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
-        ])
+        groups = main.plan_groups(
+            [
+                self.task("https://github.com/o/r/raw/m/x.txt"),
+                self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
+            ]
+        )
         assert len(groups) == 2
         paths = sorted(str(g["path"]).replace("\\", "/") for g in groups)
-        assert paths == ["rulesets/policy/domain/o__r/x.txt",
-                         "rulesets/policy/domain/o__r2/x.txt"]
+        assert paths == ["rulesets/policy/domain/o__r/x.txt", "rulesets/policy/domain/o__r2/x.txt"]
 
     def test_collision_splits_into_separate_groups(self):
-        groups = main.plan_groups([
-            self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
-            self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt"),
-        ])
+        groups = main.plan_groups(
+            [
+                self.task("https://github.com/Loyalsoldier/clash-rules/raw/r/gfw.txt"),
+                self.task("https://github.com/Loyalsoldier/v2ray-rules-dat/raw/r/gfw.txt"),
+            ]
+        )
         assert len(groups) == 2
         paths = sorted(str(g["path"]).replace("\\", "/") for g in groups)
         assert paths == [
@@ -396,10 +412,12 @@ class TestPlanGroups:
         assert len(paths) == len(set(paths))
 
     def test_groups_sorted_by_path(self):
-        groups = main.plan_groups([
-            self.task("https://github.com/b/b/raw/m/x.txt"),
-            self.task("https://github.com/a/a/raw/m/x.txt"),
-        ])
+        groups = main.plan_groups(
+            [
+                self.task("https://github.com/b/b/raw/m/x.txt"),
+                self.task("https://github.com/a/a/raw/m/x.txt"),
+            ]
+        )
         paths = [str(g["path"]).replace("\\", "/") for g in groups]
         assert paths == sorted(paths)
 
@@ -434,29 +452,43 @@ class TestParseSources:
 
     def test_defaults_when_no_markers(self, tmp_path):
         tasks = self.load(tmp_path, "https://github.com/a/b/raw/m/x.txt\n")
-        assert tasks == [{"policy": "policy", "type": "domain", "domain_kind": "exact",
-                          "url": "https://github.com/a/b/raw/m/x.txt"}]
+        assert tasks == [
+            {"policy": "policy", "type": "domain", "domain_kind": "exact", "url": "https://github.com/a/b/raw/m/x.txt"}
+        ]
 
     def test_policy_and_type_markers_apply_to_following_lines(self, tmp_path):
-        tasks = self.load(tmp_path, "\n".join([
-            "[policy:block]",
-            "[type:domain]",
-            "https://github.com/a/b/raw/m/a.txt",
-            "[policy:direct]",
-            "https://github.com/a/b/raw/m/b.txt",
-            "[policy:reject]",
-            "https://github.com/a/b/raw/m/c.txt",
-        ]) + "\n")
+        tasks = self.load(
+            tmp_path,
+            "\n".join(
+                [
+                    "[policy:block]",
+                    "[type:domain]",
+                    "https://github.com/a/b/raw/m/a.txt",
+                    "[policy:direct]",
+                    "https://github.com/a/b/raw/m/b.txt",
+                    "[policy:reject]",
+                    "https://github.com/a/b/raw/m/c.txt",
+                ]
+            )
+            + "\n",
+        )
         assert [t["policy"] for t in tasks] == ["block", "direct", "block"]
         assert [t["url"].rsplit("/", 1)[1] for t in tasks] == ["a.txt", "b.txt", "c.txt"]
 
     def test_type_marker_switches_to_ipcidr(self, tmp_path):
-        tasks = self.load(tmp_path, "\n".join([
-            "[policy:direct]", "[type:ipcidr]",
-            "https://github.com/a/b/raw/m/cn.txt",
-            "[type:domain]",
-            "https://github.com/a/b/raw/m/domain.txt",
-        ]) + "\n")
+        tasks = self.load(
+            tmp_path,
+            "\n".join(
+                [
+                    "[policy:direct]",
+                    "[type:ipcidr]",
+                    "https://github.com/a/b/raw/m/cn.txt",
+                    "[type:domain]",
+                    "https://github.com/a/b/raw/m/domain.txt",
+                ]
+            )
+            + "\n",
+        )
         assert [t["type"] for t in tasks] == ["ipcidr", "domain"]
 
     def test_unknown_type_marker_rejected(self, tmp_path):
@@ -468,12 +500,18 @@ class TestParseSources:
             raise AssertionError("非法 [type:] 标记应 SystemExit(1)")
 
     def test_comments_and_blank_lines_ignored(self, tmp_path):
-        tasks = self.load(tmp_path, "\n".join([
-            "# comment",
-            "",
-            "   ",
-            "https://github.com/a/b/raw/m/x.txt",
-        ]) + "\n")
+        tasks = self.load(
+            tmp_path,
+            "\n".join(
+                [
+                    "# comment",
+                    "",
+                    "   ",
+                    "https://github.com/a/b/raw/m/x.txt",
+                ]
+            )
+            + "\n",
+        )
         assert len(tasks) == 1
 
     def test_trailing_comment_after_url_ignored(self, tmp_path):
@@ -507,8 +545,7 @@ class TestParseSources:
             raise AssertionError("http 明文源应 SystemExit(1)")
 
     def test_non_https_scheme_lines_rejected(self, tmp_path):
-        for bad in ("ftp://example.com/x.txt", "HTTP://example.com/x.txt",
-                    "htp://example.com/x.txt"):
+        for bad in ("ftp://example.com/x.txt", "HTTP://example.com/x.txt", "htp://example.com/x.txt"):
             try:
                 self.load(tmp_path, bad + "\n")
             except SystemExit as e:
@@ -522,11 +559,14 @@ class TestParseSources:
 
 
 class TestProcessIpGroup:
+    def test_domain_rules_are_counted_as_dropped_types(self):
+        result, stats = main._process_ip_group(["DOMAIN-SUFFIX,ads.example.com"])
+
+        assert result == []
+        assert stats["dropped_rule_type"]["DOMAIN-SUFFIX"] == 1
 
     def test_default_route_drop_is_reported(self):
         result, stats = main._process_ip_group(["0.0.0.0/0", "1.0.0.0/24"])
 
         assert result == ["1.0.0.0/24"]
         assert stats["dropped_default_route"] == 1
-
-

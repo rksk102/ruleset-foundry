@@ -5,8 +5,8 @@ import urllib.parse
 from io import StringIO
 from pathlib import Path
 
-from config_loader import get
-from logger import error, group_end, group_start, info, success
+from config_loader import ConfigError, get
+from logger import error, gh_error, group_end, group_start, info, success
 from utils import (
     anchor_cwd_to_repo_root,
     atomic_write,
@@ -16,8 +16,12 @@ from utils import (
 )
 
 REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-DIR_RULES = os.path.join(REPO_ROOT, get("paths", "merged_output_dir", default="merged-rules"))
-DIR_MRS = os.path.join(REPO_ROOT, get("paths", "mrs_output_dir", default="merged-rules-mrs"))
+try:
+    DIR_RULES = os.path.join(REPO_ROOT, get("paths", "merged_output_dir", default="merged-rules"))
+    DIR_MRS = os.path.join(REPO_ROOT, get("paths", "mrs_output_dir", default="merged-rules-mrs"))
+except ConfigError as _cfg_err:
+    gh_error(f"配置校验失败: {_cfg_err}")
+    sys.exit(1)
 README_FILE = os.path.join(REPO_ROOT, "README.md")
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
 ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH", "artifacts")
@@ -90,10 +94,7 @@ def write_table_rows(f, files, root_dir):
         rel_path = os.path.relpath(filepath, root_dir).replace(os.sep, "/")
         root_name = os.path.basename(root_dir)
         category = os.path.dirname(rel_path)
-        name_col = (
-            f"<sub>{category or 'Root'}</sub><br><b>{filename}</b>"
-            "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-        )
+        name_col = f"<sub>{category or 'Root'}</sub><br><b>{filename}</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
         full_rel = f"{root_name}/{rel_path}"
         if size_bytes <= JSDELIVR_MAX_BYTES:
             download = (
@@ -117,10 +118,7 @@ def write_table_rows(f, files, root_dir):
 def make_section(f, title, desc, files, root_dir):
     count, total_size = collect_stats(files)
     f.write(f"### {title}\n\n*{desc}*\n\n")
-    f.write(
-        "<details open>\n"
-        f"<summary><b>{count} 个文件</b> | 总大小 <b>{format_size(total_size)}</b></summary>\n\n"
-    )
+    f.write(f"<details open>\n<summary><b>{count} 个文件</b> | 总大小 <b>{format_size(total_size)}</b></summary>\n\n")
     f.write("| 文件名称 | 大小 | 下载 | 源文件 |\n")
     f.write("| :--- | :--- | :--- | :--- |\n")
     write_table_rows(f, files, root_dir)
@@ -245,10 +243,8 @@ def main():
         buf = StringIO()
         buf.write(make_page_header(badge_time))
         buf.write("## 规则列表\n\n")
-        count_std, size_std = make_section(
-            buf, "基础规则集合", "mihomo 文本规则集", files_std, DIR_RULES)
-        count_mrs, size_mrs = make_section(
-            buf, "Mihomo 专用集合", "mihomo 二进制规则集", files_mrs, DIR_MRS)
+        count_std, size_std = make_section(buf, "基础规则集合", "mihomo 文本规则集", files_std, DIR_RULES)
+        count_mrs, size_mrs = make_section(buf, "Mihomo 专用集合", "mihomo 二进制规则集", files_mrs, DIR_MRS)
         buf.write(make_static_sections())
         atomic_write(README_FILE, buf.getvalue())
     except Exception as e:
@@ -265,8 +261,7 @@ def main():
             f.write("| 类型 | 文件数 | 大小 |\n| :--- | :---: | :---: |\n")
             f.write(f"| 标准规则 | **{count_std}** | {format_size(size_std)} |\n")
             f.write(f"| MRS 规则 | **{count_mrs}** | {format_size(size_mrs)} |\n")
-            f.write(f"| **总计** | **{count_std + count_mrs}** | "
-                    f"**{format_size(size_std + size_mrs)}** |\n")
+            f.write(f"| **总计** | **{count_std + count_mrs}** | **{format_size(size_std + size_mrs)}** |\n")
 
 
 if __name__ == "__main__":

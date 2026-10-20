@@ -26,7 +26,7 @@ def beijing_timestamp():
     return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-_IP_CANDIDATE_RE = re.compile(r"([0-9a-fA-F:.]+(?:/[0-9]+)?)")
+_IP_CANDIDATE_RE = re.compile(r"^\s*([0-9a-fA-F:.]+(?:/[0-9]+)?)\s*(?:[#!].*)?$")
 
 
 def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
@@ -171,7 +171,10 @@ RULE_TYPES = ("domain", "ipcidr")
 
 def normalize_policy(p):
     p = p.lower()
-    if any(x in p for x in ["reject", "block", "deny", "ads", "adblock"]):
+    if any(x in p for x in ["reject", "block", "deny", "adblock"]):
+        return "block"
+    tokens = re.split(r"[-_]+", p)
+    if "ads" in tokens or any(token.startswith("adservice") for token in tokens):
         return "block"
     if any(x in p for x in ["direct", "bypass", "no-proxy"]):
         return "direct"
@@ -195,9 +198,15 @@ def get_owner_from_url(url):
 
     path = [seg for seg in parts.path.strip("/").split("/") if seg]
 
-    if host in ("github.com", "www.github.com", "raw.githubusercontent.com",
-                "objects.githubusercontent.com", "codeload.github.com",
-                "gist.githubusercontent.com", "github.io") or host.endswith(".github.io"):
+    if host in (
+        "github.com",
+        "www.github.com",
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "codeload.github.com",
+        "gist.githubusercontent.com",
+        "github.io",
+    ) or host.endswith(".github.io"):
         return path[0] if path else "github"
     if host == "cdn.jsdelivr.net":
         if len(path) >= 2 and path[0] == "gh":
@@ -248,10 +257,14 @@ class DomainTrie:
         for matched, node in self._walk(domain):
             if matched >= len(parts):
                 break
-            hit = (node.get(self.SUFFIX) or node.get(self.SUBDOMAIN)
-                   or node.get(self.EXACT)) if kind is None else node.get(kind)
+            if kind is None:
+                hit = node.get(self.SUFFIX) or node.get(self.SUBDOMAIN) or node.get(self.EXACT)
+            elif isinstance(kind, (tuple, set, frozenset)):
+                hit = any(node.get(k) for k in kind)
+            else:
+                hit = node.get(kind)
             if hit:
-                return ".".join(parts[len(parts) - matched:])
+                return ".".join(parts[len(parts) - matched :])
         return None
 
 
@@ -275,7 +288,9 @@ def dedup_domain_suffix(domains):
         else:
             kind = DomainTrie.EXACT
 
-        if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
+        if trie.has_marked_ancestor(name, DomainTrie.SUFFIX) or trie.covering_parent(
+            name, (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN)
+        ):
             removed += 1
             continue
 

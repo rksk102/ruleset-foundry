@@ -45,9 +45,7 @@ class TestDomainKind:
         assert stats["suffix"] == 1
 
     def test_suffix_kind_counts_promotions(self):
-        _result, stats = processor.process_domain_detailed(
-            ["a.com", "b.com", "full:c.com"], "suffix"
-        )
+        _result, stats = processor.process_domain_detailed(["a.com", "b.com", "full:c.com"], "suffix")
         assert stats["suffix_promoted"] == 2
         assert stats["relaxed_exact"] == 1
 
@@ -149,8 +147,7 @@ class TestDomainCleaning:
         assert stats["bare_single_label"] == 1
 
     def test_bare_rule_type_keywords_not_treated_as_domains(self):
-        result, stats = processor.process_domain_detailed(
-            ["MATCH", "DOMAIN", "GEOIP", "RULE-SET", "DST-IP-CIDR"])
+        result, stats = processor.process_domain_detailed(["MATCH", "DOMAIN", "GEOIP", "RULE-SET", "DST-IP-CIDR"])
         assert result == []
         assert stats["unrecognized"] == 5
         assert stats["bare_single_label"] == 0
@@ -163,14 +160,19 @@ class TestDomainCleaning:
         assert self.clean(["1.2.3.4", "10.0.0.1/32"]) == []
 
     def test_malformed_domains_dropped(self):
-        assert self.clean([
-            "a..b.com",
-            "trailing.com.",
-            "-bad.com",
-            "bad-.com",
-            "has space.com",
-            "",
-        ]) == []
+        assert (
+            self.clean(
+                [
+                    "a..b.com",
+                    "trailing.com.",
+                    "-bad.com",
+                    "bad-.com",
+                    "has space.com",
+                    "",
+                ]
+            )
+            == []
+        )
 
     def test_single_label_is_not_malformed(self):
         assert self.clean(["no-dots"]) == ["no-dots"]
@@ -183,7 +185,6 @@ class TestDomainCleaning:
 
 
 class TestClassicalRuleTypes:
-
     def route(self, line):
         return processor.process_domain_detailed([line])
 
@@ -196,6 +197,37 @@ class TestClassicalRuleTypes:
         out, stats = self.route("DOMAIN,exact.example.com")
         assert out == ["exact.example.com"]
         assert stats["relaxed_exact"] == 1
+
+    def test_policy_column_is_stripped(self):
+        out, stats = self.route("DOMAIN-SUFFIX,google.com,DIRECT")
+        assert out == ["+.google.com"]
+        assert stats["suffix"] == 1
+
+        out, stats = self.route("DOMAIN,ad.com,REJECT")
+        assert out == ["ad.com"]
+        assert stats["relaxed_exact"] == 1
+
+    def test_suffix_with_leading_dot_keeps_suffix_semantics(self):
+        cases = {
+            "DOMAIN-SUFFIX,.example.com": "+.example.com",
+            "domain:.example.org": "+.example.org",
+        }
+        for line, expected in cases.items():
+            out, stats = self.route(line)
+            assert out == [expected], line
+            assert stats["suffix"] == 1, line
+            assert stats["subdomain"] == 0, line
+
+    def test_exact_with_wildcard_or_dot_prefix_is_unrecognized(self):
+        for line in (
+            "DOMAIN,.example.net",
+            "full:+.example.edu",
+            "full:*.example.io",
+            "DOMAIN-SUFFIX,*.example.com",
+        ):
+            out, stats = self.route(line)
+            assert out == [], line
+            assert stats["unrecognized"] == 1, line
 
     def test_case_insensitive(self):
         out, _ = self.route("domain-suffix,Ads.Example.COM")
@@ -232,7 +264,6 @@ class TestClassicalRuleTypes:
 
 
 class TestNoSilentDrop:
-
     DROPPED_SHAPES = (
         "@@||white.example.com^",
         "keyword:tracker",
@@ -284,6 +315,7 @@ class TestNoSilentDrop:
         _out, stats = processor.process_domain_detailed([""])
         assert stats["unrecognized"] == 0
 
+
 class TestMixedBatch:
     MIXED = (
         "@@exception.com",
@@ -308,6 +340,22 @@ class TestParseLines:
 
     def test_inline_comment_stripped(self):
         assert processor.parse_lines("domain.com # inline note") == ["domain.com"]
+
+    def test_large_plain_text_skips_base64_decode(self, monkeypatch):
+        def boom(*_a, **_k):
+            raise AssertionError("plain text must not be base64 decoded")
+
+        monkeypatch.setattr(processor.base64, "b64decode", boom)
+        text = ("a.com\n" * 1000) + "# comment\n"
+        assert processor.parse_lines(text)[0] == "a.com"
+
+    def test_rules_yaml_fallback_does_not_emit_key(self):
+        content = "rules:\n  - DOMAIN-SUFFIX,a.com\n  - 123\n"
+        assert processor.parse_lines(content) == ["DOMAIN-SUFFIX,a.com", "123"]
+
+    def test_yaml_payload_list_strips_inline_comment(self):
+        content = "payload:\n  - 'example.com # note'\n"
+        assert processor.parse_lines(content) == ["example.com"]
 
     def test_yaml_payload_list(self):
         content = "payload:\n  - '+.example.com'\n  - 'full:other.com'\n"
@@ -349,12 +397,16 @@ class TestProcessIp:
         assert stats["dropped_default_route"] == 1
 
     def test_v4_before_v6(self):
-        result, _errors, _stats = processor.process_ip_detailed(
-            ["2001:db8::/32", "10.0.0.0/8"])
+        result, _errors, _stats = processor.process_ip_detailed(["2001:db8::/32", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8", "2001:db8::/32"]
 
     def test_garbage_skipped(self):
         assert processor.process_ip_detailed(["hello", "not-an-ip"])[0] == []
+
+    def test_version_like_text_is_not_extracted(self):
+        result, errors, _stats = processor.process_ip_detailed(["v1.2.3.4", "host_1.2.3.4_backup"])
+        assert result == []
+        assert len(errors) == 2
 
     def test_errors_are_returned_not_discarded(self):
         result, errors, _stats = processor.process_ip_detailed(["1.0.0.0/24", "garbage"])
@@ -376,15 +428,44 @@ class TestDecodeHelpers:
 
 
 class TestRuleTypeTable:
-
     DOCUMENTED = (
-        "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD", "DOMAIN-REGEX",
-        "GEOSITE", "GEOIP", "SRC-GEOIP",
-        "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN",
-        "DST-PORT", "SRC-PORT", "IN-PORT", "IN-TYPE", "IN-USER", "IN-NAME", "REMATCH-NAME",
-        "PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
-        "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX", "UID", "NETWORK", "DSCP",
-        "RULE-SET", "SUB-RULE", "AND", "OR", "NOT", "MATCH",
+        "DOMAIN",
+        "DOMAIN-SUFFIX",
+        "DOMAIN-KEYWORD",
+        "DOMAIN-WILDCARD",
+        "DOMAIN-REGEX",
+        "GEOSITE",
+        "GEOIP",
+        "SRC-GEOIP",
+        "IP-CIDR",
+        "IP-CIDR6",
+        "SRC-IP-CIDR",
+        "IP-SUFFIX",
+        "SRC-IP-SUFFIX",
+        "IP-ASN",
+        "SRC-IP-ASN",
+        "DST-PORT",
+        "SRC-PORT",
+        "IN-PORT",
+        "IN-TYPE",
+        "IN-USER",
+        "IN-NAME",
+        "REMATCH-NAME",
+        "PROCESS-NAME",
+        "PROCESS-PATH",
+        "PROCESS-NAME-WILDCARD",
+        "PROCESS-PATH-WILDCARD",
+        "PROCESS-NAME-REGEX",
+        "PROCESS-PATH-REGEX",
+        "UID",
+        "NETWORK",
+        "DSCP",
+        "RULE-SET",
+        "SUB-RULE",
+        "AND",
+        "OR",
+        "NOT",
+        "MATCH",
     )
 
     def test_documented_mihomo_types_are_recognized(self):
@@ -397,8 +478,7 @@ class TestRuleTypeTable:
             assert processor.classify_rule_line(f"{name},payload")[2] == name
 
     def test_types_mihomo_does_not_have_are_not_mihomo_types(self):
-        for name in ("DST-IP-CIDR", "DST-IP-ASN", "DST-GEOIP", "SCRIPT",
-                     "SRC-PORT-RANGE", "DST-PORT-RANGE"):
+        for name in ("DST-IP-CIDR", "DST-IP-ASN", "DST-GEOIP", "SCRIPT", "SRC-PORT-RANGE", "DST-PORT-RANGE"):
             assert name not in processor._MIHOMO_RULE_TYPES, name
             assert name in processor._UNSUPPORTED_TYPES, name
 
@@ -407,8 +487,7 @@ class TestRuleTypeTable:
             assert processor.classify_rule_line(f"{name},1.2.3.0/24")[0] == "ip"
 
     def test_unexpressible_ip_types_do_not_classify_as_ip(self):
-        for name in ("SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN",
-                     "SRC-IP-ASN", "DST-IP-ASN"):
+        for name in ("SRC-IP-CIDR", "IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN"):
             kind, _payload, type_name = processor.classify_rule_line(f"{name},x")
             assert kind == "opaque", name
             assert type_name == name
@@ -420,7 +499,6 @@ class TestRuleTypeTable:
 
 
 class TestNoSilentRewriteInIpMode:
-
     def test_ip_suffix_is_not_rewritten_to_cidr(self):
         result, errors, stats = processor.process_ip_detailed(["IP-SUFFIX,8.8.8.8/24"])
         assert result == []
@@ -434,17 +512,13 @@ class TestNoSilentRewriteInIpMode:
         assert stats["dropped_rule_type"]["IP-ASN"] == 1
 
     def test_src_ip_asn_and_src_ip_suffix_dropped(self):
-        result, errors, stats = processor.process_ip_detailed(
-            ["SRC-IP-ASN,9808", "SRC-IP-SUFFIX,192.168.1.1/8"]
-        )
+        result, errors, stats = processor.process_ip_detailed(["SRC-IP-ASN,9808", "SRC-IP-SUFFIX,192.168.1.1/8"])
         assert result == []
         assert errors == []
         assert stats["dropped_rule_type"] == {"SRC-IP-ASN": 1, "SRC-IP-SUFFIX": 1}
 
     def test_unsupported_types_dropped_without_cidr_error(self):
-        result, errors, stats = processor.process_ip_detailed(
-            ["DST-IP-CIDR,1.2.3.0/24", "SCRIPT,code"]
-        )
+        result, errors, stats = processor.process_ip_detailed(["DST-IP-CIDR,1.2.3.0/24", "SCRIPT,code"])
         assert result == []
         assert errors == []
         assert stats["dropped_rule_type"] == {"DST-IP-CIDR": 1, "SCRIPT": 1}
@@ -456,26 +530,37 @@ class TestNoSilentRewriteInIpMode:
         assert stats["dropped_rule_type"]["DOMAIN-SUFFIX"] == 1
 
     def test_drop_reasons_all_mention_ipcidr(self):
-        for name in ("IP-SUFFIX", "SRC-IP-SUFFIX", "IP-ASN", "SRC-IP-ASN", "DST-IP-ASN",
-                     "DST-IP-CIDR", "SCRIPT", "DOMAIN-SUFFIX"):
+        for name in (
+            "IP-SUFFIX",
+            "SRC-IP-SUFFIX",
+            "IP-ASN",
+            "SRC-IP-ASN",
+            "DST-IP-ASN",
+            "DST-IP-CIDR",
+            "SCRIPT",
+            "DOMAIN-SUFFIX",
+        ):
             assert "ipcidr 规则集表达" in processor.ipcidr_drop_reason(name), name
 
 
 class TestClassicalRuleLinesInIpMode:
-
     def test_classic_rule_lines_keep_their_payload(self):
-        result, errors, _stats = processor.process_ip_detailed([
-            "IP-CIDR,1.2.3.0/24",
-            "IP-CIDR6,2001:db8::/32",
-        ])
+        result, errors, _stats = processor.process_ip_detailed(
+            [
+                "IP-CIDR,1.2.3.0/24",
+                "IP-CIDR6,2001:db8::/32",
+            ]
+        )
         assert errors == []
         assert result == ["1.2.3.0/24", "2001:db8::/32"]
 
     def test_src_ip_cidr_is_dropped_with_reason(self):
-        _result, _errors, stats = processor.process_ip_detailed([
-            "SRC-IP-CIDR,10.0.0.0/8",
-            "IP-CIDR,1.2.3.0/24",
-        ])
+        _result, _errors, stats = processor.process_ip_detailed(
+            [
+                "SRC-IP-CIDR,10.0.0.0/8",
+                "IP-CIDR,1.2.3.0/24",
+            ]
+        )
         assert stats["dropped_rule_type"]["SRC-IP-CIDR"] == 1
         assert "src 语义" in processor.ipcidr_drop_reason("SRC-IP-CIDR")
 
@@ -486,16 +571,25 @@ class TestClassicalRuleLinesInIpMode:
         assert errors[0][0] == "x"
 
     def test_no_resolve_modifier_stripped(self):
-        result, errors, _stats = processor.process_ip_detailed(
-            ["IP-CIDR,1.2.3.0/24,no-resolve"])
+        result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.2.3.0/24,no-resolve"])
         assert result == ["1.2.3.0/24"]
         assert errors == []
 
     def test_rule_target_after_payload_is_ignored(self):
-        result, errors, _stats = processor.process_ip_detailed(
-            ["IP-CIDR,1.2.3.0/24,DIRECT"])
+        result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.2.3.0/24,DIRECT"])
         assert result == ["1.2.3.0/24"]
         assert errors == []
+
+    def test_ip_cidr_src_modifier_is_dropped_as_source_rule(self):
+        result, errors, stats = processor.process_ip_detailed(
+            [
+                "IP-CIDR,192.0.2.0/24,DIRECT,src",
+                "IP-CIDR,192.0.2.0/24,DIRECT",
+            ]
+        )
+        assert result == ["192.0.2.0/24"]
+        assert errors == []
+        assert stats["dropped_rule_type"]["SRC-IP-CIDR"] == 1
 
     def test_empty_payload_counted(self):
         _result, errors, stats = processor.process_ip_detailed(["IP-CIDR,"])
@@ -503,14 +597,12 @@ class TestClassicalRuleLinesInIpMode:
         assert stats["unrecognized"] == 1
 
     def test_unclassified_lines_still_use_extract(self):
-        result, errors, _stats = processor.process_ip_detailed(
-            ["  1.2.3.0/24 # note", "10.0.0.0/8"])
+        result, errors, _stats = processor.process_ip_detailed(["  1.2.3.0/24 # note", "10.0.0.0/8"])
         assert result == ["1.2.3.0/24", "10.0.0.0/8"]
         assert errors == []
 
     def test_classified_and_unclassified_lines_collapse_together(self):
-        result, _errors, _stats = processor.process_ip_detailed(
-            ["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])
+        result, _errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])
         assert result == ["1.0.0.0/23"]
 
 
@@ -520,7 +612,6 @@ class _FakeStdin:
 
 
 class TestMainCliContract:
-
     def invoke(self, monkeypatch, capsys, payload):
         monkeypatch.setattr(sys, "argv", ["processor.py", "ipcidr"])
         monkeypatch.setattr(sys, "stdin", _FakeStdin(payload))
@@ -529,7 +620,8 @@ class TestMainCliContract:
 
     def test_ipcidr_mode_classifies_before_extract(self, monkeypatch, capsys):
         captured = self.invoke(
-            monkeypatch, capsys,
+            monkeypatch,
+            capsys,
             b"IP-CIDR,1.2.3.0/24\nIP-CIDR6,2001:db8::/32\nIP-ASN,13335\n",
         )
         assert captured.out.splitlines() == ["1.2.3.0/24", "2001:db8::/32"]
@@ -545,7 +637,6 @@ class TestMainCliContract:
 
 
 class TestYamlPayloadParsing:
-
     def test_multiline_flow_array(self):
         content = "payload: [\n  'a.com',\n  'b.com'\n]\n"
         assert processor.parse_lines(content) == ["a.com", "b.com"]
@@ -591,39 +682,33 @@ class TestYamlPayloadParsing:
 
 
 class TestYamlProbeGating:
-
     def test_plain_text_skips_yaml_probe(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(processor, "_yaml_payload_lines",
-                            lambda content: calls.append(content) or None)
+        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or None)
         assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
         assert calls == [], "纯文本不应触发 yaml.safe_load"
 
     def test_payload_head_triggers_yaml_probe(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(processor, "_yaml_payload_lines",
-                            lambda content: calls.append(content) or None)
+        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or None)
         assert processor.parse_lines("payload:\n  - a.com\n") == ["a.com"]
         assert len(calls) == 1
 
     def test_rules_head_triggers_yaml_probe(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(processor, "_yaml_payload_lines",
-                            lambda content: calls.append(content) or None)
+        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or None)
         processor.parse_lines("rules:\n  - a.com\n")
         assert len(calls) == 1
 
 
 class TestStatsContract:
-
     def test_no_dead_counters(self):
         stats = processor.new_stats()
         assert "exact" not in stats, "exact 计数器从未被累加，属于死字段"
         assert stats["subdomain"] == 0
 
     def test_subdomain_rules_are_counted(self):
-        domains_, stats = processor.process_domain_detailed(
-            [".sub.example", "bare.example"], "exact")
+        domains_, stats = processor.process_domain_detailed([".sub.example", "bare.example"], "exact")
         assert domains_ == [".sub.example", "bare.example"]
         assert stats["subdomain"] == 1
 
@@ -631,15 +716,15 @@ class TestStatsContract:
 class TestRuleLineSemantics:
     def test_wildcard_star_must_occupy_a_whole_label(self):
         domains, stats = processor.process_domain_detailed(
-            ["*.example.com", "*.*.example.com", "*.foo*.com",
-             "*.example.com/path", "*.a b.com", "*."], "exact")
+            ["*.example.com", "*.*.example.com", "*.foo*.com", "*.example.com/path", "*.a b.com", "*."], "exact"
+        )
         assert domains == ["*.*.example.com", "*.example.com"]
         assert stats["wildcard"] == 2
         assert stats["unrecognized"] == 4
 
     def test_ip_literals_are_dropped_instead_of_truncated(self):
         domains, stats = processor.process_domain_detailed(
-            ["2001:db8::1", "1.2.3.4", "2001:db8::/32", "[2001:db8::1]",
-             "example.com:8080", "host.example"], "exact")
+            ["2001:db8::1", "1.2.3.4", "2001:db8::/32", "[2001:db8::1]", "example.com:8080", "host.example"], "exact"
+        )
         assert domains == ["example.com", "host.example"]
         assert stats["unrecognized"] == 4

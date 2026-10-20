@@ -83,10 +83,18 @@ class TestProcessTaskLogic:
         write(source / "block" / "domain" / "A" / "one.txt", "ads.example.com\ngoogle.com\n")
         write(source / "block" / "domain" / "B" / "two.txt", "google.com\nsub.google.com\n")
 
-        result = self.use_dirs(source, output, lambda: merger.process_task_logic(
-            "block", "domain", "Owner", "all.txt",
-            ["block/domain/A/one.txt", "block/domain/B/two.txt"], "合并测试",
-        ))
+        result = self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "block",
+                "domain",
+                "Owner",
+                "all.txt",
+                ["block/domain/A/one.txt", "block/domain/B/two.txt"],
+                "合并测试",
+            ),
+        )
 
         assert result["raw"] == 3
         assert result["opt"] == 3
@@ -101,10 +109,18 @@ class TestProcessTaskLogic:
         output = tmp_path / "merged"
         write(source / "block" / "domain" / "A" / "one.txt", "+.google.com\n+.ads.google.com\n")
 
-        result = self.use_dirs(source, output, lambda: merger.process_task_logic(
-            "block", "domain", "Owner", "all.txt",
-            ["block/domain/A/one.txt"], "后缀去重测试",
-        ))
+        result = self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "block",
+                "domain",
+                "Owner",
+                "all.txt",
+                ["block/domain/A/one.txt"],
+                "后缀去重测试",
+            ),
+        )
 
         assert result["raw"] == 2
         assert result["opt"] == 1
@@ -119,10 +135,18 @@ class TestProcessTaskLogic:
             source / "block" / "domain" / "A" / "one.txt",
             "# Source: https://raw.githubusercontent.com/Owner/repo/main/one.txt\nads.example.com\n",
         )
-        self.use_dirs(source, output, lambda: merger.process_task_logic(
-            "block", "domain", "Owner", "all.txt",
-            ["block/domain/A/one.txt"], "来源透传测试",
-        ))
+        self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "block",
+                "domain",
+                "Owner",
+                "all.txt",
+                ["block/domain/A/one.txt"],
+                "来源透传测试",
+            ),
+        )
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
         assert "# Sources: https://raw.githubusercontent.com/Owner/repo/main/one.txt" in content
 
@@ -130,12 +154,59 @@ class TestProcessTaskLogic:
         source = tmp_path / "rulesets"
         source.mkdir(parents=True)
         try:
-            self.use_dirs(source, tmp_path / "merged", lambda: merger.process_task_logic(
-                "block", "domain", "Owner", "all.txt", ["block/domain/A/missing.txt"], "x",
-            ))
+            self.use_dirs(
+                source,
+                tmp_path / "merged",
+                lambda: merger.process_task_logic(
+                    "block",
+                    "domain",
+                    "Owner",
+                    "all.txt",
+                    ["block/domain/A/missing.txt"],
+                    "x",
+                ),
+            )
         except FileNotFoundError:
             return
         raise AssertionError("缺失输入应抛出 FileNotFoundError")
+
+    def test_missing_input_tolerated_with_allow_partial(self, tmp_path):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        write(source / "block" / "domain" / "A" / "keep.txt", "ads.example.com\n")
+        result = self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "block",
+                "domain",
+                "Owner",
+                "all.txt",
+                ["block/domain/A/keep.txt", "block/domain/A/missing.txt"],
+                "x",
+                allow_partial=True,
+            ),
+        )
+        assert result["src_count"] == 1
+        assert (output / "block" / "domain" / "Owner" / "all.txt").is_file()
+
+    def test_all_missing_inputs_skipped_with_allow_partial(self, tmp_path):
+        source = tmp_path / "rulesets"
+        source.mkdir(parents=True)
+        result = self.use_dirs(
+            source,
+            tmp_path / "merged",
+            lambda: merger.process_task_logic(
+                "block",
+                "domain",
+                "Owner",
+                "all.txt",
+                ["block/domain/A/missing.txt"],
+                "x",
+                allow_partial=True,
+            ),
+        )
+        assert result is None
 
     def test_input_outside_source_dir_rejected(self, tmp_path):
         source = tmp_path / "rulesets"
@@ -144,15 +215,13 @@ class TestProcessTaskLogic:
         write(outside, "ads.example.com\n")
 
         def run():
-            merger.process_task_logic("block", "domain", "Owner", "all.txt",
-                                      [str(outside)], "x")
+            merger.process_task_logic("block", "domain", "Owner", "all.txt", [str(outside)], "x")
 
         with pytest.raises(ValueError):
             self.use_dirs(source, tmp_path / "merged", run)
 
         def run_relative():
-            merger.process_task_logic("block", "domain", "Owner", "all.txt",
-                                      ["../outside.txt"], "x")
+            merger.process_task_logic("block", "domain", "Owner", "all.txt", ["../outside.txt"], "x")
 
         with pytest.raises(ValueError):
             self.use_dirs(source, tmp_path / "merged", run_relative)
@@ -165,8 +234,7 @@ class TestProcessTaskLogic:
         escaped = (output / ".." / ".." / ".." / "domain" / "PWNED.txt").resolve()
 
         def run():
-            merger.process_task_logic("../../..", "domain", "Owner", "../PWNED.txt",
-                                      ["block/domain/A/one.txt"], "x")
+            merger.process_task_logic("../../..", "domain", "Owner", "../PWNED.txt", ["block/domain/A/one.txt"], "x")
 
         with pytest.raises(ValueError):
             self.use_dirs(source, output, run)
@@ -180,8 +248,7 @@ class TestProcessTaskLogic:
         escaped = (owner_dir / ".." / "escape.txt").resolve()
 
         def run():
-            merger.process_task_logic("block", "domain", "Owner", "../escape.txt",
-                                      ["block/domain/A/one.txt"], "x")
+            merger.process_task_logic("block", "domain", "Owner", "../escape.txt", ["block/domain/A/one.txt"], "x")
 
         with pytest.raises(ValueError):
             self.use_dirs(source, output, run)
@@ -191,9 +258,18 @@ class TestProcessTaskLogic:
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"
         write(source / "direct" / "ipcidr" / "A" / "cn.txt", "0.0.0.0/0\n1.0.0.0/24\n1.0.1.0/24\n")
-        result = self.use_dirs(source, output, lambda: merger.process_task_logic(
-            "direct", "ipcidr", "Owner", "all-cn.txt", ["direct/ipcidr/A/cn.txt"], "x",
-        ))
+        result = self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "direct",
+                "ipcidr",
+                "Owner",
+                "all-cn.txt",
+                ["direct/ipcidr/A/cn.txt"],
+                "x",
+            ),
+        )
         assert result["opt"] == 1
         content = (output / "direct" / "ipcidr" / "Owner" / "all-cn.txt").read_text(encoding="utf-8")
         assert "1.0.0.0/23" in content
@@ -207,58 +283,93 @@ class TestDetectCrossPolicyConflicts:
         return merger.detect_cross_policy_conflicts(str(tmp_path))
 
     def test_explicit_conflict_same_domain_two_strategies(self, tmp_path):
-        explicit, _implicit = self.build(tmp_path, {
-            "block/domain/A/x.txt": "same.example.com\n",
-            "policy/domain/A/y.txt": "same.example.com\n",
-        })
+        explicit, _implicit = self.build(
+            tmp_path,
+            {
+                "block/domain/A/x.txt": "same.example.com\n",
+                "policy/domain/A/y.txt": "same.example.com\n",
+            },
+        )
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
     def test_explicit_conflict_across_prefix_forms(self, tmp_path):
-        explicit, _implicit = self.build(tmp_path, {
-            "block/domain/A/x.txt": "+.same.example.com\n",
-            "policy/domain/A/y.txt": "same.example.com\n",
-        })
+        explicit, _implicit = self.build(
+            tmp_path,
+            {
+                "block/domain/A/x.txt": "+.same.example.com\n",
+                "policy/domain/A/y.txt": "same.example.com\n",
+            },
+        )
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
     def test_implicit_conflict_suffix_parent_covers_child(self, tmp_path):
-        _explicit, implicit = self.build(tmp_path, {
-            "policy/domain/A/proxy.txt": "+.google.com\n",
-            "block/domain/A/ads.txt": "ads.google.com\n",
-        })
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "+.google.com\n",
+                "block/domain/A/ads.txt": "ads.google.com\n",
+            },
+        )
         assert implicit == {"policy(父) → block(子)": [("ads.google.com", "google.com")]}
 
     def test_implicit_conflict_suffix_parent_covers_subdomain_child(self, tmp_path):
-        _explicit, implicit = self.build(tmp_path, {
-            "policy/domain/A/proxy.txt": "+.google.com\n",
-            "block/domain/A/ads.txt": ".ads.google.com\n",
-        })
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "+.google.com\n",
+                "block/domain/A/ads.txt": ".ads.google.com\n",
+            },
+        )
         assert implicit == {"policy(父) → block(子)": [(".ads.google.com", "google.com")]}
 
     def test_bare_parent_does_not_cover_child(self, tmp_path):
-        _explicit, implicit = self.build(tmp_path, {
-            "policy/domain/A/proxy.txt": "google.com\n",
-            "block/domain/A/ads.txt": "ads.google.com\n",
-        })
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "google.com\n",
+                "block/domain/A/ads.txt": "ads.google.com\n",
+            },
+        )
         assert implicit == {}
 
-    def test_subdomain_parent_does_not_cover_child(self, tmp_path):
-        _explicit, implicit = self.build(tmp_path, {
-            "policy/domain/A/proxy.txt": ".google.com\n",
-            "block/domain/A/ads.txt": ".ads.google.com\n",
-        })
+    def test_subdomain_parent_covers_subdomain_child(self, tmp_path):
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": ".google.com\n",
+                "block/domain/A/ads.txt": ".ads.google.com\n",
+            },
+        )
+        assert implicit == {"policy(父) → block(子)": [(".ads.google.com", "google.com")]}
+
+    def test_subdomain_and_bare_domain_do_not_conflict(self, tmp_path):
+        explicit, implicit = self.build(
+            tmp_path,
+            {
+                "block/domain/A/x.txt": ".example.com\n",
+                "policy/domain/A/y.txt": "example.com\n",
+            },
+        )
+        assert explicit == {}
         assert implicit == {}
 
     def test_single_strategy_reports_nothing(self, tmp_path):
-        explicit, implicit = self.build(tmp_path, {
-            "block/domain/A/x.txt": "a.com\nb.com\n",
-        })
+        explicit, implicit = self.build(
+            tmp_path,
+            {
+                "block/domain/A/x.txt": "a.com\nb.com\n",
+            },
+        )
         assert explicit == {} and implicit == {}
 
     def test_ipcidr_directories_ignored(self, tmp_path):
-        explicit, implicit = self.build(tmp_path, {
-            "block/ipcidr/A/x.txt": "1.0.0.0/24\n",
-            "policy/domain/A/y.txt": "1.0.0.0/24\n",
-        })
+        explicit, implicit = self.build(
+            tmp_path,
+            {
+                "block/ipcidr/A/x.txt": "1.0.0.0/24\n",
+                "policy/domain/A/y.txt": "1.0.0.0/24\n",
+            },
+        )
         assert explicit == {} and implicit == {}
 
     def test_missing_dir_returns_empty(self, tmp_path):
@@ -266,7 +377,6 @@ class TestDetectCrossPolicyConflicts:
 
 
 class TestRepoAnchor:
-
     def test_source_dir_outside_repo_is_rejected(self, monkeypatch):
         monkeypatch.setattr(merger, "SOURCE_DIR", tempfile.gettempdir())
 
@@ -294,7 +404,7 @@ class TestConflictPolicyIgnore:
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
-        monkeypatch.setattr(merger, "verify_merged_products", lambda tasks: True)
+        monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
         monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
 
     def test_ignore_skips_detection_entirely(self, monkeypatch, work_dir):
@@ -314,8 +424,9 @@ class TestConflictPolicyIgnore:
     def test_warn_still_runs_detection(self, monkeypatch, work_dir):
         self.setup_run(monkeypatch, work_dir, "warn")
         calls = []
-        monkeypatch.setattr(merger, "detect_cross_policy_conflicts",
-                            lambda merged_dir: (calls.append(merged_dir), ({}, {}))[1])
+        monkeypatch.setattr(
+            merger, "detect_cross_policy_conflicts", lambda merged_dir: (calls.append(merged_dir), ({}, {}))[1]
+        )
 
         merger.main()
 
@@ -323,17 +434,21 @@ class TestConflictPolicyIgnore:
 
 
 class TestMergerGuards:
-    def test_merge_task_and_passthrough_may_not_share_a_path(
-            self, work_dir, monkeypatch, capsys):
+    def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch, capsys):
         source = work_dir / "rulesets"
         cfg = work_dir / "config.yaml"
         cfg.write_text("merges: []\n", encoding="utf-8")
-        monkeypatch.setattr(merger, "CONFIG_FILE", str(cfg))
+        monkeypatch.setattr(merger, "resolve_config_file", lambda: cfg)
         write(source / "block" / "domain" / "Owner" / "ads.txt", "a.example\n")
-        tasks = [{
-            "strategy": "block", "type": "domain", "owner": "Owner",
-            "filename": "ads.txt", "inputs": ["block/domain/Owner/ads.txt"],
-        }]
+        tasks = [
+            {
+                "strategy": "block",
+                "type": "domain",
+                "owner": "Owner",
+                "filename": "ads.txt",
+                "inputs": ["block/domain/Owner/ads.txt"],
+            }
+        ]
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": tasks})
@@ -351,6 +466,4 @@ class TestMergerGuards:
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
 
         with pytest.raises(ValueError, match="合并结果为空"):
-            merger.process_task_logic(
-                "block", "domain", "Owner", "out.txt",
-                ["block/domain/Owner/ads.txt"], "测试")
+            merger.process_task_logic("block", "domain", "Owner", "out.txt", ["block/domain/Owner/ads.txt"], "测试")

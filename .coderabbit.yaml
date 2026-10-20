@@ -48,8 +48,8 @@ reviews:
     - path: "scripts/utils.py"
       instructions: |
         DomainTrie 的 SUFFIX(`+.d`)/SUBDOMAIN(`.d`)/EXACT(`d`) 语义见 processor 说明；
-        只有 SUFFIX 有覆盖能力，`.d` 与裸 `d` 匹配集不相交。
-        判定用 has_marked_ancestor（含自身），covering_parent 只返回严格祖先。
+        SUFFIX 覆盖同名 `d`/`.d` 及严格子域，SUBDOMAIN 覆盖严格子域；`.d` 与裸 `d` 匹配集不相交。
+        判定用 has_marked_ancestor（含自身），covering_parent 只返回严格祖先且严格祖先同时查 SUFFIX/SUBDOMAIN。
         clean_directory 必须返回未清理条目；flatten_ip_cidr 丢弃 /0 是有意为之。
 
     - path: "scripts/main.py"

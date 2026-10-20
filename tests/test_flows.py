@@ -1,4 +1,5 @@
 """进程内驱动 main() 与 convert_mrs.main()：补上编排路径的覆盖（T-1）。"""
+
 import hashlib
 import os
 import subprocess
@@ -22,8 +23,8 @@ https://raw.githubusercontent.com/o/drop/drop.txt
 class TestConfigDirsWiring:
     def test_product_dirs_and_readme_dirs_follow_config(self, work_dir):
         (work_dir / "config.yaml").write_text(
-            'paths:\n  merged_output_dir: "out-txt"\n  mrs_output_dir: "out-mrs"\n',
-            encoding="utf-8")
+            'paths:\n  merged_output_dir: "out-txt"\n  mrs_output_dir: "out-mrs"\n', encoding="utf-8"
+        )
         child = (
             "import gen_readme, release_handler\n"
             "print(release_handler.product_dirs())\n"
@@ -32,13 +33,21 @@ class TestConfigDirsWiring:
             " gen_readme.DIR_MRS.endswith('out-mrs'))\n"
         )
         env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
-        proc = subprocess.run([sys.executable, "-c", child], cwd=str(work_dir),
-                              capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", env=env, timeout=60)
+        proc = subprocess.run(
+            [sys.executable, "-c", child],
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=60,
+        )
         out = (proc.stdout or "").strip()
         assert "('out-txt', 'out-mrs')" in out, out or proc.stderr
         assert "['out-mrs', 'out-txt']" in out, out
         assert "True True" in out, out
+
 
 PAYLOADS = {
     "keep.txt": b"a.example\nb.example\n",
@@ -47,8 +56,7 @@ PAYLOADS = {
 
 
 class TestMainFlow:
-    def setup_run(self, monkeypatch, work_dir, sources=SOURCES, payloads=None,
-                  allow_partial=False):
+    def setup_run(self, monkeypatch, work_dir, sources=SOURCES, payloads=None, allow_partial=False):
         payloads = PAYLOADS if payloads is None else payloads
         rulesets = work_dir / "rulesets"
         sources_file = work_dir / "sources.urls"
@@ -79,8 +87,7 @@ class TestMainFlow:
         return manifest.read_text(encoding="utf-8").split()
 
     def disk_entries(self, rulesets):
-        return sorted(str(p.relative_to(rulesets)).replace("\\", "/")
-                      for p in rulesets.rglob("*.txt"))
+        return sorted(str(p.relative_to(rulesets)).replace("\\", "/") for p in rulesets.rglob("*.txt"))
 
     def test_healthy_run_writes_a_manifest_matching_disk(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
@@ -88,24 +95,20 @@ class TestMainFlow:
         main.main()
 
         assert self.manifest_entries(rulesets) == self.disk_entries(rulesets)
-        assert self.disk_entries(rulesets) == [
-            "block/domain/o/drop.txt", "block/domain/o/keep.txt"]
+        assert self.disk_entries(rulesets) == ["block/domain/o/drop.txt", "block/domain/o/keep.txt"]
 
     def test_stale_orphan_is_cleaned_and_never_recorded(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
         main.main()
 
-        sources = SOURCES.replace(
-            "https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
+        sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
         self.setup_run(monkeypatch, work_dir, sources=sources)
         main.main()
 
         assert self.disk_entries(rulesets) == ["block/domain/o/keep.txt"]
-        assert self.manifest_entries(rulesets) == ["block/domain/o/keep.txt"], \
-            "被清理掉的孤儿不得留在产物清单里"
+        assert self.manifest_entries(rulesets) == ["block/domain/o/keep.txt"], "被清理掉的孤儿不得留在产物清单里"
 
-    def test_degraded_run_keeps_previous_products_and_writes_no_manifest(
-            self, monkeypatch, work_dir):
+    def test_degraded_run_keeps_previous_products_and_writes_no_manifest(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
         main.main()
         before = self.manifest_entries(rulesets)
@@ -116,9 +119,10 @@ class TestMainFlow:
             main.main()
 
         assert exc.value.code == 1
-        assert [p for p in self.disk_entries(rulesets)
-                if not p.endswith("sync-summary.txt")] == [
-            "block/domain/o/drop.txt", "block/domain/o/keep.txt"]
+        assert [p for p in self.disk_entries(rulesets) if not p.endswith("sync-summary.txt")] == [
+            "block/domain/o/drop.txt",
+            "block/domain/o/keep.txt",
+        ]
         assert self.manifest_entries(rulesets) == before
 
     def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
@@ -135,16 +139,15 @@ class TestMainFlow:
         assert exc.value.code == 1
         assert self.manifest_entries(rulesets) == before
 
+
 class TestConvertMrsFlow:
     def test_print_kernel_hash_prints_the_file_digest(self, monkeypatch, work_dir, capsys):
         kernel = work_dir / "mihomo"
         kernel.write_bytes(b"FAKE-ELF-BODY")
         monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(kernel))
         monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
-        monkeypatch.setattr(convert_mrs, "get_latest_mihomo",
-                            lambda skip_hash_check=False: None)
-        monkeypatch.setattr(convert_mrs.sys, "argv",
-                            ["convert_mrs.py", "--print-kernel-hash"])
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo", lambda skip_hash_check=False: None)
+        monkeypatch.setattr(convert_mrs.sys, "argv", ["convert_mrs.py", "--print-kernel-hash"])
 
         convert_mrs.main()
 
@@ -193,8 +196,7 @@ class TestDegradedSummary:
         stats.download_errors.append(("https://x.test/a|b.txt", "第一行\n第二行|尾巴"))
         stats.parse_errors.append(("https://x.test/c.txt", "解析失败: 多行\n错误"))
 
-        main.generate_summary(
-            stats, ["存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false"])
+        main.generate_summary(stats, ["存在失败源（下载 1 / 解析 1）且 behavior.allow_partial=false"])
 
         text = summary.read_text(encoding="utf-8")
         assert "### 本次未发布（消费者继续使用上一版产物）" in text
@@ -218,21 +220,26 @@ class TestEmptyPayloadDoesNotSilentlyDelete:
         victim.parent.mkdir(parents=True)
         victim.write_text("+.keep.example\n", encoding="utf-8")
         (work_dir / "config.yaml").write_text(
-            'network:\n  timeout_seconds: 15\n  max_retries: 2\n  max_source_bytes: 67108864\n'
+            "network:\n  timeout_seconds: 15\n  max_retries: 2\n  max_source_bytes: 67108864\n"
             'paths:\n  sources_file: "sources.urls"\n  rulesets_dir: "rulesets"\n'
-            'behavior:\n  min_source_success_ratio: 0.0\n'
-            '  allow_partial: false\n',
+            "behavior:\n  min_source_success_ratio: 0.0\n"
+            "  allow_partial: false\n",
             encoding="utf-8",
         )
         (work_dir / "sources.urls").write_text(
-            "[policy:block]\n[type:domain]\n"
-            "https://raw.githubusercontent.com/example/repo/main/ads.txt\n",
-            encoding="utf-8")
+            "[policy:block]\n[type:domain]\nhttps://raw.githubusercontent.com/example/repo/main/ads.txt\n",
+            encoding="utf-8",
+        )
         env = dict(os.environ, PYTHONPATH=SCRIPTS, PYTHONIOENCODING="utf-8")
         proc = subprocess.run(
             [sys.executable, "-c", EMPTY_PAYLOAD_CHILD],
-            cwd=str(work_dir), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", env=env, timeout=120,
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=120,
         )
         assert proc.returncode == 1, proc.stdout
         assert victim.exists()

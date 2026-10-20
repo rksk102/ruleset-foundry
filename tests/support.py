@@ -1,6 +1,5 @@
 class GhStub:
-    def __init__(self, fail_when=None, responses=None, asset_count="3",
-                 release_exists=True):
+    def __init__(self, fail_when=None, responses=None, asset_count="3", release_exists=True):
         self.calls = []
         self.fail_when = fail_when or (lambda cmd: False)
         self.responses = responses or {}

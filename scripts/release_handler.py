@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 import manifest
-from config_loader import get
+from config_loader import ConfigError, get
 from logger import (
     error,
     gh_error,
@@ -28,15 +28,21 @@ from utils import (
 )
 
 REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
-MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
-MRS_DIR = get("paths", "mrs_output_dir", default="merged-rules-mrs")
+try:
+    RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
+    MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
+    MRS_DIR = get("paths", "mrs_output_dir", default="merged-rules-mrs")
+    KEEP_DAYS = get("behavior", "release_keep_days", default=3)
+    CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
+    ALLOW_PARTIAL = get("behavior", "allow_partial", default=False)
+except ConfigError as _cfg_err:
+    gh_error(f"配置校验失败: {_cfg_err}")
+    sys.exit(1)
+
 TARGET_CONFIG = {
     MERGED_DIR: ".txt",
     MRS_DIR: ".mrs",
 }
-KEEP_DAYS = get("behavior", "release_keep_days", default=3)
-CHANGE_DETECTION = get("behavior", "release_change_detection", default=True)
 BASELINE_MISSING = "清单基线缺失"
 GH_TIMEOUT = 120
 ASSET_CONFIRM_ATTEMPTS = 3
@@ -44,21 +50,33 @@ ASSET_CONFIRM_DELAY = 3
 
 
 def release_asset_count(release_tag):
-    raw = run_gh(["release", "view", release_tag, "--json", "assets",
-                  "--jq", '[.assets[] | select(.state == "uploaded")] | length'])
+    raw = run_gh(
+        [
+            "release",
+            "view",
+            release_tag,
+            "--json",
+            "assets",
+            "--jq",
+            '[.assets[] | select(.state == "uploaded")] | length',
+        ]
+    )
     if raw is None or not raw.strip().isdigit():
         return None
     return int(raw)
 
 
 def confirm_release_assets(release_tag):
+    last_count = None
     for attempt in range(ASSET_CONFIRM_ATTEMPTS):
         count = release_asset_count(release_tag)
         if count is not None:
-            return count
+            last_count = count
+            if count > 0:
+                return count
         if attempt + 1 < ASSET_CONFIRM_ATTEMPTS:
             time.sleep(ASSET_CONFIRM_DELAY)
-    return None
+    return last_count
 
 
 def product_dirs():
@@ -74,8 +92,15 @@ def baseline_required():
     return os.path.isdir(RULESETS_DIR)
 
 
-def merge_product_entries(merge_tasks=None):
+def merge_product_entries(merge_tasks=None, baseline=None):
     tasks = get("merges") if merge_tasks is None else merge_tasks
+    if ALLOW_PARTIAL and baseline is not None:
+        baseline_set = set(baseline)
+        tasks = [
+            task
+            for task in tasks or []
+            if isinstance(task, dict) and any(rel in baseline_set for rel in task.get("inputs") or [])
+        ]
     entries = set()
     for task in tasks or []:
         if not isinstance(task, dict):
@@ -90,7 +115,7 @@ def load_baseline(baseline_paths=None):
     for path in baseline_paths or baseline_files():
         entries = manifest.load_manifest(path)
         if entries:
-            expected = sorted(set(entries) | merge_product_entries())
+            expected = sorted(set(entries) | merge_product_entries(baseline=entries))
             info(f"  清单基线 {path}: {len(entries)} 项，含合并产物共 {len(expected)} 项")
             return expected
     return None
@@ -119,17 +144,14 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     if baseline is None:
         if require_baseline:
             raise manifest.ManifestError(
-                f"{BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空"
-                f"（已检查 {' / '.join(baseline_files())}）"
+                f"{BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空（已检查 {' / '.join(baseline_files())}）"
             )
         if not txt_files and not mrs_files:
             raise manifest.ManifestError(
                 f"没有任何产物可校验: {txt_dir} 与 {mrs_dir} 均不存在或为空"
                 "（通常在非仓库根目录运行时出现，拒绝空跑通过）"
             )
-        warning(
-            f"  {BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空，跳过绝对基准校验"
-        )
+        warning(f"  {BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空，跳过绝对基准校验")
     else:
         check_expected(baseline, txt_files, f"{txt_dir} 绝对基准校验")
 
@@ -162,8 +184,7 @@ def verify_only():
 
 def run_gh(cmd_list):
     try:
-        result = subprocess.run(["gh", *cmd_list], capture_output=True, text=True,
-                                check=True, timeout=GH_TIMEOUT)
+        result = subprocess.run(["gh", *cmd_list], capture_output=True, text=True, check=True, timeout=GH_TIMEOUT)
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
         warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
@@ -275,24 +296,41 @@ def publish_release(release_tag, zip_file, title, notes, exists):
     if exists:
         if run_gh(["release", "upload", release_tag, zip_file, "--clobber"]) is None:
             return None
-        return run_gh([
-            "release", "edit", release_tag,
-            "--title", title,
-            "--notes", notes,
-            "--latest",
-        ])
+        return run_gh(
+            [
+                "release",
+                "edit",
+                release_tag,
+                "--title",
+                title,
+                "--notes",
+                notes,
+                "--latest",
+            ]
+        )
 
-    return run_gh([
-        "release", "create", release_tag, zip_file,
-        "--title", title,
-        "--notes", notes,
-        "--latest",
-    ])
+    return run_gh(
+        [
+            "release",
+            "create",
+            release_tag,
+            zip_file,
+            "--title",
+            title,
+            "--notes",
+            notes,
+            "--latest",
+        ]
+    )
 
 
 def main():
     if "--verify-only" in sys.argv[1:]:
         verify_only()
+        return
+
+    if "--print-hash" in sys.argv[1:]:
+        print(combined_products_hash(*product_dirs())[0])
         return
 
     group_start("处理发布")
@@ -375,9 +413,7 @@ def main():
         cleaned = 0
         for rel in releases:
             try:
-                created_at = datetime.datetime.fromisoformat(
-                    rel["createdAt"].replace("Z", "+00:00")
-                )
+                created_at = datetime.datetime.fromisoformat(rel["createdAt"].replace("Z", "+00:00"))
                 tag = rel["tagName"]
             except (KeyError, AttributeError, TypeError, ValueError) as e:
                 warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")

@@ -14,20 +14,24 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import config_loader
-from config_loader import get
-from logger import error, group_end, group_start, info, success, warning
+from config_loader import ConfigError, get
+from logger import error, gh_error, group_end, group_start, info, success, warning
 from utils import RULE_TYPES, anchor_cwd_to_repo_root, clean_directory, file_sha256
 
-SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
-DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
-REPO_API = get("mihomo", "repo_api",
-               default="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest")
-PINNED_VERSION = (get("mihomo", "pinned_version", default="") or "").strip()
-EXPECTED_SHA = (get("mihomo", "kernel_sha256", default="") or "").strip().lower()
-EXPECTED_SHA_ARM64 = (get("mihomo", "kernel_sha256_arm64", default="") or "").strip().lower()
-KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
+try:
+    SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
+    DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
+    REPO_API = get("mihomo", "repo_api", default="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest")
+    PINNED_VERSION = (get("mihomo", "pinned_version", default="") or "").strip()
+    EXPECTED_SHA = (get("mihomo", "kernel_sha256", default="") or "").strip().lower()
+    EXPECTED_SHA_ARM64 = (get("mihomo", "kernel_sha256_arm64", default="") or "").strip().lower()
+    KERNEL_CACHE_DIR = Path(get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
+except ConfigError as _cfg_err:
+    gh_error(f"配置校验失败: {_cfg_err}")
+    sys.exit(1)
 KERNEL_BIN = str(KERNEL_CACHE_DIR / "mihomo")
 VERSION_FILE = KERNEL_CACHE_DIR / "version.txt"
 MAX_KERNEL_BYTES = 100 * 1024 * 1024
@@ -63,13 +67,14 @@ def expected_kernel_sha(arch):
 
 def ensure_kernel_platform():
     if not sys.platform.startswith("linux"):
-        error("  内核准备需要执行 Linux 版 mihomo（mihomo -v）做可运行性校验；"
-              "请在 Linux/WSL 上运行，或交给 CI 的 kernel-bump 工作流")
+        error(
+            "  内核准备需要执行 Linux 版 mihomo（mihomo -v）做可运行性校验；"
+            "请在 Linux/WSL 上运行，或交给 CI 的 kernel-bump 工作流"
+        )
         sys.exit(1)
     arch = current_kernel_arch()
     if arch is None:
-        error(f"  不支持的 Linux CPU 架构: {platform.machine()!r}；"
-              "当前仅支持 x86_64/amd64 与 aarch64/arm64")
+        error(f"  不支持的 Linux CPU 架构: {platform.machine()!r}；当前仅支持 x86_64/amd64 与 aarch64/arm64")
         sys.exit(1)
     return arch
 
@@ -99,6 +104,28 @@ def release_api_url(pinned_version, repo_api=None):
     return f"{root}/latest"
 
 
+def _require_https(url, what):
+    try:
+        scheme = urlsplit(str(url)).scheme
+    except ValueError:
+        scheme = ""
+    if scheme != "https":
+        raise ValueError(f"{what}必须为 https://: {url!r}")
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_https(newurl, "重定向目标")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_HTTPS_OPENER = urllib.request.build_opener(_HttpsOnlyRedirectHandler())
+
+
+def _open_url(req, timeout):
+    return _HTTPS_OPENER.open(req, timeout=timeout)
+
+
 def select_kernel_asset(assets, tag_name, arch="amd64"):
     """按官方命名规则取指定架构压缩包；命名不符即返回 None（调用方 fail-closed）。"""
     if not tag_name:
@@ -114,11 +141,10 @@ def select_kernel_asset(assets, tag_name, arch="amd64"):
     return None
 
 
-def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF",
-                       require_sha=False, expected_arch=None):
+def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF", require_sha=False, expected_arch=None):
     with open(path, "rb") as f:
         header = f.read(20)
-    magic = header[:len(expected_magic)]
+    magic = header[: len(expected_magic)]
     if magic != expected_magic:
         raise ValueError(f"内核不是有效 ELF 文件（magic={magic!r}）")
     if expected_arch is not None:
@@ -137,9 +163,7 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF",
     actual = file_sha256(path)
     if not expected_sha:
         if require_sha:
-            raise ValueError(
-                "缺少 kernel_sha256，拒绝以仅校验 ELF magic 的方式降级使用内核"
-            )
+            raise ValueError("缺少 kernel_sha256，拒绝以仅校验 ELF magic 的方式降级使用内核")
         return actual
     if actual != expected_sha:
         raise ValueError(f"内核哈希不匹配：期望 {expected_sha}，实际 {actual}")
@@ -148,11 +172,14 @@ def verify_kernel_file(path, expected_sha, expected_magic=b"\x7fELF",
 
 def _fetch_latest_release_info(max_retries=3, pinned=None):
     version = PINNED_VERSION if pinned is None else pinned
+    url = release_api_url(version, REPO_API)
+    _require_https(url, "release API 地址")
     last_err = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(release_api_url(version, REPO_API))
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            req = urllib.request.Request(url)
+            with _open_url(req, timeout=30) as resp:
+                _require_https(getattr(resp, "url", url), "release API 响应")
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             last_err = e
@@ -163,12 +190,14 @@ def _fetch_latest_release_info(max_retries=3, pinned=None):
 
 
 def _download_kernel(download_url, expected_digest=None, max_retries=3, output_path=None):
+    _require_https(download_url, "内核下载地址")
     last_err = None
     target_path = Path(output_path or KERNEL_BIN)
     for attempt in range(max_retries):
         try:
             dl_req = urllib.request.Request(download_url)
-            with urllib.request.urlopen(dl_req, timeout=120) as dl_resp:
+            with _open_url(dl_req, timeout=120) as dl_resp:
+                _require_https(getattr(dl_resp, "url", download_url), "内核下载响应")
                 digest = hashlib.sha256()
                 buf = io.BytesIO()
                 total = 0
@@ -178,22 +207,16 @@ def _download_kernel(download_url, expected_digest=None, max_retries=3, output_p
                         break
                     total += len(chunk)
                     if total > MAX_KERNEL_BYTES:
-                        raise ValueError(
-                            f"内核压缩包超过上限 {MAX_KERNEL_BYTES} 字节，已中止"
-                        )
+                        raise ValueError(f"内核压缩包超过上限 {MAX_KERNEL_BYTES} 字节，已中止")
                     digest.update(chunk)
                     buf.write(chunk)
 
                 actual_digest = digest.hexdigest()
                 if not expected_digest:
-                    raise ValueError(
-                        "资产未提供 digest，拒绝在无压缩流校验的情况下使用该内核"
-                    )
+                    raise ValueError("资产未提供 digest，拒绝在无压缩流校验的情况下使用该内核")
                 want = expected_digest.split(":", 1)[-1].strip().lower()
                 if actual_digest != want:
-                    raise ValueError(
-                        f"内核资产摘要不匹配：期望 {want}，实际 {actual_digest}"
-                    )
+                    raise ValueError(f"内核资产摘要不匹配：期望 {want}，实际 {actual_digest}")
 
                 buf.seek(0)
                 with gzip.GzipFile(fileobj=buf) as gz:
@@ -206,9 +229,7 @@ def _download_kernel(download_url, expected_digest=None, max_retries=3, output_p
                                 break
                             written += len(chunk)
                             if written > MAX_KERNEL_BYTES:
-                                raise ValueError(
-                                    f"内核解压后超过上限 {MAX_KERNEL_BYTES} 字节，已中止"
-                                )
+                                raise ValueError(f"内核解压后超过上限 {MAX_KERNEL_BYTES} 字节，已中止")
                             f.write(chunk)
             st = os.stat(target_path)
             os.chmod(target_path, st.st_mode | stat.S_IEXEC)
@@ -232,39 +253,50 @@ def _verify_kernel(kernel_bin=None):
         return None
 
 
+def _cached_kernel_usable(tag_name, expected_sha, arch, require_sha=True):
+    if not VERSION_FILE.exists() or not os.path.exists(KERNEL_BIN):
+        return None
+    cached_ver = VERSION_FILE.read_text(encoding="utf-8").strip()
+    if cached_ver != tag_name:
+        return None
+    try:
+        verify_kernel_file(KERNEL_BIN, expected_sha, require_sha=require_sha, expected_arch=arch)
+    except ValueError as e:
+        warning(f"  缓存内核校验失败，将重新下载: {e}")
+        with contextlib.suppress(OSError):
+            os.unlink(KERNEL_BIN)
+        return None
+    ver_out = _verify_kernel()
+    if ver_out and "Mihomo" in ver_out:
+        return ver_out
+    warning("  缓存内核不可运行，将重新下载")
+    return None
+
+
 def get_latest_mihomo(skip_hash_check=False):
     group_start("准备 Mihomo 内核")
     arch = current_kernel_arch()
+    expected_sha = "" if skip_hash_check else expected_kernel_sha(arch)
 
     try:
+        if PINNED_VERSION and expected_sha and not skip_hash_check:
+            cached = _cached_kernel_usable(PINNED_VERSION, expected_sha, arch)
+            if cached:
+                info(f"  使用缓存内核 ({PINNED_VERSION}): {cached}")
+                return
+
         data = _fetch_latest_release_info()
         tag_name = data["tag_name"]
         info(f"  最新版本: {tag_name}")
 
-        expected_sha = "" if skip_hash_check else expected_kernel_sha(arch)
-
-        if VERSION_FILE.exists():
-            cached_ver = VERSION_FILE.read_text(encoding="utf-8").strip()
-            if cached_ver == tag_name and os.path.exists(KERNEL_BIN):
-                try:
-                    verify_kernel_file(
-                        KERNEL_BIN, expected_sha, require_sha=True, expected_arch=arch)
-                except ValueError as e:
-                    warning(f"  缓存内核校验失败，将重新下载: {e}")
-                    with contextlib.suppress(OSError):
-                        os.unlink(KERNEL_BIN)
-                else:
-                    ver_out = _verify_kernel()
-                    if ver_out and "Mihomo" in ver_out:
-                        info(f"  使用缓存内核 ({tag_name}): {ver_out}")
-                        return
-                    warning("  缓存内核不可运行，将重新下载")
+        cached = _cached_kernel_usable(tag_name, expected_sha, arch, require_sha=not skip_hash_check)
+        if cached:
+            info(f"  使用缓存内核 ({tag_name}): {cached}")
+            return
 
         asset = select_kernel_asset(data["assets"], tag_name, arch)
         if not asset:
-            raise Exception(
-                f"未找到 Linux 内核资产 {expected_kernel_asset_name(tag_name, arch)}"
-            )
+            raise Exception(f"未找到 Linux 内核资产 {expected_kernel_asset_name(tag_name, arch)}")
 
         info(f"  下载内核: {asset['url']}")
         if not asset["digest"]:
@@ -274,8 +306,8 @@ def get_latest_mihomo(skip_hash_check=False):
 
         try:
             actual_sha = verify_kernel_file(
-                KERNEL_BIN, expected_sha, require_sha=not skip_hash_check,
-                expected_arch=arch)
+                KERNEL_BIN, expected_sha, require_sha=not skip_hash_check, expected_arch=arch
+            )
         except ValueError as e:
             error(f"  内核完整性校验失败: {e}")
             sys.exit(1)
@@ -296,9 +328,7 @@ def get_latest_mihomo(skip_hash_check=False):
         if os.path.exists(KERNEL_BIN):
             warning("  尝试降级使用已缓存的内核...")
             try:
-                verify_kernel_file(
-                    KERNEL_BIN, expected_kernel_sha(arch),
-                    require_sha=True, expected_arch=arch)
+                verify_kernel_file(KERNEL_BIN, expected_kernel_sha(arch), require_sha=True, expected_arch=arch)
             except (ValueError, OSError) as ve:
                 error(f"  缓存内核校验失败，拒绝执行: {ve}")
                 sys.exit(1)
@@ -368,8 +398,7 @@ def write_summary(stats, total_time):
 
 
 def _set_config_field(text, key, value):
-    new_text, count = re.subn(rf'(\b{key}:)\s*(?:"[^"]*"|\S+)', rf'\1 "{value}"',
-                              text, flags=re.M)
+    new_text, count = re.subn(rf'(\b{key}:)\s*(?:"[^"]*"|\S+)', rf'\1 "{value}"', text, flags=re.M)
     if count != 1:
         error(f"  config.yaml 中 {key} 命中 {count} 次，拒绝写入")
         sys.exit(1)
@@ -385,7 +414,10 @@ def _smoke_convert(kernel_bin=None):
     try:
         subprocess.run(
             [kernel_bin, "convert-ruleset", "domain", "text", str(src), str(dst)],
-            check=True, capture_output=True, text=True, timeout=60,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         produced = dst.exists() and dst.stat().st_size > 0
     except subprocess.CalledProcessError as e:
@@ -430,11 +462,9 @@ def bump_config():
         asset = selected[arch]
         info(f"  下载并校验 {tag} ({arch}) ...")
         candidate = KERNEL_CACHE_DIR / f"mihomo-{arch}"
-        _download_kernel(
-            asset["url"], expected_digest=asset["digest"], output_path=candidate)
+        _download_kernel(asset["url"], expected_digest=asset["digest"], output_path=candidate)
         try:
-            verify_kernel_file(
-                candidate, "", require_sha=False, expected_arch=arch)
+            verify_kernel_file(candidate, "", require_sha=False, expected_arch=arch)
         except ValueError as e:
             error(f"  {arch} 内核结构校验失败: {e}")
             sys.exit(1)
@@ -456,8 +486,7 @@ def bump_config():
     text = _set_config_field(text, "kernel_sha256", hashes["amd64"])
     text = _set_config_field(text, "kernel_sha256_arm64", hashes["arm64"])
     cfg_path.write_text(text, encoding="utf-8")
-    info(f"  已更新 config.yaml: {tag} (amd64 {hashes['amd64'][:12]}..., "
-         f"arm64 {hashes['arm64'][:12]}...)")
+    info(f"  已更新 config.yaml: {tag} (amd64 {hashes['amd64'][:12]}..., arm64 {hashes['arm64'][:12]}...)")
 
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
@@ -532,8 +561,7 @@ def main():
 
         cmd = [KERNEL_BIN, "convert-ruleset", rule_type, "text", src_path, dst_path]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True,
-                           timeout=CONVERT_TIMEOUT)
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=CONVERT_TIMEOUT)
             success(f"  {prefix} {rel_path} -> MRS")
             stats["success"] += 1
         except subprocess.TimeoutExpired:

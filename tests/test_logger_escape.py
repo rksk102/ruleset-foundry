@@ -21,7 +21,6 @@ def _reset(monkeypatch, *, ci=False):
 
 
 class TestEscapeData:
-
     def test_percent_escaped_first(self):
         assert log._escape_data("50%") == "50%25"
 
@@ -43,7 +42,6 @@ class TestEscapeData:
 
 
 class TestCommandEscaping:
-
     def test_gh_error_escapes_newlines(self, capsys):
         log.gh_error("boom\n::error::injected")
         out = capsys.readouterr().out
@@ -106,7 +104,6 @@ class TestCommandEscaping:
 
 
 class TestConsoleReadability:
-
     def test_local_console_restores_newlines(self, monkeypatch, capsys):
         _reset(monkeypatch)
         log.warning("第一行\n第二行")
@@ -128,7 +125,6 @@ class TestConsoleReadability:
 
 
 class TestLogFile:
-
     def test_log_file_has_no_ansi_and_keeps_message(self, monkeypatch):
         _reset(monkeypatch, ci=True)
         log.warning("磁盘告警")

@@ -19,10 +19,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync-rules:
-    name: "1. 同步清洗"
+  build:
+    name: "1. 同步/合并/转换"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -42,80 +42,18 @@ jobs:
           path: rulesets/
           retention-days: 1
           if-no-files-found: error
-      - name: 上传运行日志
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: logs-sync-rules
-          path: logs/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  merge-rules:
-    name: "2. 合并规则"
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: sync-rules
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: 安装 Python 环境
-        uses: ./.github/actions/setup-python-env
-      - name: 下载 rulesets 产物
-        id: dl-rulesets
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        continue-on-error: true
-        with:
-          name: rulesets
-          path: rulesets/
-          digest-mismatch: error
       - name: 运行合并
-        id: merge
-        if: steps.dl-rulesets.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
       - name: 上传 merged-rules 产物
-        if: steps.dl-rulesets.outcome == 'success' && steps.merge.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: merged-rules
           path: merged-rules/
           retention-days: 1
           if-no-files-found: error
-      - name: 上传运行日志
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: logs-merge-rules
-          path: logs/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  convert-mrs:
-    name: "3. 转换 MRS"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: merge-rules
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: 安装 Python 环境
-        uses: ./.github/actions/setup-python-env
-      - name: 清空旧产物
-        run: rm -rf merged-rules merged-rules-mrs
-      - name: 下载 merged-rules 产物
-        id: dl-merged
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        continue-on-error: true
-        with:
-          name: merged-rules
-          path: merged-rules/
-          digest-mismatch: error
       - name: 缓存 Mihomo 内核（恢复）
-        if: steps.dl-merged.outcome == 'success'
         id: kernel-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -125,19 +63,17 @@ jobs:
             mihomo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config.yaml') }}-
             mihomo-${{ runner.os }}-${{ runner.arch }}-
       - name: 转换规则集
-        if: steps.dl-merged.outcome == 'success'
         id: convert
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -u scripts/convert_mrs.py
       - name: 缓存 Mihomo 内核（保存）
-        if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success' && steps.kernel-cache.outputs.cache-hit != 'true'
+        if: steps.convert.outcome == 'success' && steps.kernel-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .cache/mihomo-kernel
           key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config.yaml') }}
       - name: 上传 merged-rules-mrs 产物
-        if: steps.dl-merged.outcome == 'success' && steps.convert.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: merged-rules-mrs
@@ -148,19 +84,19 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: logs-convert-mrs
+          name: logs-build
           path: logs/
           retention-days: 7
           if-no-files-found: ignore
 
   publish:
-    name: "4. 发布"
+    name: "2. 发布"
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    needs: convert-mrs
+    needs: build
     if: github.ref == 'refs/heads/main'
     permissions:
-        contents: write  # 需要推送 artifacts 分支、README 与 state/release.sha256
+      contents: write  # 需要推送 artifacts 分支、README 与 state/release.sha256
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 README/state
       - name: 安装 Python 环境
@@ -168,40 +104,49 @@ jobs:
       - name: 清空旧产物
         run: rm -rf merged-rules merged-rules-mrs
       - name: 下载 rulesets 产物（提供产物清单基线）
-        id: dl-rulesets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: rulesets
           path: rulesets/
           digest-mismatch: error
       - name: 下载 merged-rules 产物
-        id: dl-merged
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        continue-on-error: true
         with:
           name: merged-rules
           path: merged-rules/
           digest-mismatch: error
       - name: 下载 merged-rules-mrs 产物
-        id: dl-mrs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        continue-on-error: true
         with:
           name: merged-rules-mrs
           path: merged-rules-mrs/
           digest-mismatch: error
       - name: 生成 README
-        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/gen_readme.py
       - name: 产物一致性预检
-        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/release_handler.py --verify-only
+      - name: 检查产物变化
+        id: product-state
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+          ARTIFACTS_BRANCH: artifacts
+        run: |
+          set -euo pipefail
+          CURRENT=$(python scripts/release_handler.py --print-hash)
+          LAST=$(cat state/release.sha256 2>/dev/null || true)
+          DETECT=$(python -c "from config_loader import get; print('true' if get('behavior', 'release_change_detection', default=True) else 'false')")
+          if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ] \
+             && git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: 发布规则产物到 artifacts 分支
-        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
+        if: steps.product-state.outputs.changed == 'true'
         env:
           ARTIFACTS_BRANCH: artifacts
         run: |
@@ -223,8 +168,15 @@ jobs:
             git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
           )
           git worktree remove --force "$WT"
+      - name: 发布 Release
+        id: release
+        if: ${{ inputs.skip_release != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/release_handler.py
       - name: 提交 README 与发布状态
-        if: steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success'
+        if: ${{ steps.release.outcome == 'success' || inputs.skip_release == true }}
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -234,44 +186,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
-          if git diff --cached --quiet; then
-            echo "README 无变化"
-          else
-            git commit -m "docs: 自动更新 README [skip ci]"
-            git pull --rebase origin "${REF_NAME}"
-            git push
+          if [ -f state/release.sha256 ]; then
+            git add state/release.sha256
           fi
-      - name: 发布 Release
-        if: ${{ inputs.skip_release != true && steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python scripts/release_handler.py
-      - name: 提交发布状态
-        if: ${{ inputs.skip_release != true && steps.dl-merged.outcome == 'success' && steps.dl-mrs.outcome == 'success' }}
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          git add state/release.sha256
           if git diff --cached --quiet; then
-            echo "发布状态无变化"
+            echo "README/发布状态无变化"
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
             git commit -m "chore: 更新发布哈希 [skip ci]"
             git pull --rebase origin "${REF_NAME}"
             git push
           fi
-      - name: 校验制品下载完整性
-        if: steps.dl-merged.outcome != 'success' || steps.dl-mrs.outcome != 'success'
-        env:
-          MERGED_OUTCOME: ${{ steps.dl-merged.outcome }}
-          MERGED_CONCLUSION: ${{ steps.dl-merged.conclusion }}
-          MRS_OUTCOME: ${{ steps.dl-mrs.outcome }}
-          MRS_CONCLUSION: ${{ steps.dl-mrs.conclusion }}
-        run: |
-          echo "::error::制品下载不完整: merged-rules(outcome=${MERGED_OUTCOME} conclusion=${MERGED_CONCLUSION}) merged-rules-mrs(outcome=${MRS_OUTCOME} conclusion=${MRS_CONCLUSION}) run_id=${{ github.run_id }}"
-          exit 1
       - name: 上传运行日志
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -282,10 +206,10 @@ jobs:
           if-no-files-found: ignore
 
   notify-on-failure:
-    name: "5. 失败告警"
+    name: "3. 失败告警"
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    needs: [sync-rules, merge-rules, convert-mrs, publish]
+    needs: [build, publish]
     if: always() && github.ref == 'refs/heads/main'
     permissions:
       issues: write
@@ -294,16 +218,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          R_SYNC: ${{ needs.sync-rules.result }}
-          R_MERGE: ${{ needs.merge-rules.result }}
-          R_MRS: ${{ needs.convert-mrs.result }}
+          R_BUILD: ${{ needs.build.result }}
           R_PUBLISH: ${{ needs.publish.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          RESULTS="sync=$R_SYNC merge=$R_MERGE mrs=$R_MRS publish=$R_PUBLISH"
+          RESULTS="build=$R_BUILD publish=$R_PUBLISH"
           echo "本轮结果: $RESULTS"
-          if ! echo "$R_SYNC $R_MERGE $R_MRS $R_PUBLISH" | grep -qE "failure|cancelled"; then
+          if ! echo "$R_BUILD $R_PUBLISH" | grep -qE "failure|cancelled"; then
             echo "无失败/取消的 job，不告警"
             exit 0
           fi
