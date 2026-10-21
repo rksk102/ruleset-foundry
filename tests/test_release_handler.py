@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import os
 import sys
@@ -50,6 +51,42 @@ class TestShouldPublish:
         publish, why = release_handler.should_publish("same", "same", True)
         assert publish is False
         assert "无变化" in why
+
+    def test_force_overrides_same_hash(self):
+        publish, why = release_handler.should_publish("same", "same", True, force=True)
+        assert publish is True
+        assert "强制" in why
+
+    def test_force_overrides_disabled_detection(self):
+        publish, _why = release_handler.should_publish("same", "same", False, force=True)
+        assert publish is True
+
+
+class TestWriteSha256sums:
+    def test_zip_and_files_listed(self, zip_workspace):
+        (zip_workspace / "merged-rules" / "A").mkdir(parents=True)
+        (zip_workspace / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
+        (zip_workspace / "z.zip").write_bytes(b"zip-bytes")
+        file_map = {"merged-rules": ["merged-rules/A/x.txt"]}
+
+        out = release_handler.write_sha256sums("z.zip", file_map)
+
+        lines = (zip_workspace / out).read_text(encoding="utf-8").splitlines()
+        assert lines[0] == f"{hashlib.sha256(b'zip-bytes').hexdigest()}  z.zip"
+        assert lines[1] == f"{hashlib.sha256(b'x').hexdigest()}  merged-rules/A/x.txt"
+        assert len(lines) == 2
+
+    def test_backslashes_normalized_to_posix(self, zip_workspace):
+        (zip_workspace / "merged-rules").mkdir()
+        (zip_workspace / "merged-rules" / "a.txt").write_text("a", encoding="utf-8")
+        (zip_workspace / "z.zip").write_bytes(b"z")
+        file_map = {"merged-rules": ["merged-rules\\a.txt"]}
+
+        out = release_handler.write_sha256sums("z.zip", file_map)
+
+        text = (zip_workspace / out).read_text(encoding="utf-8")
+        assert "merged-rules/a.txt" in text
+        assert "\\" not in text
 
 
 class TestGenerateReleaseNotes:
@@ -171,6 +208,27 @@ class TestPublishRelease:
         assert "delete" not in flat
         assert "git/refs/tags" not in flat
 
+    def test_extra_assets_uploaded_alongside_zip(self):
+        stub = GhStub()
+        run_with_stub(
+            stub,
+            lambda: release_handler.publish_release(
+                "rules-2026-10-05", ZIP, "title", NOTES, True, extra_assets=["SHA256SUMS"]
+            ),
+        )
+        assert stub.calls[0] == ["release", "upload", "rules-2026-10-05", ZIP, "SHA256SUMS", "--clobber"]
+
+    def test_extra_assets_included_on_create(self):
+        stub = GhStub()
+        run_with_stub(
+            stub,
+            lambda: release_handler.publish_release(
+                "rules-2026-10-05", ZIP, "title", NOTES, False, extra_assets=["SHA256SUMS"]
+            ),
+        )
+        create = next(c for c in stub.calls if c[1] == "create")
+        assert ZIP in create and "SHA256SUMS" in create
+
     def test_missing_release_created(self):
         stub = GhStub()
         result = run_with_stub(
@@ -253,6 +311,19 @@ class TestMainOrchestration:
         assert not [f for f in os.listdir(".") if f.startswith("merged-rules-") and f.endswith(".zip")], (
             "发布后应删除临时 zip"
         )
+        assert not os.path.exists("SHA256SUMS"), "发布后应删除临时 SHA256SUMS"
+
+    def test_force_release_env_overrides_unchanged_hash(self, publish_workspace, monkeypatch):
+        stub = GhStub(responses={"release": "ok"})
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+        monkeypatch.setenv("FORCE_RELEASE", "true")
+
+        run_with_stub(stub, release_handler.main)
+
+        assert saved == ["same"], "FORCE_RELEASE=true 时内容无变化也应发布并保存哈希"
+        assert any(call[1] in ("create", "upload") for call in stub.calls if call[0] == "release")
+        assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
         stub = GhStub()
@@ -342,6 +413,7 @@ class TestMainOrchestration:
         assert saved == ["new"], "清理失败不得跳过 state/release.sha256 的写入"
         zip_name = f"merged-rules-{release_handler.beijing_now().strftime('%Y-%m-%d')}.zip"
         assert not os.path.exists(zip_name), "清理失败后 main() 仍应执行到收尾"
+        assert not os.path.exists("SHA256SUMS"), "收尾应同时清理临时 SHA256SUMS"
 
     def test_step_summary_written(self, publish_workspace, monkeypatch):
         summary = publish_workspace / "summary.md"
@@ -462,8 +534,9 @@ class TestAssetConfirmation:
         monkeypatch.setattr(release_handler, "product_dirs", lambda: ("txt", "mrs"))
         monkeypatch.setattr(release_handler, "enforce_products", lambda *a: calls.append("enforce"))
         monkeypatch.setattr(release_handler, "zip_target_files", lambda d: ("z.zip", {}))
+        monkeypatch.setattr(release_handler, "write_sha256sums", lambda *a: "SHA256SUMS")
         monkeypatch.setattr(release_handler, "generate_release_notes", lambda *a: "notes")
-        monkeypatch.setattr(release_handler, "publish_release", lambda *a: "ok")
+        monkeypatch.setattr(release_handler, "publish_release", lambda *a, **k: "ok")
         monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: asset_count)
         monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
         monkeypatch.setattr(release_handler, "save_last_hash", lambda *a: None)
@@ -474,7 +547,7 @@ class TestAssetConfirmation:
     def test_verification_runs_even_with_change_detection_off(self, monkeypatch):
         calls = []
         monkeypatch.setattr(release_handler, "CHANGE_DETECTION", False)
-        self.stub_release_flow(monkeypatch, calls, asset_count=1)
+        self.stub_release_flow(monkeypatch, calls, asset_count=2)
 
         release_handler.main()
 
@@ -488,7 +561,21 @@ class TestAssetConfirmation:
             release_handler.main()
 
         assert exc.value.code == 1
-        assert "没有任何资产" in caplog.text
+        assert "不足" in caplog.text
+
+    def test_partial_assets_are_a_failure(self, monkeypatch, caplog):
+        """zip 在但 SHA256SUMS 缺失（资产数 1 < 2）必须判定失败，否则哈希落盘后不再重试。"""
+        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
+        saved = []
+        self.stub_release_flow(monkeypatch, [], asset_count=1)
+        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert "不足" in caplog.text
+        assert saved == []
 
     def test_unconfirmed_asset_count_is_a_failure(self, monkeypatch, caplog):
         monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
@@ -532,7 +619,7 @@ class TestAssetConfirmation:
 
         def flaky(tag):
             attempts.append(tag)
-            return 0 if len(attempts) == 1 else 1
+            return 0 if len(attempts) == 1 else 2
 
         monkeypatch.setattr(release_handler, "release_asset_count", flaky)
         monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
@@ -547,3 +634,10 @@ class TestAssetConfirmation:
         assert release_handler.release_asset_count("rules-2026-10-06") == 3
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
         assert release_handler.release_asset_count("rules-2026-10-06") is None
+
+    def test_confirm_requires_expected_count(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: 1)
+        assert release_handler.confirm_release_assets("t", expected=2) == 1, "不足期望数时应返回最后计数"
+        monkeypatch.setattr(release_handler, "release_asset_count", lambda tag: 2)
+        assert release_handler.confirm_release_assets("t", expected=2) == 2
