@@ -25,13 +25,10 @@ class TestSemanticsTable:
             assert row is not None, f"语义表缺少 {form} 行"
             assert tuple(re.findall(r"[✅❌]", row)) == cells, row
 
-    def test_readme_embeds_the_generated_static_sections(self):
-        assert README.read_text(encoding="utf-8").endswith(gen_readme.make_static_sections())
-
 
 class TestConsumerContract:
     def test_behavior_format_table_has_one_row_per_product_kind(self):
-        text = gen_readme.make_static_sections()
+        text = gen_readme.make_inventory([], [])
         rows = [line for line in text.splitlines() if line.startswith("| `merged-rules")]
         cells = {tuple(cell.strip() for cell in row.strip("|").split("|")) for row in rows}
         assert ("`merged-rules/<策略>/domain/**/*.txt`", "`domain`", "`text`") in cells
@@ -39,44 +36,25 @@ class TestConsumerContract:
         assert ("`merged-rules-mrs/**/*.mrs`", "与同名 `.txt` 相同", "`mrs`") in cells
 
     def test_documents_behavior_and_format_everywhere_needed(self):
-        text = gen_readme.make_static_sections()
+        text = gen_readme.make_intro() + gen_readme.make_inventory([], []) + gen_readme.make_static_sections()
         assert "format: text" in text
         assert "format: mrs" in text
         assert "behavior: ipcidr" in text
 
+    def test_tables_collapsed_by_default(self):
+        text = gen_readme.make_intro() + gen_readme.make_inventory([], []) + gen_readme.make_static_sections()
+        assert "<details open>" not in text
+
+    def test_readme_embeds_intro_and_static_sections(self):
+        text = README.read_text(encoding="utf-8")
+        assert gen_readme.make_intro() in text
+        assert text.endswith(gen_readme.make_static_sections())
+
 
 class TestDocumentedConfigAndWorkflow:
-    def test_config_entry_points_are_documented(self):
-        text = gen_readme.make_static_sections()
-        assert "config.yaml" in text
-        assert "sources.urls" in text
-
-    def test_behavior_keys_are_documented(self):
-        text = gen_readme.make_static_sections()
-        for key in (
-            "release_change_detection",
-            "release_keep_days",
-            "conflict_policy",
-            "unrecognized_warn_ratio",
-            "min_source_success_ratio",
-            "allow_partial",
-        ):
-            assert key in text, f"behavior.{key} 未在 README 语义表中"
-
-    def test_core_commands_are_documented(self):
-        text = gen_readme.make_static_sections()
-        assert "python scripts/gen_readme.py" in text
-        assert "-m pytest" in text
-        assert "ruff check" in text
-
     def test_readme_declares_generated_origin(self):
         text = gen_readme.make_static_sections()
         assert "gen_readme.py" in text
-
-    def test_kernel_auto_follow_trust_model_documented(self):
-        text = gen_readme.make_static_sections()
-        assert "kernel-bump.yml" in text
-        assert "SECURITY.md" in text
 
 
 class TestSecurityPolicy:

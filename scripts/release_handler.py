@@ -21,8 +21,10 @@ from logger import (
 )
 from utils import (
     anchor_cwd_to_repo_root,
+    atomic_write,
     beijing_now,
     combined_products_hash,
+    file_sha256,
     load_last_hash,
     save_last_hash,
 )
@@ -47,9 +49,14 @@ BASELINE_MISSING = "清单基线缺失"
 GH_TIMEOUT = 120
 ASSET_CONFIRM_ATTEMPTS = 3
 ASSET_CONFIRM_DELAY = 3
+SHA256SUMS_NAME = "SHA256SUMS"
 
 
-def release_asset_count(release_tag):
+def expected_assets(tag_date):
+    return {f"merged-rules-{tag_date}.zip", SHA256SUMS_NAME}
+
+
+def release_asset_names(release_tag):
     raw = run_gh(
         [
             "release",
@@ -58,25 +65,25 @@ def release_asset_count(release_tag):
             "--json",
             "assets",
             "--jq",
-            '[.assets[] | select(.state == "uploaded")] | length',
+            '.assets[] | select(.state == "uploaded") | .name',
         ]
     )
-    if raw is None or not raw.strip().isdigit():
+    if raw is None:
         return None
-    return int(raw)
+    return {line.strip() for line in raw.splitlines() if line.strip()}
 
 
-def confirm_release_assets(release_tag):
-    last_count = None
+def confirm_release_assets(release_tag, expected):
+    last_names = None
     for attempt in range(ASSET_CONFIRM_ATTEMPTS):
-        count = release_asset_count(release_tag)
-        if count is not None:
-            last_count = count
-            if count > 0:
-                return count
+        names = release_asset_names(release_tag)
+        if names is not None:
+            last_names = names
+            if expected <= names:
+                return names
         if attempt + 1 < ASSET_CONFIRM_ATTEMPTS:
             time.sleep(ASSET_CONFIRM_DELAY)
-    return last_count
+    return last_names
 
 
 def product_dirs():
@@ -198,7 +205,9 @@ def run_gh(cmd_list):
         sys.exit(1)
 
 
-def should_publish(current_hash, last_hash, enabled):
+def should_publish(current_hash, last_hash, enabled, force=False):
+    if force:
+        return True, "强制发布（artifacts 分支缺失等场景，由流水线显式要求）"
     if not enabled:
         return True, "变更检测已关闭"
     if not last_hash:
@@ -242,6 +251,17 @@ def zip_target_files(tag_date):
         sys.exit(1)
 
     return zip_name, file_manifest
+
+
+def write_sha256sums(zip_name, file_map):
+    """SHA256SUMS：zip 一行 + 各产物文件逐行，供用户 sha256sum -c 校验。"""
+    lines = [f"{file_sha256(zip_name)}  {zip_name}"]
+    for folder in TARGET_CONFIG:
+        for arcname in sorted(file_map.get(folder, [])):
+            rel = arcname.replace("\\", "/")
+            lines.append(f"{file_sha256(rel)}  {rel}")
+    atomic_write("SHA256SUMS", lines)
+    return "SHA256SUMS"
 
 
 def generate_release_notes(tag_date, tag_time, file_map):
@@ -292,9 +312,10 @@ def generate_release_notes(tag_date, tag_time, file_map):
     return notes
 
 
-def publish_release(release_tag, zip_file, title, notes, exists):
+def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=None):
+    assets = [zip_file, *(extra_assets or [])]
     if exists:
-        if run_gh(["release", "upload", release_tag, zip_file, "--clobber"]) is None:
+        if run_gh(["release", "upload", release_tag, *assets, "--clobber"]) is None:
             return None
         return run_gh(
             [
@@ -314,7 +335,7 @@ def publish_release(release_tag, zip_file, title, notes, exists):
             "release",
             "create",
             release_tag,
-            zip_file,
+            *assets,
             "--title",
             title,
             "--notes",
@@ -356,8 +377,17 @@ def main():
         sys.exit(1)
 
     if CHANGE_DETECTION:
-        publish, why = should_publish(combined_hash, load_last_hash(), True)
+        force_release = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
+        publish, why = should_publish(combined_hash, load_last_hash(), True, force=force_release)
         info(f"  {why} ({c1 + c2} 个文件)")
+        if not publish:
+            existing = release_asset_names(release_tag)
+            if existing is None:
+                publish, why = True, f"当天 Release {release_tag} 不存在或无法确认，补发"
+                info(f"  {why}")
+            elif not expected_assets(tag_date) <= existing:
+                publish, why = True, f"当天 Release 资产不全（缺 {sorted(expected_assets(tag_date) - existing)}），补发"
+                info(f"  {why}")
         if not publish:
             group_end()
             return
@@ -365,33 +395,40 @@ def main():
         info(f"  变更检测已关闭，直接发布 ({c1 + c2} 个文件)")
 
     zip_file, file_map = zip_target_files(tag_date)
+    sums_file = write_sha256sums(zip_file, file_map)
 
     info("生成发布说明...")
     notes = generate_release_notes(tag_date, tag_time, file_map)
     exists = bool(run_gh(["release", "view", release_tag]))
     info(f"{'更新' if exists else '创建'} Release {release_tag}...")
 
-    if publish_release(release_tag, zip_file, f"Merged Rules - {tag_date}", notes, exists) is None:
+    title = f"Merged Rules - {tag_date}"
+    if publish_release(release_tag, zip_file, title, notes, exists, extra_assets=[sums_file]) is None:
         error("  Release 发布失败，不保存哈希，下次运行将重试")
         gh_error(f"Release {release_tag} 发布失败（不保存哈希，下次运行重试）")
-        if os.path.exists(zip_file):
-            os.unlink(zip_file)
+        for artifact in (zip_file, sums_file):
+            if os.path.exists(artifact):
+                os.unlink(artifact)
         sys.exit(1)
 
-    asset_count = confirm_release_assets(release_tag)
-    if asset_count is None:
-        error(f"  Release {release_tag} 的资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
-        gh_error(f"Release {release_tag} 资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
-        if os.path.exists(zip_file):
-            os.unlink(zip_file)
+    expected = {zip_file, SHA256SUMS_NAME}
+    asset_names = confirm_release_assets(release_tag, expected)
+    if asset_names is None:
+        error(f"  Release {release_tag} 的资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
+        gh_error(f"Release {release_tag} 资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
+        for artifact in (zip_file, sums_file):
+            if os.path.exists(artifact):
+                os.unlink(artifact)
         sys.exit(1)
-    if asset_count == 0:
-        error(f"  Release {release_tag} 发布后没有任何资产（--clobber 会先删后传），判定失败")
-        gh_error(f"Release {release_tag} 发布后没有任何资产")
-        if os.path.exists(zip_file):
-            os.unlink(zip_file)
+    if not expected <= asset_names:
+        missing = sorted(expected - asset_names)
+        error(f"  Release {release_tag} 缺少资产 {missing}（应含 zip 与 {SHA256SUMS_NAME}），判定失败")
+        gh_error(f"Release {release_tag} 缺少资产 {missing}")
+        for artifact in (zip_file, sums_file):
+            if os.path.exists(artifact):
+                os.unlink(artifact)
         sys.exit(1)
-    info(f"  已确认 Release 资产数: {asset_count}")
+    info(f"  已确认 Release 资产: {sorted(asset_names)}")
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)
@@ -434,6 +471,8 @@ def main():
 
     if os.path.exists(zip_file):
         os.unlink(zip_file)
+    if os.path.exists(sums_file):
+        os.unlink(sums_file)
 
     group_end()
     success("发布完成")

@@ -1,15 +1,18 @@
 class GhStub:
-    def __init__(self, fail_when=None, responses=None, asset_count="3", release_exists=True):
+    def __init__(self, fail_when=None, responses=None, asset_names=None, release_exists=True):
         self.calls = []
         self.fail_when = fail_when or (lambda cmd: False)
         self.responses = responses or {}
-        self.asset_count = asset_count
+        self.asset_names = asset_names
         self.release_exists = release_exists
 
     def __call__(self, cmd):
         self.calls.append(list(cmd))
         if self.fail_when(cmd):
             return None
+        if cmd[0] == "release" and len(cmd) > 1 and cmd[1] in ("create", "upload"):
+            self.release_exists = True
+            self.asset_names = None  # 发布成功后恢复为完整集合推导
         key = (cmd[0], cmd[1]) if len(cmd) > 1 else (cmd[0],)
         if key in self.responses:
             return self.responses[key]
@@ -17,7 +20,12 @@ class GhStub:
             return "[]"
         if key == ("release", "view"):
             if "assets" in cmd:
-                return self.asset_count
+                if not self.release_exists:
+                    return None
+                if self.asset_names is not None:
+                    return self.asset_names
+                date = cmd[2].removeprefix("rules-")
+                return f"merged-rules-{date}.zip\nSHA256SUMS"
             return '{"tagName": "rules-x"}' if self.release_exists else None
         return "ok"
 

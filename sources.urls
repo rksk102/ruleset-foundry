@@ -1,4 +1,7 @@
-# 每行一个 URL；[policy:]/[type:]/[domain-kind:] 为分组标记，语义见 README
+# 每行一个上游 URL；以下标记独占一行，作用于其后的所有 URL 行，直到被同类标记覆盖：
+#   [policy:block|direct|policy]  策略分组；缺省时按来源名自动推断
+#   [type:domain|ipcidr]          规则类型；缺省时自动推断
+#   [domain-kind:exact|suffix]    域名语义；缺省（裸域名）按 exact 精确匹配
 [policy:reject]
 [type:domain]
 [domain-kind:exact]

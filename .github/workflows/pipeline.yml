@@ -139,9 +139,14 @@ jobs:
           CURRENT=$(python scripts/release_handler.py --print-hash)
           LAST=$(cat state/release.sha256 2>/dev/null || true)
           DETECT=$(python -c "from config_loader import get; print('true' if get('behavior', 'release_change_detection', default=True) else 'false')")
-          if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ] \
-             && git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+          if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
+            if git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              # 分支缺失但内容未变：推送产物，并强制补发 Release（否则按哈希判定会永远跳过）
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "force_release=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -174,6 +179,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
+          FORCE_RELEASE: ${{ steps.product-state.outputs.force_release }}
         run: python scripts/release_handler.py
       - name: 提交 README 与发布状态
         if: ${{ steps.release.outcome == 'success' || inputs.skip_release == true }}
