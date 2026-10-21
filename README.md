@@ -159,7 +159,7 @@ rules:
 > [!WARNING]
 > 产物每次以孤立提交**强制推送**到 `artifacts` 分支，历史会被重写，**不适合固定 commit**。
 > 需要固定版本或整包下载请使用 [Releases](https://github.com/rksk102/mihomo-rule-library/releases)
-> （含 `merged-rules-*.zip` 与 `SHA256SUMS`，下载后可执行 `sha256sum -c SHA256SUMS` 校验）。
+> （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
 
 ## 安全与许可
 
