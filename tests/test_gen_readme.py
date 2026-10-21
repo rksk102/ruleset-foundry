@@ -3,6 +3,7 @@ import os
 import re
 
 import gen_readme
+import pytest
 
 
 def write(path, text):
@@ -35,7 +36,7 @@ class TestFormatSize:
 class TestTimeBadge:
     def test_explicit_time_used_verbatim(self):
         url = gen_readme.get_time_badge("2026--10--05%2006%3A12")
-        assert "Updated-2026--10--05%2006%3A12-blue" in url
+        assert f"{gen_readme.BADGE_LABEL}-2026--10--05%2006%3A12-blue" in url
         assert "style=flat-square" in url
 
     def test_none_falls_back_to_now(self):
@@ -60,7 +61,29 @@ class TestScanFiles:
         write(tmp_path / "a" / "x.txt", "x")
         found = gen_readme.scan_files(str(tmp_path), ".txt")
         assert [os.path.relpath(f, tmp_path).replace(os.sep, "/") for f in found] == ["a/x.txt", "b/y.txt"]
-        assert found == sorted(found)
+
+    def test_sort_key_is_posix_relative_path(self, tmp_path):
+        # "a/b.txt" 与 "a0.txt" 在 Windows（\>0）与 Linux（/<0）下默认排序相反；POSIX 键保证一致
+        write(tmp_path / "a0.txt", "x")
+        write(tmp_path / "a" / "b.txt", "y")
+        found = gen_readme.scan_files(str(tmp_path), ".txt")
+        assert [os.path.relpath(f, tmp_path).replace(os.sep, "/") for f in found] == ["a/b.txt", "a0.txt"]
+
+    def test_hidden_dirs_skipped(self, tmp_path):
+        write(tmp_path / ".hidden" / "keep.txt", "h")
+        write(tmp_path / "keep.txt", "k")
+        found = gen_readme.scan_files(str(tmp_path), ".txt")
+        assert [os.path.basename(f) for f in found] == ["keep.txt"]
+
+    def test_walk_error_propagates(self, tmp_path, monkeypatch):
+        def fake_walk(*_a, **kwargs):
+            kwargs["onerror"](PermissionError("denied"))
+            return
+            yield  # pragma: no cover - 使其成为生成器函数
+
+        monkeypatch.setattr(gen_readme.os, "walk", fake_walk)
+        with pytest.raises(PermissionError):
+            gen_readme.scan_files(str(tmp_path), ".txt")
 
     def test_hidden_files_skipped(self, tmp_path):
         write(tmp_path / ".hidden.txt", "h")
@@ -149,6 +172,22 @@ class TestWriteTableRows:
         row = self.render(tmp_path, "block/domain/Owner/a.txt")
         assert gen_readme.BASE_JSDELIVR in row
 
+    def test_alt_contains_filename(self, tmp_path):
+        row = self.render(tmp_path, "block/domain/Owner/a.txt")
+        assert 'alt="Download a.txt"' in row
+        assert 'alt="GitHub raw a.txt"' in row
+
+    def test_ampersand_escaped_in_text_and_url(self, tmp_path):
+        row = self.render(tmp_path, "block/domain/Owner/a&copy;.txt")
+        assert "<b>a&amp;copy;.txt</b>" in row
+        assert "a%26copy%3B.txt" in row  # & 与 ; 在 URL path 中均编码
+        assert "a&copy;.txt" not in row  # 文本与属性中均不得出现未转义形式
+
+    def test_bang_preserved_in_url(self, tmp_path):
+        row = self.render(tmp_path, "policy/domain/MetaCubeX/category-ai-!cn.txt")
+        assert "category-ai-!cn.txt" in row
+        assert "%21" not in row
+
 
 class TestMakeSection:
     def test_emits_header_table_and_details(self, tmp_path):
@@ -161,8 +200,9 @@ class TestMakeSection:
         assert count == 1 and size == 3
         assert "### 标题" in out and "*说明*" in out
         assert "1 个文件" in out
-        assert "<details open>" in out and "</details>" in out
-        assert "| 文件名称 | 大小 | 下载 | 源文件 |" in out
+        assert "<details>" in out and "</details>" in out
+        assert "<details open>" not in out
+        assert "| 文件名称 | 大小 | 下载 | GitHub raw |" in out
 
     def test_empty_dir_still_renders(self, tmp_path):
         buf = io.StringIO()
@@ -205,24 +245,63 @@ class TestResolveBadgeTime:
         monkeypatch.setattr(gen_readme, "combined_products_hash", boom)
         assert gen_readme.resolve_badge_time() is None
 
+    def test_last_hash_read_error_returns_none(self, monkeypatch):
+        def boom():
+            raise OSError("state 不可读")
+
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", boom)
+        assert gen_readme.resolve_badge_time() is None
+
+    def test_last_hash_decode_error_returns_none(self, monkeypatch):
+        def boom():
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", boom)
+        assert gen_readme.resolve_badge_time() is None
+
+    def test_legacy_updated_badge_time_inherited(self, tmp_path, monkeypatch):
+        """旧版 Updated-...-blue 徽章格式的时间应被 legacy 正则继承。"""
+        readme = tmp_path / "README.md"
+        write(readme, "x\nhttps://img.shields.io/badge/Updated-2026--01--02%2003%3A04-blue?style=flat-square&logo=github\n")
+        monkeypatch.setattr(gen_readme, "README_FILE", str(readme))
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("same", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", lambda: "same")
+        assert gen_readme.resolve_badge_time() == "2026--01--02%2003%3A04"
+
 
 class TestStaticSections:
-    def test_keeps_core_usage_and_semantics(self):
+    def test_keeps_semantics_table(self):
         text = gen_readme.make_static_sections()
         for token in ("`+.example.com`", "`.example.com`", "`*.example.com`", "`*.*.example.com`"):
             assert token in text, f"语义表缺少 {token}"
-        assert "使用方式" in text
-        assert "format: text" in text and "format: mrs" in text
-        assert "config.yaml" in text and "sources.urls" in text
-        assert "SECURITY.md" in text
-
-    def test_keeps_priority(self):
-        text = gen_readme.make_static_sections()
         assert "block > direct > policy" in text
+
+    def test_discloses_force_push_and_release_integrity(self):
+        text = gen_readme.make_static_sections()
+        assert "强制推送" in text
+        assert "Releases" in text and "SHA256SUMS" in text
+        assert "SECURITY.md" in text
 
     def test_never_mentions_ghproxy(self):
         text = gen_readme.make_static_sections()
         assert "ghproxy" not in text.lower()
+
+
+class TestIntro:
+    def test_mrs_recommended_with_complete_yaml(self):
+        text = gen_readme.make_intro()
+        assert "format: mrs" in text
+        assert "rules:" in text
+        assert "- RULE-SET,block,REJECT" in text
+        assert "merged-rules-mrs/" in text
+
+    def test_jsdelivr_cache_disclosed(self):
+        assert "12 小时" in gen_readme.make_intro()
+
+    def test_config_example_collapsed_by_default(self):
+        assert "<details open>" not in gen_readme.make_intro()
 
 
 class TestMakePageHeader:
@@ -231,8 +310,19 @@ class TestMakePageHeader:
         short = gen_readme.REPO_NAME.split("/")[-1]
         assert f"<h1>{short}</h1>" in html
         assert f"github.com/{gen_readme.REPO_NAME}" in html
-        assert "Updated-2026--01--02%2003%3A04-blue" in html
+        assert f"{gen_readme.BADGE_LABEL}-2026--01--02%2003%3A04-blue" in html
         assert html.startswith('<div align="center">')
+
+    def test_build_badge_has_no_hardcoded_status_color(self):
+        html = gen_readme.make_page_header(None)
+        assert "color=2ea44f" not in html
+        assert 'alt="Build status"' in html
+
+    def test_no_repo_size_badge_and_updated_links_to_releases(self):
+        html = gen_readme.make_page_header(None)
+        assert "repo-size" not in html
+        assert 'href="#"' not in html
+        assert f"github.com/{gen_readme.REPO_NAME}/releases" in html
 
     def test_now_badge_when_no_time(self):
         html = gen_readme.make_page_header(None)
@@ -241,19 +331,20 @@ class TestMakePageHeader:
 
 class TestMain:
     def run_main(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
         monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
         monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
         monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
         write(tmp_path / "merged-rules" / "block" / "A" / "a.txt", "a.com\n")
         write(tmp_path / "merged-rules-mrs" / "block" / "A" / "a.mrs", "MRS!")
-        gen_readme.main()
+        gen_readme.main([])
         return (tmp_path / "README.md").read_text(encoding="utf-8")
 
     def test_writes_readme_with_both_sections(self, tmp_path, monkeypatch):
         out = self.run_main(tmp_path, monkeypatch)
-        assert "## 规则列表" in out
-        assert "### 基础规则集合" in out
-        assert "### Mihomo 专用集合" in out
+        assert "## 产物清单" in out
+        assert "### 基础规则集合（.txt）" in out
+        assert "### Mihomo 专用集合（.mrs）" in out
         assert "a.txt" in out and "a.mrs" in out
         assert "ghproxy" not in out.lower()
 
@@ -275,3 +366,36 @@ class TestMain:
         assert "README 生成报告" in text
         assert "标准规则" in text and "MRS 规则" in text
         assert "**总计**" in text
+
+
+class TestPreflight:
+    def isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
+        monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
+        monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
+
+    def test_missing_repo_env_refuses_write(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        self.isolate(tmp_path, monkeypatch)
+        write(tmp_path / "merged-rules" / "a.txt", "a.com\n")
+        write(tmp_path / "merged-rules-mrs" / "a.mrs", "MRS!")
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main([])
+        assert exc.value.code != 0
+        assert not (tmp_path / "README.md").exists()
+
+    def test_missing_dirs_refuse_overwrite(self, tmp_path, monkeypatch):
+        readme = tmp_path / "README.md"
+        readme.write_text("旧内容\n", encoding="utf-8")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        self.isolate(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main([])
+        assert exc.value.code != 0
+        assert readme.read_text(encoding="utf-8") == "旧内容\n"
+
+    def test_allow_flags_permit_placeholder_preview(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        self.isolate(tmp_path, monkeypatch)
+        gen_readme.main(["--allow-placeholder", "--allow-empty"])
+        assert (tmp_path / "README.md").exists()

@@ -23,7 +23,7 @@ class TestReadmeWiring:
         isolate(work_dir, monkeypatch, readme)
         monkeypatch.chdir(work_dir)
 
-        gen_readme.main()
+        gen_readme.main(["--allow-placeholder", "--allow-empty"])
 
         assert readme.exists()
         assert not (work_dir / "README.md").exists()
@@ -38,7 +38,7 @@ class TestReadmeWiring:
 
         monkeypatch.setattr(gen_readme, "make_static_sections", boom)
         with pytest.raises(SystemExit) as exc:
-            gen_readme.main()
+            gen_readme.main(["--allow-placeholder", "--allow-empty"])
 
         assert exc.value.code == 1
         assert readme.read_text(encoding="utf-8") == "旧内容\n"

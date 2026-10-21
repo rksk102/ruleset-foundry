@@ -92,6 +92,11 @@ class TestAtomicWrite:
         utils.atomic_write(str(target), ["+.中文域名.com", "广告.example.com"])
         assert "中文域名" in target.read_text(encoding="utf-8")
 
+    def test_newlines_are_lf_on_all_platforms(self, tmp_path):
+        target = tmp_path / "out.txt"
+        utils.atomic_write(str(target), "a\nb\n")
+        assert target.read_bytes() == b"a\nb\n"
+
 
 class TestAtomicWriteWithHeader:
     def test_header_lines_and_title_casing(self, tmp_path):
