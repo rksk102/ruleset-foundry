@@ -398,4 +398,8 @@ class TestPreflight:
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
         self.isolate(tmp_path, monkeypatch)
         gen_readme.main(["--allow-placeholder", "--allow-empty"])
-        assert (tmp_path / "README.md").exists()
+        readme = tmp_path / "README.md"
+        assert readme.exists()
+        text = readme.read_text(encoding="utf-8")
+        assert gen_readme.REPO_NAME in text, "预览应包含占位/当前仓库链接"
+        assert "0 个文件" in text, "空产物预览应渲染 0 文件清单"
