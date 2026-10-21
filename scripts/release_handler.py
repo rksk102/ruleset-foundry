@@ -49,10 +49,14 @@ BASELINE_MISSING = "清单基线缺失"
 GH_TIMEOUT = 120
 ASSET_CONFIRM_ATTEMPTS = 3
 ASSET_CONFIRM_DELAY = 3
-EXPECTED_ASSET_COUNT = 2  # merged-rules-*.zip + SHA256SUMS
+SHA256SUMS_NAME = "SHA256SUMS"
 
 
-def release_asset_count(release_tag):
+def expected_assets(tag_date):
+    return {f"merged-rules-{tag_date}.zip", SHA256SUMS_NAME}
+
+
+def release_asset_names(release_tag):
     raw = run_gh(
         [
             "release",
@@ -61,25 +65,25 @@ def release_asset_count(release_tag):
             "--json",
             "assets",
             "--jq",
-            '[.assets[] | select(.state == "uploaded")] | length',
+            '.assets[] | select(.state == "uploaded") | .name',
         ]
     )
-    if raw is None or not raw.strip().isdigit():
+    if raw is None:
         return None
-    return int(raw)
+    return {line.strip() for line in raw.splitlines() if line.strip()}
 
 
-def confirm_release_assets(release_tag, expected=1):
-    last_count = None
+def confirm_release_assets(release_tag, expected):
+    last_names = None
     for attempt in range(ASSET_CONFIRM_ATTEMPTS):
-        count = release_asset_count(release_tag)
-        if count is not None:
-            last_count = count
-            if count >= expected:
-                return count
+        names = release_asset_names(release_tag)
+        if names is not None:
+            last_names = names
+            if expected <= names:
+                return names
         if attempt + 1 < ASSET_CONFIRM_ATTEMPTS:
             time.sleep(ASSET_CONFIRM_DELAY)
-    return last_count
+    return last_names
 
 
 def product_dirs():
@@ -377,6 +381,14 @@ def main():
         publish, why = should_publish(combined_hash, load_last_hash(), True, force=force_release)
         info(f"  {why} ({c1 + c2} 个文件)")
         if not publish:
+            existing = release_asset_names(release_tag)
+            if existing is None:
+                publish, why = True, f"当天 Release {release_tag} 不存在或无法确认，补发"
+                info(f"  {why}")
+            elif not expected_assets(tag_date) <= existing:
+                publish, why = True, f"当天 Release 资产不全（缺 {sorted(expected_assets(tag_date) - existing)}），补发"
+                info(f"  {why}")
+        if not publish:
             group_end()
             return
     else:
@@ -399,25 +411,24 @@ def main():
                 os.unlink(artifact)
         sys.exit(1)
 
-    asset_count = confirm_release_assets(release_tag, expected=EXPECTED_ASSET_COUNT)
-    if asset_count is None:
-        error(f"  Release {release_tag} 的资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
-        gh_error(f"Release {release_tag} 资产数连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
+    expected = {zip_file, SHA256SUMS_NAME}
+    asset_names = confirm_release_assets(release_tag, expected)
+    if asset_names is None:
+        error(f"  Release {release_tag} 的资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
+        gh_error(f"Release {release_tag} 资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
         for artifact in (zip_file, sums_file):
             if os.path.exists(artifact):
                 os.unlink(artifact)
         sys.exit(1)
-    if asset_count < EXPECTED_ASSET_COUNT:
-        error(
-            f"  Release {release_tag} 资产数为 {asset_count}，"
-            f"不足 {EXPECTED_ASSET_COUNT}（应含 zip 与 SHA256SUMS），判定失败"
-        )
-        gh_error(f"Release {release_tag} 资产数不足 {EXPECTED_ASSET_COUNT}")
+    if not expected <= asset_names:
+        missing = sorted(expected - asset_names)
+        error(f"  Release {release_tag} 缺少资产 {missing}（应含 zip 与 {SHA256SUMS_NAME}），判定失败")
+        gh_error(f"Release {release_tag} 缺少资产 {missing}")
         for artifact in (zip_file, sums_file):
             if os.path.exists(artifact):
                 os.unlink(artifact)
         sys.exit(1)
-    info(f"  已确认 Release 资产数: {asset_count}")
+    info(f"  已确认 Release 资产: {sorted(asset_names)}")
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)
