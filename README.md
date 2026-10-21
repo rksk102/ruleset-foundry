@@ -11,7 +11,7 @@
     <img src="https://img.shields.io/github/actions/workflow/status/rksk102/mihomo-rule-library/pipeline.yml?style=flat-square&label=Build" alt="Build status">
   </a>
   <a href="https://github.com/rksk102/mihomo-rule-library/releases">
-    <img src="https://img.shields.io/badge/%E4%BA%A7%E7%89%A9%E7%94%9F%E6%88%90-2026--10--21%2021%3A32-blue?style=flat-square&logo=github" alt="产物生成时间">
+    <img src="https://img.shields.io/badge/%E4%BA%A7%E7%89%A9%E7%94%9F%E6%88%90-2026--10--21%2021%3A21-blue?style=flat-square&logo=github" alt="产物生成时间">
   </a>
 </p>
 
