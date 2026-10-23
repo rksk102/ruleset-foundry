@@ -33,6 +33,12 @@ def test_kernel_notify_gates_on_default_branch():
     assert "github.event.repository.default_branch" in workflow["jobs"]["notify-on-failure"]["if"]
 
 
+def test_ci_push_only_on_main():
+    workflow = load_workflow("ci.yml")
+    trigger = workflow.get("on") or workflow.get(True)
+    assert trigger["push"]["branches"] == ["main"]
+
+
 def test_cache_path_comes_from_config():
     workflow = load_workflow("pipeline.yml")
     steps = workflow["jobs"]["build"]["steps"]
