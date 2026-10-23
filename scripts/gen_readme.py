@@ -14,6 +14,7 @@ from utils import (
     atomic_write,
     beijing_now,
     combined_products_hash,
+    is_safe_component,
     load_last_hash,
 )
 
@@ -25,13 +26,25 @@ except ConfigError as _cfg_err:
     gh_error(f"配置校验失败: {_cfg_err}")
     sys.exit(1)
 README_FILE = os.path.join(REPO_ROOT, "README.md")
-REPO_NAME = os.getenv("GITHUB_REPOSITORY", "Owner/Repo")
-ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH", "artifacts")
+DEFAULT_REPO_NAME = "rksk102/mihomo-rule-library"
+DEFAULT_ARTIFACTS_BRANCH = "artifacts"
+REPO_NAME = os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
+ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
 BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{ARTIFACTS_BRANCH}"
 BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{ARTIFACTS_BRANCH}"
 # jsDelivr 单文件上限，超限返回 403；超出时 Download 列回退为仅 Source
 JSDELIVR_MAX_BYTES = 20 * 1024 * 1024
 STYLE = "flat-square"
+
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _refresh_env():
+    global REPO_NAME, ARTIFACTS_BRANCH, BASE_RAW, BASE_JSDELIVR
+    REPO_NAME = os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
+    ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    BASE_RAW = f"https://raw.githubusercontent.com/{REPO_NAME}/{ARTIFACTS_BRANCH}"
+    BASE_JSDELIVR = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{ARTIFACTS_BRANCH}"
 
 
 def format_size(size_bytes):
@@ -59,6 +72,8 @@ def get_time_badge(encoded_time=None):
 
 
 def resolve_badge_time():
+    if os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes"):
+        return None
     if not get("behavior", "release_change_detection", default=True):
         return None
     try:
@@ -144,6 +159,7 @@ def make_section(f, title, desc, files, root_dir):
 
 
 def make_page_header(badge_time=None):
+    _refresh_env()
     repo_short = REPO_NAME.split("/")[-1]
     return f"""<div align="center">
 
@@ -167,8 +183,10 @@ def make_page_header(badge_time=None):
 """
 
 
-def make_intro():
-    return """## 快速开始
+def make_intro(repo_name=None, branch=None):
+    repo_name = repo_name or os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
+    branch = branch or os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    return f"""## 快速开始
 
 推荐使用 `.mrs` 二进制规则集（加载快、内存占用低）；`.txt` 文本规则集同样提供，见下方产物清单。
 把以下内容并入 mihomo 配置即可使用（规则书写顺序即匹配优先级 `block > direct > policy`）：
@@ -182,21 +200,21 @@ rule-providers:
     type: http
     behavior: domain
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/rksk102/mihomo-rule-library@artifacts/merged-rules-mrs/block/domain/rksk102/all-adblock.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/block/domain/rksk102/all-adblock.mrs"
     path: ./ruleset/block.mrs
     interval: 86400
   direct:
     type: http
     behavior: ipcidr
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/rksk102/mihomo-rule-library@artifacts/merged-rules-mrs/direct/ipcidr/rksk102/all-cnip.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/direct/ipcidr/rksk102/all-cnip.mrs"
     path: ./ruleset/direct.mrs
     interval: 86400
   policy:
     type: http
     behavior: domain
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/rksk102/mihomo-rule-library@artifacts/merged-rules-mrs/policy/domain/rksk102/all-proxy.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/policy/domain/rksk102/all-proxy.mrs"
     path: ./ruleset/policy.mrs
     interval: 86400
 
@@ -210,13 +228,14 @@ rules:
 
 > [!NOTE]
 > 以上链接走 jsDelivr CDN，内容更新最长滞后 **12 小时**。需要最新内容时，把 URL 中的
-> `cdn.jsdelivr.net/gh/rksk102/mihomo-rule-library@artifacts` 换成
-> `raw.githubusercontent.com/rksk102/mihomo-rule-library/artifacts`（约 5 分钟缓存）。
+> `cdn.jsdelivr.net/gh/{repo_name}@{branch}` 换成
+> `raw.githubusercontent.com/{repo_name}/{branch}`（约 5 分钟缓存）。
 
 """
 
 
 def make_inventory(files_std, files_mrs):
+    _refresh_env()
     count_std, size_std = collect_stats(files_std)
     count_mrs, size_mrs = collect_stats(files_mrs)
     buf = StringIO()
@@ -238,8 +257,10 @@ def make_inventory(files_std, files_mrs):
     return buf.getvalue()
 
 
-def make_static_sections():
-    return r"""
+def make_static_sections(repo_name=None, branch=None):
+    repo_name = repo_name or os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
+    branch = branch or os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    return f"""
 <details>
 <summary><b>规则语义：domain 写法对照</b>（点击展开）</summary>
 
@@ -258,8 +279,8 @@ def make_static_sections():
 ## 版本与完整性
 
 > [!WARNING]
-> 产物每次以孤立提交**强制推送**到 `artifacts` 分支，历史会被重写，**不适合固定 commit**。
-> 需要固定版本或整包下载请使用 [Releases](https://github.com/rksk102/mihomo-rule-library/releases)
+> 产物每次以孤立提交**强制推送**到 `{branch}` 分支，历史会被重写，**不适合固定 commit**。
+> 需要固定版本或整包下载请使用 [Releases](https://github.com/{repo_name}/releases)
 > （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
 
 ## 安全与许可
@@ -278,7 +299,7 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--allow-placeholder",
         action="store_true",
-        help="允许 GITHUB_REPOSITORY 未设置（链接将指向 Owner/Repo 占位符，仅用于本地预览）",
+        help="允许 GITHUB_REPOSITORY 未设置（回退到默认仓库名，仅用于本地预览）",
     )
     parser.add_argument(
         "--allow-empty",
@@ -289,8 +310,17 @@ def _parse_args(argv=None):
 
 
 def _preflight(args):
-    if not args.allow_placeholder and not os.getenv("GITHUB_REPOSITORY"):
-        error("GITHUB_REPOSITORY 未设置，拒绝写入占位符链接（本地预览请加 --allow-placeholder）")
+    repo = os.getenv("GITHUB_REPOSITORY")
+    if repo:
+        if not _REPO_NAME_RE.fullmatch(repo) or ".." in repo:
+            error(f"GITHUB_REPOSITORY 格式非法: {repo!r}（应为 <owner>/<repo>）")
+            sys.exit(1)
+    elif not args.allow_placeholder:
+        error("GITHUB_REPOSITORY 未设置，拒绝写入默认仓库链接（本地预览请加 --allow-placeholder）")
+        sys.exit(1)
+    branch = os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    if not is_safe_component(branch):
+        error(f"ARTIFACTS_BRANCH 不是安全的分支名: {branch!r}")
         sys.exit(1)
     if not args.allow_empty:
         for target, suffix in ((DIR_RULES, ".txt"), (DIR_MRS, ".mrs")):
@@ -301,6 +331,7 @@ def _preflight(args):
 
 def main(argv=None):
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+    _refresh_env()
     group_start("生成 README")
     _preflight(args)
     files_std = scan_files(DIR_RULES, ".txt")

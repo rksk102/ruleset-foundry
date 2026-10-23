@@ -212,6 +212,12 @@ class TestMakeSection:
 
 
 class TestResolveBadgeTime:
+    def test_force_release_refreshes_badge(self, monkeypatch):
+        monkeypatch.setenv("FORCE_RELEASE", "true")
+        monkeypatch.setattr(gen_readme, "combined_products_hash", lambda *a, **k: ("same", 1, 1))
+        monkeypatch.setattr(gen_readme, "load_last_hash", lambda: "same")
+        assert gen_readme.resolve_badge_time() is None
+
     def test_disabled_change_detection_returns_none(self, monkeypatch):
         monkeypatch.setattr(gen_readme, "get", lambda *a, **k: False)
         assert gen_readme.resolve_badge_time() is None
@@ -348,6 +354,11 @@ class TestMain:
         assert "a.txt" in out and "a.mrs" in out
         assert "ghproxy" not in out.lower()
 
+    def test_readme_uses_runtime_repository(self, tmp_path, monkeypatch):
+        out = self.run_main(tmp_path, monkeypatch)
+        assert "owner/repo" in out
+        assert "Owner/Repo" not in out
+
     def test_readme_links_use_artifacts_branch(self, tmp_path, monkeypatch):
         out = self.run_main(tmp_path, monkeypatch)
         assert "/artifacts/merged-rules/block/A/a.txt" in out
@@ -376,6 +387,27 @@ class TestPreflight:
 
     def test_missing_repo_env_refuses_write(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+        self.isolate(tmp_path, monkeypatch)
+        write(tmp_path / "merged-rules" / "a.txt", "a.com\n")
+        write(tmp_path / "merged-rules-mrs" / "a.mrs", "MRS!")
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main([])
+        assert exc.value.code != 0
+        assert not (tmp_path / "README.md").exists()
+
+    def test_invalid_repo_env_refuses_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner")
+        self.isolate(tmp_path, monkeypatch)
+        write(tmp_path / "merged-rules" / "a.txt", "a.com\n")
+        write(tmp_path / "merged-rules-mrs" / "a.mrs", "MRS!")
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main([])
+        assert exc.value.code != 0
+        assert not (tmp_path / "README.md").exists()
+
+    def test_invalid_artifacts_branch_refuses_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("ARTIFACTS_BRANCH", "../evil")
         self.isolate(tmp_path, monkeypatch)
         write(tmp_path / "merged-rules" / "a.txt", "a.com\n")
         write(tmp_path / "merged-rules-mrs" / "a.mrs", "MRS!")

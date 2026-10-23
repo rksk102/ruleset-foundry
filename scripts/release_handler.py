@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -71,6 +72,37 @@ def release_asset_names(release_tag):
     if raw is None:
         return None
     return {line.strip() for line in raw.splitlines() if line.strip()}
+
+
+RULES_TAG_RE = re.compile(r"^rules-\d{4}-\d{2}-\d{2}$")
+
+
+def latest_rules_release_tag():
+    raw = run_gh(["release", "list", "--limit", "20", "--json", "tagName"])
+    if raw is None:
+        return None
+    try:
+        releases = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    for rel in releases:
+        if not isinstance(rel, dict):
+            continue
+        tag = rel.get("tagName")
+        if isinstance(tag, str) and RULES_TAG_RE.fullmatch(tag):
+            return tag
+    return None
+
+
+def needs_release_repair():
+    """无内容变化时，最近一次 rules-* Release 缺失或资产不全则需要补发。"""
+    tag = latest_rules_release_tag()
+    if tag is None:
+        return True
+    names = release_asset_names(tag)
+    if names is None:
+        return True
+    return not expected_assets(tag[len("rules-") :]) <= names
 
 
 def confirm_release_assets(release_tag, expected):
@@ -233,8 +265,11 @@ def zip_target_files(tag_date):
             file_manifest[folder] = []
             info(f"  -> 扫描 '{folder}' (*{ext} 文件)...")
 
-            for root, _, files in os.walk(folder):
+            for root, dirs, files in os.walk(folder):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for file in files:
+                    if file.startswith("."):
+                        continue
                     if file.endswith(ext):
                         file_path = os.path.join(root, file)
                         arcname = os.path.relpath(file_path, REPO_ROOT)
@@ -354,6 +389,15 @@ def main():
         print(combined_products_hash(*product_dirs())[0])
         return
 
+    if "--needs-publish" in sys.argv[1:]:
+        current, _c1, _c2 = combined_products_hash(*product_dirs())
+        force = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
+        publish, _why = should_publish(current, load_last_hash(), CHANGE_DETECTION, force=force)
+        if not publish:
+            publish = needs_release_repair()
+        print("true" if publish else "false")
+        return
+
     group_start("处理发布")
 
     utc_now = datetime.datetime.now(datetime.UTC)
@@ -380,14 +424,9 @@ def main():
         force_release = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
         publish, why = should_publish(combined_hash, load_last_hash(), True, force=force_release)
         info(f"  {why} ({c1 + c2} 个文件)")
-        if not publish:
-            existing = release_asset_names(release_tag)
-            if existing is None:
-                publish, why = True, f"当天 Release {release_tag} 不存在或无法确认，补发"
-                info(f"  {why}")
-            elif not expected_assets(tag_date) <= existing:
-                publish, why = True, f"当天 Release 资产不全（缺 {sorted(expected_assets(tag_date) - existing)}），补发"
-                info(f"  {why}")
+        if not publish and needs_release_repair():
+            publish, why = True, "最近一次 Release 资产不全或不存在，补发"
+            info(f"  {why}")
         if not publish:
             group_end()
             return
