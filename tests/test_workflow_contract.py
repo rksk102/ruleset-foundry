@@ -20,3 +20,14 @@ def test_notify_requires_release_success():
     assert workflow["jobs"]["publish"]["outputs"]["release_outcome"] == "${{ steps.release.outcome }}"
     notify = workflow["jobs"]["notify-on-failure"]["steps"][0]
     assert notify["env"]["R_RELEASE"] == "${{ needs.publish.outputs.release_outcome }}"
+
+
+def test_write_jobs_gate_on_default_branch():
+    workflow = load_workflow("pipeline.yml")
+    for job_id in ("publish", "notify-on-failure"):
+        assert "github.event.repository.default_branch" in workflow["jobs"][job_id]["if"]
+
+
+def test_kernel_notify_gates_on_default_branch():
+    workflow = load_workflow("kernel-bump.yml")
+    assert "github.event.repository.default_branch" in workflow["jobs"]["notify-on-failure"]["if"]

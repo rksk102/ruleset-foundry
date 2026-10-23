@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     outputs:
       release_outcome: ${{ steps.release.outcome }}
     permissions:
@@ -239,7 +239,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     needs: [build, publish]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       issues: write
     steps:
