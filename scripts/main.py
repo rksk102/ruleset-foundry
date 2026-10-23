@@ -296,8 +296,11 @@ def process_group(group, raw_by_index, err_by_index=None):
             errors["download"].append((task["url"], (err_by_index or {}).get(idx) or "下载失败"))
             continue
         try:
-            all_lines.extend(processor.parse_lines(processor.safe_decode(raw)))
-            contributing.append(task["url"])
+            parsed = processor.parse_lines(processor.safe_decode(raw))
+            # 表头只记录解析出非空行的源；规则最终是否保留由后续去重/门禁决定
+            if parsed:
+                all_lines.extend(parsed)
+                contributing.append(task["url"])
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
 

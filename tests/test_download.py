@@ -342,6 +342,27 @@ class TestProcessGroupUnrecognizedGate:
         assert written[group["path"]] == ["# Source: " + alive, "good.com"]
         assert errors["download"] == [(dead, "下载失败")]
 
+    def test_header_skips_source_with_no_parsed_lines(self):
+        dead = "https://raw.githubusercontent.com/o/r/empty.txt"
+        alive = "https://raw.githubusercontent.com/o/r/ads.txt"
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": dead}), (1, {"url": alive})],
+            "sources": [dead, alive],
+        }
+        written = {}
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: written.update({path: content})
+        try:
+            count, errors = main.process_group(group, {0: b"# comment only\n", 1: b"good.com\n"})
+        finally:
+            main.atomic_write = original
+        assert count == 1
+        assert written[group["path"]] == ["# Source: " + alive, "good.com"]
+        assert errors["parse"] == []
+
     def test_download_error_reason_is_preserved(self):
         group = self.make_group()
         original = main.atomic_write
