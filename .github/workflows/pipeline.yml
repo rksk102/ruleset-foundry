@@ -111,6 +111,8 @@ jobs:
     timeout-minutes: 8
     needs: build
     if: github.ref == 'refs/heads/main'
+    outputs:
+      release_outcome: ${{ steps.release.outcome }}
     permissions:
       contents: write  # 需要推送 artifacts 分支、README 与 state/release.sha256
     steps:
@@ -142,6 +144,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           ARTIFACTS_BRANCH: artifacts
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           CURRENT=$(python scripts/release_handler.py --print-hash)
@@ -246,15 +249,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
           R_BUILD: ${{ needs.build.result }}
           R_PUBLISH: ${{ needs.publish.result }}
+          R_RELEASE: ${{ needs.publish.outputs.release_outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          RESULTS="build=$R_BUILD publish=$R_PUBLISH"
+          RESULTS="build=$R_BUILD publish=$R_PUBLISH release=$R_RELEASE"
           echo "本轮结果: $RESULTS"
           TITLE="[告警] 规则构建流水线失败"
           NUMBER=$(gh issue list --state open --limit 100 --json number,title \
             --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
           if ! echo "$R_BUILD $R_PUBLISH" | grep -qE "failure|cancelled"; then
+            if [ "$R_RELEASE" != "success" ]; then
+              echo "Release 步骤未成功（$R_RELEASE），保留告警 Issue"
+              exit 0
+            fi
             if [ -n "$NUMBER" ]; then
               RECOVERED=$(printf '流水线已恢复。\n\n- Run: %s\n- 结果: %s\n- 时间(UTC): %s\n' \
                 "$RUN_URL" "$RESULTS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
