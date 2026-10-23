@@ -1,11 +1,5 @@
 name: 'Setup Python Environment'
-description: 'Install Python, cache pip dependencies, and install requirements'
-
-inputs:
-  requirements-file:
-    description: 'Lock file to install (relative to the repository root)'
-    required: false
-    default: 'requirements.lock'
+description: 'Install Python, uv, and project dependencies'
 
 runs:
   using: 'composite'
@@ -15,15 +9,15 @@ runs:
       with:
         python-version: '3.14'
 
-    - name: Cache pip dependencies
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+    - name: Setup uv
+      uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
       with:
-        path: ~/.cache/pip
-        key: pip-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'requirements*.lock') }}
-        restore-keys: pip-${{ runner.os }}-
+        enable-cache: true
 
     - name: Install dependencies
       shell: bash
-      env:
-        REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
-      run: pip install --require-hashes -r "$REQUIREMENTS_FILE"
+      run: uv sync --locked
+
+    - name: Add venv to PATH
+      shell: bash
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"  # zizmor: ignore[github-env] 固定工作区 venv 路径，不接受外部输入

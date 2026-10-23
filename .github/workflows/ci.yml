@@ -2,39 +2,7 @@ name: "CI"
 
 on:
   push:
-    paths:
-      - 'scripts/**'
-      - 'tests/**'
-      - 'config.yaml'
-      - 'sources.urls'
-      - 'README.md'
-      - 'SECURITY.md'
-      - 'requirements*.txt'
-      - 'requirements*.lock'
-      - '.ruff.toml'
-      - '.gitignore'
-      - '.github/dependabot.yml'
-      - 'state/**'
-      - 'merged-rules*/**'
-      - '.github/workflows/**'
-      - '.github/actions/**'
   pull_request:
-    paths:
-      - 'scripts/**'
-      - 'tests/**'
-      - 'config.yaml'
-      - 'sources.urls'
-      - 'README.md'
-      - 'SECURITY.md'
-      - 'requirements*.txt'
-      - 'requirements*.lock'
-      - '.ruff.toml'
-      - '.gitignore'
-      - '.github/dependabot.yml'
-      - 'state/**'
-      - 'merged-rules*/**'
-      - '.github/workflows/**'
-      - '.github/actions/**'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -72,8 +40,6 @@ jobs:
           persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
-        with:
-          requirements-file: requirements-dev.lock
       - run: ruff check scripts tests
       - name: zizmor（工作流安全审计）
         env:
@@ -102,8 +68,6 @@ jobs:
           persist-credentials: false
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
-        with:
-          requirements-file: requirements-dev.lock
       - name: pytest（覆盖率门禁 ≥70%）
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
