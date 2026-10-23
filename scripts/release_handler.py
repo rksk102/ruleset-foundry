@@ -78,12 +78,16 @@ RULES_TAG_RE = re.compile(r"^rules-\d{4}-\d{2}-\d{2}$")
 
 
 def latest_rules_release_tag():
-    raw = run_gh(["release", "list", "--limit", "20", "--json", "tagName"])
+    raw = run_gh(["release", "list", "--limit", "100", "--json", "tagName"])
     if raw is None:
         return None
     try:
         releases = json.loads(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        warning(f"  gh release list 返回无法解析的 JSON: {e}")
+        return None
+    if not isinstance(releases, list):
+        warning("  gh release list 返回的不是列表，按查询失败处理")
         return None
     for rel in releases:
         if not isinstance(rel, dict):

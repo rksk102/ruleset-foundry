@@ -77,6 +77,14 @@ class TestLatestRulesRelease:
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
         assert release_handler.latest_rules_release_tag() is None
 
+    def test_returns_none_on_malformed_json(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "not-json")
+        assert release_handler.latest_rules_release_tag() is None
+
+    def test_returns_none_on_non_list_json(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "null")
+        assert release_handler.latest_rules_release_tag() is None
+
     def test_needs_repair_when_no_rules_release(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "[]")
         assert release_handler.needs_release_repair() is True
