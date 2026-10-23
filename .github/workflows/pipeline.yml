@@ -154,7 +154,16 @@ jobs:
           if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
             # --needs-publish 可能先打印 GH CLI 警告；取最后一行布尔值
             NEEDS=$(python scripts/release_handler.py --needs-publish | tail -n 1)
-            if [ "$NEEDS" = "true" ] || ! git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1; then
+            set +e
+            git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1
+            RC=$?
+            set -e
+            if [ "$RC" -ne 0 ] && [ "$RC" -ne 2 ]; then
+              echo "::error::无法查询 ${ARTIFACTS_BRANCH} 分支（git ls-remote 退出码 $RC）"
+              exit "$RC"
+            fi
+            # 退出码 2 才表示分支不存在；其余非零值（网络/鉴权）已在上面中止
+            if [ "$NEEDS" = "true" ] || [ "$RC" -eq 2 ]; then
               # 内容未变但 Release 需自愈或分支缺失：推送产物并强制补发 Release
               echo "changed=true" >> "$GITHUB_OUTPUT"
               echo "force_release=true" >> "$GITHUB_OUTPUT"
