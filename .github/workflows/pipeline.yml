@@ -68,12 +68,13 @@ jobs:
               for key in ("pinned_version", "kernel_sha256", "kernel_sha256_arm64")
           )
           print("key=" + hashlib.sha256(raw.encode("utf-8")).hexdigest())
+          print("path=" + get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
           PY
       - name: 缓存 Mihomo 内核（恢复）
         id: kernel-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
-          path: .cache/mihomo-kernel
+          path: ${{ steps.kernel-key.outputs.path }}
           key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
           restore-keys: |
             mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
@@ -87,7 +88,7 @@ jobs:
         if: steps.convert.outcome == 'success' && steps.kernel-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
-          path: .cache/mihomo-kernel
+          path: ${{ steps.kernel-key.outputs.path }}
           key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
       - name: 上传 merged-rules-mrs 产物
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2

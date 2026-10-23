@@ -31,3 +31,11 @@ def test_write_jobs_gate_on_default_branch():
 def test_kernel_notify_gates_on_default_branch():
     workflow = load_workflow("kernel-bump.yml")
     assert "github.event.repository.default_branch" in workflow["jobs"]["notify-on-failure"]["if"]
+
+
+def test_cache_path_comes_from_config():
+    workflow = load_workflow("pipeline.yml")
+    steps = workflow["jobs"]["build"]["steps"]
+    cache_steps = [s for s in steps if s.get("uses", "").startswith("actions/cache/")]
+    assert cache_steps
+    assert all(s["with"]["path"] == "${{ steps.kernel-key.outputs.path }}" for s in cache_steps)
