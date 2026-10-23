@@ -274,6 +274,43 @@ class TestMergeOutputUniqueness:
         finally:
             reset_config()
 
+    def test_duplicate_output_case_insensitive_is_rejected(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            "    inputs: ['x.txt']\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: O\n"
+            "    filename: a.txt\n"
+            "    inputs: ['y.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_trailing_dot_output_is_rejected(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt.\n"
+            "    inputs: ['x.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="不能以点结尾"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
 
 class TestValidationMatrix:
     @pytest.mark.parametrize(

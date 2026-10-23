@@ -449,7 +449,14 @@ class TestRepoAnchor:
 
     def test_subdir_is_accepted(self):
         repo = Path(__file__).resolve().parent.parent
-        merger._ensure_repo_anchored("x", str(repo / "scripts"))
+        merger._ensure_repo_anchored("x", str(repo / "merged-rules"))
+
+    def test_protected_subdir_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(merger, "error", lambda *a, **k: None)
+        monkeypatch.setattr(merger, "gh_error", lambda *a, **k: None)
+        repo = Path(__file__).resolve().parent.parent
+        with pytest.raises(SystemExit):
+            merger._ensure_repo_anchored("x", str(repo / "scripts"))
 
     def test_source_dir_outside_repo_is_rejected(self, monkeypatch):
         monkeypatch.setattr(merger, "SOURCE_DIR", tempfile.gettempdir())
@@ -528,7 +535,7 @@ class TestConflictPolicyReporting:
 
         text = summary.read_text(encoding="utf-8")
         assert "### 显式冲突检测" in text
-        assert "example.com" in text
+        assert any(line.strip() == "- `example.com`" for line in text.splitlines())
 
     def test_fail_exits_after_writing_summary(self, monkeypatch, work_dir):
         summary = self.setup_run(monkeypatch, work_dir, "fail")

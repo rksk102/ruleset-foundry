@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from utils import RULE_TYPES, WINDOWS_RESERVED_NAMES, is_safe_component
+from utils import PROTECTED_TOP_LEVEL, RULE_TYPES, WINDOWS_RESERVED_NAMES, is_safe_component
 
 try:
     import yaml
@@ -131,9 +131,6 @@ def _merge_dict(base, override):
             base[key] = value
 
 
-_PROTECTED_TOP_LEVEL = {".git", ".github", "scripts", "tests", "state", "docs"}
-
-
 def _validate_path_value(label, value):
     text = value.strip()
     if not text:
@@ -151,7 +148,7 @@ def _validate_path_value(label, value):
             f"{label} 必须是指向仓库内的子目录/文件，不能是 {value!r}"
             "（'.'、'..'、绝对路径与盘符会让他处的清理逻辑波及仓库或系统）"
         )
-    if parts[0].casefold() in _PROTECTED_TOP_LEVEL:
+    if parts[0].casefold() in PROTECTED_TOP_LEVEL:
         raise ConfigError(f"{label} 不能指向仓库受保护目录: {parts[0]!r}")
     if ":" in normalized:
         raise ConfigError(f"{label} 不能包含 ':'（Windows ADS/设备路径）")
@@ -225,7 +222,11 @@ def _validate_merges(merges):
                     f"merges[{idx}].{field} 必须是以字母/数字开头的单段名字"
                     f"（允许 [A-Za-z0-9._-]，不得含 '..'、路径分隔符或空白）: {task[field]!r}"
                 )
-        output = tuple(task[field].strip() for field in ("strategy", "type", "owner", "filename"))
+            if task[field].endswith("."):
+                raise ConfigError(
+                    f"merges[{idx}].{field} 不能以点结尾（Windows 会截断文件名）: {task[field]!r}"
+                )
+        output = tuple(task[field].strip().casefold() for field in ("strategy", "type", "owner", "filename"))
         if output in seen_outputs:
             raise ConfigError(f"merges[{idx}] 与其他任务输出同一路径: {'/'.join(output)}")
         seen_outputs.add(output)

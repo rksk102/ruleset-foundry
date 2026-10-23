@@ -21,6 +21,8 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
+PROTECTED_TOP_LEVEL = {".git", ".github", "scripts", "tests", "state", "docs"}
+
 
 def anchor_cwd_to_repo_root():
     """让配置里的相对路径始终相对仓库根，而不是调用者的当前目录。"""
@@ -28,12 +30,15 @@ def anchor_cwd_to_repo_root():
 
 
 def is_repo_subdir(path):
-    """True 仅当 path 解析后是仓库根的真子目录。"""
+    """True 仅当 path 解析后是仓库根下、且不属于受保护顶层目录的真子目录。"""
     try:
         target = Path(path).resolve()
     except OSError:
         return False
-    return REPO_ROOT in target.parents
+    if REPO_ROOT not in target.parents:
+        return False
+    rel = target.relative_to(REPO_ROOT)
+    return not (rel.parts and rel.parts[0].casefold() in PROTECTED_TOP_LEVEL)
 
 
 def beijing_now():
