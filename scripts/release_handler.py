@@ -53,8 +53,8 @@ ASSET_CONFIRM_DELAY = 3
 SHA256SUMS_NAME = "SHA256SUMS"
 
 
-def expected_assets(tag_date):
-    return {f"merged-rules-{tag_date}.zip", SHA256SUMS_NAME}
+def expected_assets(asset_id):
+    return {f"merged-rules-{asset_id}.zip", SHA256SUMS_NAME}
 
 
 def release_asset_names(release_tag):
@@ -74,7 +74,7 @@ def release_asset_names(release_tag):
     return {line.strip() for line in raw.splitlines() if line.strip()}
 
 
-RULES_TAG_RE = re.compile(r"^rules-\d{4}-\d{2}-\d{2}$")
+RULES_TAG_RE = re.compile(r"^rules-\d{8}-\d{4}$")
 
 
 def latest_rules_release_tag():
@@ -253,8 +253,8 @@ def should_publish(current_hash, last_hash, enabled, force=False):
     return False, "内容无变化"
 
 
-def zip_target_files(tag_date):
-    zip_name = f"merged-rules-{tag_date}.zip"
+def zip_target_files(asset_id):
+    zip_name = f"merged-rules-{asset_id}.zip"
     info(f"打包文件到 {zip_name}...")
 
     file_manifest = {}
@@ -408,7 +408,9 @@ def main():
     now_bj = beijing_now()
     tag_date = now_bj.strftime("%Y-%m-%d")
     tag_time = now_bj.strftime("%H:%M:%S")
-    release_tag = f"rules-{tag_date}"
+    # 一次构建一个标签，避免同日第二轮用 --clobber 覆盖已发布资产
+    tag_id = now_bj.strftime("%Y%m%d-%H%M")
+    release_tag = f"rules-{tag_id}"
 
     info(f"目标发布标签: {release_tag}")
 
@@ -437,7 +439,7 @@ def main():
     else:
         info(f"  变更检测已关闭，直接发布 ({c1 + c2} 个文件)")
 
-    zip_file, file_map = zip_target_files(tag_date)
+    zip_file, file_map = zip_target_files(tag_id)
     sums_file = write_sha256sums(zip_file, file_map)
 
     info("生成发布说明...")
@@ -445,7 +447,7 @@ def main():
     exists = bool(run_gh(["release", "view", release_tag]))
     info(f"{'更新' if exists else '创建'} Release {release_tag}...")
 
-    title = f"Merged Rules - {tag_date}"
+    title = f"Merged Rules - {tag_id}"
     if publish_release(release_tag, zip_file, title, notes, exists, extra_assets=[sums_file]) is None:
         error("  Release 发布失败，不保存哈希，下次运行将重试")
         gh_error(f"Release {release_tag} 发布失败（不保存哈希，下次运行重试）")

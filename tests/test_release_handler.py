@@ -66,12 +66,12 @@ class TestLatestRulesRelease:
     def test_skips_non_rules_and_returns_latest(self, monkeypatch):
         listing = release_listing(
             {"tagName": "v1.0.0"},
-            {"tagName": "rules-2026-10-05"},
-            {"tagName": "rules-2026-10-04"},
+            {"tagName": "rules-20261005-0600"},
+            {"tagName": "rules-20261004-2100"},
         )
         stub = GhStub(responses={("release", "list"): listing})
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        assert release_handler.latest_rules_release_tag() == "rules-2026-10-05"
+        assert release_handler.latest_rules_release_tag() == "rules-20261005-0600"
 
     def test_returns_none_on_gh_failure(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
@@ -90,12 +90,12 @@ class TestLatestRulesRelease:
         assert release_handler.needs_release_repair() is True
 
     def test_needs_repair_when_assets_incomplete(self, monkeypatch):
-        stub = GhStub(latest_tag="rules-2026-10-04", asset_names="merged-rules-2026-10-04.zip")
+        stub = GhStub(latest_tag="rules-20261004-2100", asset_names="merged-rules-20261004-2100.zip")
         monkeypatch.setattr(release_handler, "run_gh", stub)
         assert release_handler.needs_release_repair() is True
 
     def test_no_repair_when_assets_complete(self, monkeypatch):
-        stub = GhStub(latest_tag="rules-2026-10-04")
+        stub = GhStub(latest_tag="rules-20261004-2100")
         monkeypatch.setattr(release_handler, "run_gh", stub)
         assert release_handler.needs_release_repair() is False
 
@@ -397,7 +397,7 @@ class TestMainOrchestration:
         assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
-        stub = GhStub(latest_tag="rules-2026-10-04")
+        stub = GhStub(latest_tag="rules-20261004-2100")
         stub_hash_state(monkeypatch, current="same", last="same")
 
         run_with_stub(stub, release_handler.main)
@@ -422,7 +422,7 @@ class TestMainOrchestration:
 
     def test_republishes_when_asset_incomplete(self, publish_workspace, monkeypatch):
         """哈希未变但最近一次 Release 缺 SHA256SUMS 时应补发自愈。"""
-        stub = GhStub(latest_tag="rules-2026-10-04", asset_names="merged-rules-2026-10-04.zip")
+        stub = GhStub(latest_tag="rules-20261004-2100", asset_names="merged-rules-20261004-2100.zip")
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
 
@@ -457,10 +457,10 @@ class TestMainOrchestration:
         assert "create" in stub.release_actions()
 
     def test_prunes_old_releases_and_keeps_current(self, publish_workspace, monkeypatch):
-        now_iso = release_handler.beijing_now().strftime("%Y-%m-%d")
+        now_id = release_handler.beijing_now().strftime("%Y%m%d-%H%M")
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
-            {"tagName": f"rules-{now_iso}", "createdAt": old},
+            {"tagName": f"rules-{now_id}", "createdAt": old},
             {"tagName": "rules-1999-01-01", "createdAt": old},
             {"tagName": "v1.0.0", "createdAt": old},
         )
@@ -471,7 +471,7 @@ class TestMainOrchestration:
 
         flat = " ".join(stub.commands())
         assert "release delete rules-1999-01-01 --yes" in flat
-        assert f"release delete rules-{now_iso}" not in flat, "当天标签不得被删"
+        assert f"release delete rules-{now_id}" not in flat, "本轮标签不得被删"
         assert "git/refs/tags/rules-1999-01-01" in flat, "删除 release 后应同时删 tag"
         assert "v1.0.0" not in flat, "非 rules- 前缀的 Release 一律不得触碰"
 
@@ -509,7 +509,7 @@ class TestMainOrchestration:
         assert flat.count("release delete") == 2, "首个删除失败后仍应继续清理其余旧 Release"
         assert "git/refs/tags" not in flat, "Release 删除失败时不得继续删 tag"
         assert saved == ["new"], "清理失败不得跳过 state/release.sha256 的写入"
-        zip_name = f"merged-rules-{release_handler.beijing_now().strftime('%Y-%m-%d')}.zip"
+        zip_name = f"merged-rules-{release_handler.beijing_now().strftime('%Y%m%d-%H%M')}.zip"
         assert not os.path.exists(zip_name), "清理失败后 main() 仍应执行到收尾"
         assert not os.path.exists("SHA256SUMS"), "收尾应同时清理临时 SHA256SUMS"
 
