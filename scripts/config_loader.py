@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from utils import RULE_TYPES, is_safe_component
+from utils import RULE_TYPES, WINDOWS_RESERVED_NAMES, is_safe_component
 
 try:
     import yaml
@@ -131,15 +131,7 @@ def _merge_dict(base, override):
             base[key] = value
 
 
-_PATH_FORBIDDEN_NAMES = {"", ".", "..", "./", "../", "/", "\\"}
-_WINDOWS_RESERVED_NAMES = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{i}" for i in range(1, 10)),
-    *(f"LPT{i}" for i in range(1, 10)),
-}
+_PROTECTED_TOP_LEVEL = {".git", ".github", "scripts", "tests", "state", "docs"}
 
 
 def _validate_path_value(label, value):
@@ -153,18 +145,21 @@ def _validate_path_value(label, value):
     if len(text) > 1 and text[1] == ":":
         raise ConfigError(f"{label} 不能是盘符路径（{value!r}）")
     normalized = text.replace("\\", "/").strip("/")
-    if normalized in _PATH_FORBIDDEN_NAMES or ".." in normalized.split("/"):
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
         raise ConfigError(
             f"{label} 必须是指向仓库内的子目录/文件，不能是 {value!r}"
             "（'.'、'..'、绝对路径与盘符会让他处的清理逻辑波及仓库或系统）"
         )
+    if parts[0].casefold() in _PROTECTED_TOP_LEVEL:
+        raise ConfigError(f"{label} 不能指向仓库受保护目录: {parts[0]!r}")
     if ":" in normalized:
         raise ConfigError(f"{label} 不能包含 ':'（Windows ADS/设备路径）")
-    for part in normalized.split("/"):
+    for part in parts:
         stem = part.rstrip(" .").split(".", 1)[0].upper()
-        if stem in _WINDOWS_RESERVED_NAMES:
+        if stem in WINDOWS_RESERVED_NAMES:
             raise ConfigError(f"{label} 不能使用 Windows 保留设备名: {value!r}")
-    return value
+    return text
 
 
 def _validate_scalar(section, key, value):
@@ -181,7 +176,7 @@ def _validate_scalar(section, key, value):
     if not isinstance(value, expected):
         raise ConfigError(f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）")
     if expected is not None and expected is str and (section, key) in _PATH_KEYS:
-        _validate_path_value(f"{section}.{key}", value)
+        value = _validate_path_value(f"{section}.{key}", value)
     if (section, key) == ("mihomo", "repo_api"):
         try:
             parts = urlsplit(value)
@@ -215,6 +210,7 @@ def _validate_merges(merges):
         raise ConfigError("merges 不能为 null，需为列表（空列表表示不配置合并任务）")
     if not isinstance(merges, list):
         raise ConfigError(f"merges 期望 list，实际 {type(merges).__name__}")
+    seen_outputs = set()
     for idx, task in enumerate(merges):
         if not isinstance(task, dict):
             raise ConfigError(f"merges[{idx}] 期望 dict，实际 {type(task).__name__}")
@@ -229,12 +225,16 @@ def _validate_merges(merges):
                     f"merges[{idx}].{field} 必须是以字母/数字开头的单段名字"
                     f"（允许 [A-Za-z0-9._-]，不得含 '..'、路径分隔符或空白）: {task[field]!r}"
                 )
+        output = tuple(task[field].strip() for field in ("strategy", "type", "owner", "filename"))
+        if output in seen_outputs:
+            raise ConfigError(f"merges[{idx}] 与其他任务输出同一路径: {'/'.join(output)}")
+        seen_outputs.add(output)
         if task["type"] not in RULE_TYPES:
             raise ConfigError(f"merges[{idx}].type 非法: {task['type']!r}（仅允许 {'/'.join(RULE_TYPES)}）")
         for pos, rel in enumerate(task["inputs"]):
             if not isinstance(rel, str) or not rel.strip():
                 raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")
-            _validate_path_value(f"merges[{idx}].inputs[{pos}]", rel)
+            task["inputs"][pos] = _validate_path_value(f"merges[{idx}].inputs[{pos}]", rel)
 
 
 def load_config():
@@ -248,11 +248,11 @@ def load_config():
     if config_file.exists():
         if not _HAS_YAML:
             raise ConfigError(
-                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；请运行 pip install -r requirements.txt"
+                f"检测到 {config_file} 但 PyYAML 未安装，拒绝以默认值继续；请运行 uv sync"
             )
         try:
             with open(config_file, encoding="utf-8") as f:
-                user_data = yaml.safe_load(f)
+                user_data = yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
         except yaml.YAMLError as e:
             raise ConfigError(f"配置文件 {config_file} YAML 语法错误: {e}") from e
         except OSError as e:

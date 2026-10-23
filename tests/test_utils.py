@@ -543,6 +543,36 @@ class TestDedupDomainSuffix:
         b, _ = utils.dedup_domain_suffix({"+.ads.google.com", "+.google.com"})
         assert a == b
 
+    def test_list_duplicates_are_removed(self):
+        kept, removed = utils.dedup_domain_suffix(["example.com", "example.com"])
+        assert kept == ["example.com"]
+        assert removed == 1
+
+    def test_list_subdomain_duplicates_are_removed(self):
+        kept, removed = utils.dedup_domain_suffix([".example.com", ".example.com"])
+        assert kept == [".example.com"]
+        assert removed == 1
+
+    def test_wildcard_covers_single_level_exact(self):
+        kept, removed = utils.dedup_domain_suffix({"*.example.com", "www.example.com"})
+        assert kept == ["*.example.com"]
+        assert removed == 1
+
+    def test_wildcard_does_not_cover_multi_level_exact(self):
+        kept, removed = utils.dedup_domain_suffix({"*.example.com", "a.b.example.com"})
+        assert kept == ["*.example.com", "a.b.example.com"]
+        assert removed == 0
+
+    def test_wildcard_does_not_cover_subdomain_rule(self):
+        kept, removed = utils.dedup_domain_suffix({"*.example.com", ".www.example.com"})
+        assert kept == ["*.example.com", ".www.example.com"]
+        assert removed == 0
+
+    def test_wildcard_does_not_remove_suffix_rule(self):
+        kept, removed = utils.dedup_domain_suffix({"*.example.com", "+.www.example.com"})
+        assert kept == ["*.example.com", "+.www.example.com"]
+        assert removed == 0
+
     def test_empty(self):
         assert utils.dedup_domain_suffix(set()) == ([], 0)
 

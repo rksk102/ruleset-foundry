@@ -34,6 +34,8 @@ class TestCollect:
         (work_dir / "policy").mkdir()
         (work_dir / "policy" / "b.txt").write_text("x\n", encoding="utf-8")
         (work_dir / "policy" / ".hidden.txt").write_text("x\n", encoding="utf-8")
+        (work_dir / ".hidden").mkdir()
+        (work_dir / ".hidden" / "a.txt").write_text("x\n", encoding="utf-8")
         (work_dir / "policy" / "c.md").write_text("x\n", encoding="utf-8")
         assert manifest.collect_files(work_dir) == {"block/domain/a.txt", "policy/b.txt"}
 

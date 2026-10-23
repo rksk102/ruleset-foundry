@@ -1,4 +1,5 @@
 import tempfile
+from pathlib import Path
 
 import merger
 import pytest
@@ -62,6 +63,10 @@ class TestAutoDiscoverFiles:
 
     def test_hidden_file_skipped(self, tmp_path):
         write(tmp_path / "block" / "domain" / "OwnerA" / ".hidden.txt", "x\n")
+        assert merger.auto_discover_files(str(tmp_path)) == []
+
+    def test_hidden_dir_skipped(self, tmp_path):
+        write(tmp_path / ".hidden" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
         assert merger.auto_discover_files(str(tmp_path)) == []
 
     def test_missing_dir_returns_empty(self, tmp_path):
@@ -372,11 +377,80 @@ class TestDetectCrossPolicyConflicts:
         )
         assert explicit == {} and implicit == {}
 
+    def test_ipcidr_substring_in_parent_dir_does_not_hide_conflicts(self):
+        with tempfile.TemporaryDirectory(prefix="ipcidr_work_") as root:
+            base = Path(root)
+            write(base / "block/domain/A/x.txt", "same.example.com\n")
+            write(base / "policy/domain/A/y.txt", "same.example.com\n")
+            explicit, _implicit = merger.detect_cross_policy_conflicts(str(base))
+        assert explicit == {"block ↔ policy": ["same.example.com"]}
+
+    def test_ipcidr_substring_in_owner_does_not_hide_conflicts(self, tmp_path):
+        explicit, _implicit = self.build(
+            tmp_path,
+            {
+                "block/domain/ipcidr-owner/x.txt": "same.example.com\n",
+                "policy/domain/A/y.txt": "same.example.com\n",
+            },
+        )
+        assert explicit == {"block ↔ policy": ["same.example.com"]}
+
+    def test_wildcard_parent_covers_exact_child(self, tmp_path):
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "*.example.com\n",
+                "block/domain/A/ads.txt": "www.example.com\n",
+            },
+        )
+        assert implicit.get("policy(父) → block(子)") == [("www.example.com", "*.example.com")]
+
+    def test_wildcard_parent_covers_suffix_child(self, tmp_path):
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "*.example.com\n",
+                "block/domain/A/ads.txt": "+.example.com\n",
+            },
+        )
+        assert implicit.get("policy(父) → block(子)") == [("+.example.com", "*.example.com")]
+
+    def test_wildcard_parent_covers_subdomain_child(self, tmp_path):
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "*.example.com\n",
+                "block/domain/A/ads.txt": ".example.com\n",
+            },
+        )
+        assert implicit.get("policy(父) → block(子)") == [(".example.com", "*.example.com")]
+
+    def test_wildcard_parent_does_not_cover_multi_level_exact(self, tmp_path):
+        _explicit, implicit = self.build(
+            tmp_path,
+            {
+                "policy/domain/A/proxy.txt": "*.example.com\n",
+                "block/domain/A/ads.txt": "a.b.example.com\n",
+            },
+        )
+        assert implicit == {}
+
     def test_missing_dir_returns_empty(self, tmp_path):
         assert merger.detect_cross_policy_conflicts(str(tmp_path / "nope")) == ({}, {})
 
 
 class TestRepoAnchor:
+    def test_repo_root_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(merger, "error", lambda *a, **k: None)
+        monkeypatch.setattr(merger, "gh_error", lambda *a, **k: None)
+        with pytest.raises(SystemExit) as exc:
+            merger._ensure_repo_anchored("x", str(Path(__file__).resolve().parent.parent))
+        assert exc.value.code == 1
+
+    def test_subdir_is_accepted(self):
+        repo = Path(__file__).resolve().parent.parent
+        merger._ensure_repo_anchored("x", str(repo / "scripts"))
+
     def test_source_dir_outside_repo_is_rejected(self, monkeypatch):
         monkeypatch.setattr(merger, "SOURCE_DIR", tempfile.gettempdir())
 
@@ -431,6 +505,40 @@ class TestConflictPolicyIgnore:
         merger.main()
 
         assert len(calls) == 1
+
+
+class TestConflictPolicyReporting:
+    def setup_run(self, monkeypatch, work_dir, policy):
+        source = work_dir / "rulesets"
+        write(source / "block" / "domain" / "Owner" / "ads.txt", "+.example.com\n")
+        write(source / "policy" / "domain" / "Owner" / "proxy.txt", "+.example.com\n")
+        summary = work_dir / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
+        monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+        monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
+        monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
+        return summary
+
+    def test_warn_writes_conflict_summary(self, monkeypatch, work_dir):
+        summary = self.setup_run(monkeypatch, work_dir, "warn")
+
+        merger.main()
+
+        text = summary.read_text(encoding="utf-8")
+        assert "### 显式冲突检测" in text
+        assert "example.com" in text
+
+    def test_fail_exits_after_writing_summary(self, monkeypatch, work_dir):
+        summary = self.setup_run(monkeypatch, work_dir, "fail")
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+        text = summary.read_text(encoding="utf-8")
+        assert "### 显式冲突检测" in text
 
 
 class TestMergerGuards:

@@ -12,10 +12,28 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def anchor_cwd_to_repo_root():
     """让配置里的相对路径始终相对仓库根，而不是调用者的当前目录。"""
     os.chdir(REPO_ROOT)
+
+
+def is_repo_subdir(path):
+    """True 仅当 path 解析后是仓库根的真子目录。"""
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        return False
+    return REPO_ROOT in target.parents
 
 
 def beijing_now():
@@ -125,12 +143,16 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
     files = sorted(p.rglob(pattern))
     count = 0
     for f in files:
-        if f.is_file() and not f.name.startswith("."):
-            rel = f.relative_to(p).as_posix()
-            digest = _hash_file_body(str(f)) if skip_comments else file_sha256(str(f))
-            h_all.update(rel.encode("utf-8") + b"\n")
-            h_all.update(digest.encode())
-            count += 1
+        if not f.is_file():
+            continue
+        rel_path = f.relative_to(p)
+        if any(part.startswith(".") for part in rel_path.parts):
+            continue
+        rel = rel_path.as_posix()
+        digest = _hash_file_body(str(f)) if skip_comments else file_sha256(str(f))
+        h_all.update(rel.encode("utf-8") + b"\n")
+        h_all.update(digest.encode())
+        count += 1
 
     if count == 0:
         return "", 0
@@ -167,6 +189,15 @@ def is_safe_component(value):
 
 
 RULE_TYPES = ("domain", "ipcidr")
+
+
+def get_rule_type(path_parts):
+    """类型取固定层级（<策略>/<类型>/<所有者>/<文件> 的第 2 段），不做子串猜测。"""
+    if len(path_parts) >= 2:
+        candidate = str(path_parts[1]).lower()
+        if candidate in RULE_TYPES:
+            return candidate
+    return None
 
 
 def normalize_policy(p):
@@ -219,6 +250,37 @@ def normalize_path(p):
     return str(Path(p).as_posix())
 
 
+def _is_suffix(short, long):
+    return len(short) <= len(long) and long[-len(short) :] == short
+
+
+def _wildcard_covers(pattern_stars, pattern_fixed, entry):
+    """判断 `*^n.fixed` 通配模式是否覆盖一个具体条目（通配符条目不参与）。"""
+    if entry.startswith("*."):
+        return False
+    if entry.startswith("+."):
+        kind, fixed = "suffix", entry[2:].split(".")
+    elif entry.startswith("."):
+        kind, fixed = "subdomain", entry[1:].split(".")
+    else:
+        kind, fixed = "exact", entry.split(".")
+    pattern_depth = pattern_stars + len(pattern_fixed)
+    child_depth = len(fixed)
+    if kind == "exact":
+        return child_depth == pattern_depth and _is_suffix(pattern_fixed, fixed)
+    if kind == "suffix":
+        if _is_suffix(fixed, pattern_fixed):
+            return pattern_depth >= child_depth
+        if _is_suffix(pattern_fixed, fixed):
+            return pattern_stars >= child_depth - len(pattern_fixed)
+        return False
+    if _is_suffix(fixed, pattern_fixed):
+        return pattern_depth > child_depth
+    if _is_suffix(pattern_fixed, fixed):
+        return pattern_depth > child_depth and pattern_stars >= child_depth - len(pattern_fixed)
+    return False
+
+
 class DomainTrie:
     """倒序标签 Trie；SUFFIX=`+.d`、SUBDOMAIN=`.d`、EXACT=裸 `d`，只有 SUFFIX 能覆盖别的条目。"""
 
@@ -228,12 +290,28 @@ class DomainTrie:
 
     def __init__(self):
         self._root = {}
+        self._wildcards = []
 
     def add(self, domain, kind=None):
+        if domain.startswith("*.") and domain not in self._wildcards:
+            self._wildcards.append(domain)
         node = self._root
         for part in reversed(domain.split(".")):
             node = node.setdefault(part, {})
         node[kind or self.EXACT] = True
+
+    def covering_wildcard(self, entry):
+        """返回覆盖该具体条目的通配模式（`*.d` 单级语义），无则 None。"""
+        if entry.startswith("*."):
+            return None
+        for pattern in self._wildcards:
+            labels = pattern.split(".")
+            stars = 0
+            while stars < len(labels) and labels[stars] == "*":
+                stars += 1
+            if _wildcard_covers(stars, labels[stars:], entry):
+                return pattern
+        return None
 
     def _walk(self, domain):
         node = self._root
@@ -275,11 +353,16 @@ def dedup_domain_suffix(domains):
     trie = DomainTrie()
     kept = []
     removed = 0
+    seen = set()
 
     def bare(d):
         return d.lstrip("+.") if d.startswith("+.") or d.startswith(".") else d
 
     for entry in sorted(domains, key=lambda d: (bare(d).count("."), d)):
+        if entry in seen:
+            removed += 1
+            continue
+        seen.add(entry)
         name = bare(entry)
         if entry.startswith("+."):
             kind = DomainTrie.SUFFIX
@@ -291,6 +374,9 @@ def dedup_domain_suffix(domains):
         if trie.has_marked_ancestor(name, DomainTrie.SUFFIX) or trie.covering_parent(
             name, (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN)
         ):
+            removed += 1
+            continue
+        if kind == DomainTrie.EXACT and trie.covering_wildcard(entry):
             removed += 1
             continue
 

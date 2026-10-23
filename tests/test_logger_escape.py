@@ -85,6 +85,20 @@ class TestCommandEscaping:
         assert "c\nd" in out
         assert "%0A" not in out
 
+    def test_info_cannot_inject_command(self, monkeypatch, capsys):
+        _reset(monkeypatch, ci=True)
+        log.info("ok\n::error::injected")
+        out = capsys.readouterr().out
+        assert not any(line.startswith("::error::injected") for line in out.splitlines())
+        assert "%3A%3Aerror::injected" in out
+
+    def test_bare_carriage_return_is_split(self, monkeypatch, capsys):
+        _reset(monkeypatch, ci=True)
+        log.info("ok\r::error::injected")
+        out = capsys.readouterr().out
+        assert not any(line.startswith("::error::injected") for line in out.splitlines())
+        assert "%3A%3Aerror::injected" in out
+
     def test_section_stays_readable(self, monkeypatch, capsys):
         _reset(monkeypatch, ci=True)
         log.section("标题\n第二行")
@@ -131,4 +145,12 @@ class TestLogFile:
         logging.getLogger("mihomo-rules").handlers[1].flush()
         content = (LOG_DIR / "run-test.log").read_text(encoding="utf-8")
         assert "磁盘告警" in content
+        assert "\x1b" not in content
+
+    def test_log_file_strips_ansi_from_message(self, monkeypatch):
+        _reset(monkeypatch, ci=True)
+        log.info("\x1b[31m红色\x1b[0m")
+        logging.getLogger("mihomo-rules").handlers[1].flush()
+        content = (LOG_DIR / "run-test.log").read_text(encoding="utf-8")
+        assert "红色" in content
         assert "\x1b" not in content

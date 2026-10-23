@@ -14,6 +14,8 @@ from utils import (
     clean_directory,
     dedup_domain_suffix,
     flatten_ip_cidr,
+    get_rule_type,
+    is_repo_subdir,
     normalize_path,
 )
 
@@ -79,9 +81,9 @@ def _ensure_within(base_dir, target_path, what):
 
 def _ensure_repo_anchored(label, path):
     target = Path(path).resolve()
-    if target != REPO_ROOT and REPO_ROOT not in target.parents:
-        error(f"{label}不在仓库内，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
-        gh_error(f"{label}不在仓库内，拒绝继续: {target}")
+    if not is_repo_subdir(path):
+        error(f"{label}不在仓库内或等于仓库根，拒绝继续: {target}（仓库根 {REPO_ROOT}）")
+        gh_error(f"{label}不在仓库内或等于仓库根，拒绝继续: {target}")
         sys.exit(1)
 
 
@@ -182,7 +184,8 @@ def auto_discover_files(source_dir=None):
     if not os.path.exists(root_dir):
         return []
 
-    for root, _dirs, files in os.walk(root_dir):
+    for root, dirs, files in os.walk(root_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for file in files:
             if file.startswith(".") or not file.endswith(".txt"):
                 continue
@@ -234,16 +237,17 @@ def resolve_conflict_action(conflict_policy, has_conflicts):
 
 def detect_cross_policy_conflicts(merged_dir):
     policy_domains = {}
+    base_path = Path(merged_dir)
 
-    if not os.path.exists(merged_dir):
+    if not base_path.exists():
         return {}, {}
 
-    for strategy_dir in Path(merged_dir).iterdir():
+    for strategy_dir in base_path.iterdir():
         if not strategy_dir.is_dir():
             continue
         domains = set()
         for txt_file in strategy_dir.rglob("*.txt"):
-            if any("ipcidr" in part.lower() for part in txt_file.parts):
+            if get_rule_type(txt_file.relative_to(base_path).parts) != "domain":
                 continue
             domains.update(load_domains_from_file(str(txt_file)))
         if domains:
@@ -305,6 +309,10 @@ def detect_cross_policy_conflicts(merged_dir):
                 ancestor = parent_trie.covering_parent(bare(domain), (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN))
                 if ancestor:
                     items.append((domain, ancestor))
+                    continue
+                wildcard = parent_trie.covering_wildcard(domain)
+                if wildcard:
+                    items.append((domain, wildcard))
             if items:
                 implicit_conflicts[key] = items
 

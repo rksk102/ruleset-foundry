@@ -34,11 +34,15 @@ def collect_files(root, suffix=".txt"):
     root_path = Path(root)
     if not root_path.exists():
         return set()
-    return {
-        str(p.relative_to(root_path)).replace("\\", "/")
-        for p in root_path.rglob(f"*{suffix}")
-        if p.is_file() and not p.name.startswith(".")
-    }
+    files = set()
+    for p in root_path.rglob(f"*{suffix}"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root_path)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        files.add(str(rel).replace("\\", "/"))
+    return files
 
 
 def diff_against(manifest_entries, actual_rel_paths):
