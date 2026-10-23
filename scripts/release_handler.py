@@ -480,7 +480,7 @@ def main():
         info("  已保存当前内容哈希")
 
     info(f"清理 {KEEP_DAYS} 天前的旧 Release...")
-    releases_json = run_gh(["release", "list", "--limit", "50", "--json", "tagName,createdAt"])
+    releases_json = run_gh(["release", "list", "--limit", "200", "--json", "tagName,createdAt"])
 
     if releases_json:
         try:

@@ -45,8 +45,8 @@ merges:
 behavior:
   # 产物哈希与上次发布一致时跳过发布
   release_change_detection: true
-  # 旧 Release 保留天数；上限 25（清理每次最多读 50 条 release，每日 2 轮）
-  release_keep_days: 3
+  # 旧 Release 保留天数；上限 90（清理每次最多读 200 条 release，每日 2 轮）
+  release_keep_days: 30
   # 跨策略冲突处理：ignore | warn | fail
   conflict_policy: "warn"
   # 单输出组未识别行占比达到或超过该值时记 parse 错误（疑似上游格式变更）
