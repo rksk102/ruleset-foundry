@@ -62,6 +62,66 @@ class TestShouldPublish:
         assert publish is True
 
 
+class TestLatestRulesRelease:
+    def test_skips_non_rules_and_returns_latest(self, monkeypatch):
+        listing = release_listing(
+            {"tagName": "v1.0.0"},
+            {"tagName": "rules-2026-10-05"},
+            {"tagName": "rules-2026-10-04"},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.latest_rules_release_tag() == "rules-2026-10-05"
+
+    def test_returns_none_on_gh_failure(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
+        assert release_handler.latest_rules_release_tag() is None
+
+    def test_returns_none_on_malformed_json(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "not-json")
+        assert release_handler.latest_rules_release_tag() is None
+
+    def test_returns_none_on_non_list_json(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "null")
+        assert release_handler.latest_rules_release_tag() is None
+
+    def test_needs_repair_when_no_rules_release(self, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "[]")
+        assert release_handler.needs_release_repair() is True
+
+    def test_needs_repair_when_assets_incomplete(self, monkeypatch):
+        stub = GhStub(latest_tag="rules-2026-10-04", asset_names="merged-rules-2026-10-04.zip")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.needs_release_repair() is True
+
+    def test_no_repair_when_assets_complete(self, monkeypatch):
+        stub = GhStub(latest_tag="rules-2026-10-04")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.needs_release_repair() is False
+
+
+class TestNeedsPublishMode:
+    def test_prints_false_when_unchanged_and_release_complete(self, monkeypatch, capsys):
+        monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
+        monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
+        monkeypatch.setattr(release_handler, "needs_release_repair", lambda: False)
+        monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
+
+        release_handler.main()
+
+        assert capsys.readouterr().out.strip() == "false"
+
+    def test_prints_true_when_repair_needed(self, monkeypatch, capsys):
+        monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
+        monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
+        monkeypatch.setattr(release_handler, "needs_release_repair", lambda: True)
+        monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
+
+        release_handler.main()
+
+        assert capsys.readouterr().out.strip() == "true"
+
+
 class TestWriteSha256sums:
     def test_zip_and_files_listed(self, zip_workspace):
         (zip_workspace / "merged-rules" / "A").mkdir(parents=True)
@@ -169,6 +229,17 @@ class TestZipTargetFiles:
 
         assert posix_paths(manifest["merged-rules"]) == ["merged-rules/a.txt"]
         assert "merged-rules-mrs" not in manifest
+
+    def test_hidden_files_and_dirs_skipped(self, zip_workspace):
+        (zip_workspace / "merged-rules" / ".hidden").mkdir(parents=True)
+        (zip_workspace / "merged-rules" / ".hidden" / "x.txt").write_text("x", encoding="utf-8")
+        (zip_workspace / "merged-rules" / "A").mkdir()
+        (zip_workspace / "merged-rules" / "A" / ".y.txt").write_text("y", encoding="utf-8")
+        (zip_workspace / "merged-rules" / "A" / "z.txt").write_text("z", encoding="utf-8")
+
+        _zip_name, manifest = release_handler.zip_target_files("2026-10-05")
+
+        assert posix_paths(manifest["merged-rules"]) == ["merged-rules/A/z.txt"]
 
     def test_no_files_exits_nonzero(self, zip_workspace):
         (zip_workspace / "merged-rules").mkdir()
@@ -326,7 +397,7 @@ class TestMainOrchestration:
         assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
-        stub = GhStub()
+        stub = GhStub(latest_tag="rules-2026-10-04")
         stub_hash_state(monkeypatch, current="same", last="same")
 
         run_with_stub(stub, release_handler.main)
@@ -339,7 +410,7 @@ class TestMainOrchestration:
         assert mutating == [], "内容无变化且当天 Release 完整时不应做任何发布变更"
 
     def test_republishes_when_release_missing(self, publish_workspace, monkeypatch):
-        """哈希未变但当天 Release 不存在（如强制补发失败/被删）时应补发自愈。"""
+        """哈希未变但最近一次 Release 不存在（如强制补发失败/被删）时应补发自愈。"""
         stub = GhStub(release_exists=False, responses={"release": "ok"})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
@@ -350,9 +421,8 @@ class TestMainOrchestration:
         assert any(call[1] in ("create", "upload") for call in stub.calls if call[0] == "release")
 
     def test_republishes_when_asset_incomplete(self, publish_workspace, monkeypatch):
-        """哈希未变但当天 Release 缺 SHA256SUMS 时应补发自愈。"""
-        today = release_handler.beijing_now().strftime("%Y-%m-%d")
-        stub = GhStub(asset_names=f"merged-rules-{today}.zip")
+        """哈希未变但最近一次 Release 缺 SHA256SUMS 时应补发自愈。"""
+        stub = GhStub(latest_tag="rules-2026-10-04", asset_names="merged-rules-2026-10-04.zip")
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
 

@@ -31,14 +31,21 @@ def _escape_data(value):
     return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], str(value))
 
 
+def _defang_command_lines(text):
+    lines = re.split(r"\r\n|\r|\n", text)
+    return "\n".join(
+        ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line for line in lines
+    )
+
+
 def _render(msg):
-    return str(msg)
+    return _defang_command_lines(str(msg))
 
 
 class _StripAnsiFilter(logging.Filter):
+    """兼容旧导入；ANSI 剥离已移入 _BeijingFormatter。"""
+
     def filter(self, record):
-        if isinstance(record.msg, str) and "\x1b" in record.msg:
-            record.msg = _ANSI_RE.sub("", record.msg)
         return True
 
 
@@ -46,6 +53,9 @@ class _BeijingFormatter(logging.Formatter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.converter = lambda *_: beijing_now().timetuple()
+
+    def format(self, record):
+        return _ANSI_RE.sub("", super().format(record))
 
 
 def _resolve_log_file():
@@ -122,20 +132,14 @@ def debug(msg):
     _logger.debug(_render(msg))
 
 
-def _defang_command_lines(text):
-    return "\n".join(
-        ("%3A%3A" + line.lstrip()[2:]) if line.lstrip().startswith("::") else line for line in text.split("\n")
-    )
-
-
 def warning(msg):
     _init_logger()
-    _logger.warning(f"{Colors.YELLOW}[警告] {_defang_command_lines(_render(msg))}{Colors.RESET}")
+    _logger.warning(f"{Colors.YELLOW}[警告] {_render(msg)}{Colors.RESET}")
 
 
 def error(msg):
     _init_logger()
-    _logger.error(f"{Colors.RED}[错误] {_defang_command_lines(_render(msg))}{Colors.RESET}")
+    _logger.error(f"{Colors.RED}[错误] {_render(msg)}{Colors.RESET}")
 
 
 def success(msg):
@@ -148,7 +152,7 @@ def group_start(title):
     title_str = str(title)
     print(f"::group::{_escape_data(title_str)}")
     sys.stdout.flush()
-    _logger.debug(f"[GROUP START] {title_str}")
+    _logger.debug(_render(f"[GROUP START] {title_str}"))
 
 
 def group_end():
@@ -164,4 +168,4 @@ def gh_error(msg):
 
 def section(msg):
     _init_logger()
-    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {msg}{Colors.RESET}")
+    _logger.info(f"\n{Colors.BOLD}{Colors.MAGENTA}>> {_render(msg)}{Colors.RESET}")

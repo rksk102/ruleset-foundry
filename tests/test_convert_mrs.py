@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import config_loader
@@ -23,6 +24,24 @@ def elf_binary(machine):
     data[:4] = b"\x7fELF"
     data[18:20] = machine.to_bytes(2, "little")
     return bytes(data)
+
+
+class TestProductsAnchored:
+    def test_outside_repo_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(convert_mrs, "error", lambda *a, **k: None)
+        monkeypatch.setattr(convert_mrs, "gh_error", lambda *a, **k: None)
+        with tempfile.TemporaryDirectory() as outside:
+            monkeypatch.setattr(convert_mrs, "SRC_ROOT", outside)
+            monkeypatch.setattr(convert_mrs, "DST_ROOT", outside)
+            with pytest.raises(SystemExit) as exc:
+                convert_mrs.ensure_products_anchored()
+        assert exc.value.code == 1
+
+    def test_subdir_is_accepted(self, monkeypatch):
+        repo = Path(__file__).resolve().parent.parent
+        monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(repo / "merged-rules"))
+        monkeypatch.setattr(convert_mrs, "DST_ROOT", str(repo / "merged-rules-mrs"))
+        convert_mrs.ensure_products_anchored()
 
 
 class TestWriteSummary:
@@ -512,6 +531,21 @@ class TestBumpConfigExactAsset:
             self._bump(monkeypatch, work_dir, "v9.9.9", assets)
         assert exc.value.code == 1
         assert downloads == []
+
+
+class TestBumpConfigTagValidation:
+    def test_unsafe_tag_is_rejected(self, monkeypatch, work_dir):
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setattr(
+            convert_mrs,
+            "_fetch_latest_release_info",
+            lambda *a, **k: {"tag_name": "bad\n::error::x", "assets": []},
+        )
+        monkeypatch.setattr(convert_mrs, "error", lambda *a, **k: None)
+        monkeypatch.setattr(convert_mrs, "gh_error", lambda *a, **k: None)
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.bump_config()
+        assert exc.value.code == 1
 
 
 class TestNoTokenInjection:

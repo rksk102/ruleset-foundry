@@ -3,6 +3,7 @@ import io
 import sys
 
 import processor
+import pytest
 
 
 def domains(lines, kind="exact"):
@@ -261,6 +262,50 @@ class TestClassicalRuleTypes:
         out, stats = self.route("IP-CIDR,1.2.3.0/24,no-resolve")
         assert out == []
         assert stats["ip_in_domain"] == 1
+
+
+class TestWildcardValidation:
+    @pytest.mark.parametrize(
+        "value",
+        ["*.*", "*.*.*", "*.example.*", "*.123", "*.example..com", "*.-example.com"],
+    )
+    def test_invalid_wildcards_rejected(self, value):
+        out, stats = processor.process_domain_detailed([value], "exact")
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    @pytest.mark.parametrize("value", ["*.example.com", "*.*.example.com", "*.example.co1"])
+    def test_valid_wildcards_kept(self, value):
+        out, stats = processor.process_domain_detailed([value], "exact")
+        assert out == [value]
+        assert stats["wildcard"] == 1
+
+
+class TestDomainCleaningEdges:
+    def test_double_leading_dot_is_unrecognized(self):
+        out, stats = processor.process_domain_detailed(["..example.com"], "exact")
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    def test_pipe_plus_dot_preserves_suffix(self):
+        out, stats = processor.process_domain_detailed(["||+.example.com^"], "exact")
+        assert out == ["+.example.com"]
+        assert stats["suffix"] == 1
+
+    def test_pipe_plus_dot_with_exact_semantic_is_unrecognized(self):
+        out, stats = processor.process_domain_detailed(["full:||+.example.com^"], "exact")
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    def test_badfilter_is_dropped(self):
+        out, stats = processor.process_domain_detailed(["||example.com^$badfilter"], "exact")
+        assert out == []
+        assert stats["dropped_exception"] == 1
+
+    def test_denyallow_value_is_not_badfilter(self):
+        out, stats = processor.process_domain_detailed(["||example.com^$denyallow=badfilter"], "exact")
+        assert out == ["example.com"]
+        assert stats["dropped_exception"] == 0
 
 
 class TestNoSilentDrop:

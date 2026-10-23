@@ -19,7 +19,14 @@ from urllib.parse import urlsplit
 import config_loader
 from config_loader import ConfigError, get
 from logger import error, gh_error, group_end, group_start, info, success, warning
-from utils import RULE_TYPES, anchor_cwd_to_repo_root, clean_directory, file_sha256
+from utils import (
+    anchor_cwd_to_repo_root,
+    clean_directory,
+    file_sha256,
+    get_rule_type,
+    is_repo_subdir,
+    is_safe_component,
+)
 
 try:
     SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
@@ -85,7 +92,7 @@ def ensure_config_usable():
     config_file = config_loader.resolve_config_file()
     if config_file is None or not Path(config_file).exists():
         return
-    error(f"检测到 {config_file} 但 PyYAML 未安装，配置将被整份忽略；请先执行 pip install -r requirements.txt")
+    error(f"检测到 {config_file} 但 PyYAML 未安装，配置将被整份忽略；请先执行 uv sync")
     sys.exit(1)
 
 
@@ -350,15 +357,6 @@ def get_latest_mihomo(skip_hash_check=False):
         group_end()
 
 
-def get_rule_type(path_parts):
-    """类型取固定层级（<策略>/<类型>/<所有者>/<文件> 的第 2 段），不做子串猜测。"""
-    if len(path_parts) >= 2:
-        candidate = path_parts[1].lower()
-        if candidate in RULE_TYPES:
-            return candidate
-    return None
-
-
 def has_valid_content(filepath):
     try:
         with open(filepath, encoding="utf-8") as f:
@@ -435,7 +433,11 @@ def _smoke_convert(kernel_bin=None):
 
 def bump_config():
     data = _fetch_latest_release_info(pinned="")
-    tag = data["tag_name"]
+    tag = data.get("tag_name", "")
+    if not is_safe_component(tag):
+        error(f"  远端 tag 不是安全组件名，拒绝写入: {tag!r}")
+        gh_error(f"远端 tag 不是安全组件名，拒绝写入: {tag!r}")
+        sys.exit(1)
 
     cfg_path = Path("config.yaml")
     text = cfg_path.read_text(encoding="utf-8")
@@ -494,6 +496,15 @@ def bump_config():
             f.write(f"changed=true\ntag={tag}\n")
 
 
+def ensure_products_anchored():
+    for label, path in (("源目录", SRC_ROOT), ("输出目录", DST_ROOT)):
+        if not is_repo_subdir(path):
+            target = Path(path).resolve()
+            error(f"  {label}不在仓库内或等于仓库根，拒绝继续: {target}")
+            gh_error(f"{label}不在仓库内或等于仓库根，拒绝继续: {target}")
+            sys.exit(1)
+
+
 def main():
     ensure_kernel_platform()
     ensure_config_usable()
@@ -517,6 +528,7 @@ def main():
         return
 
     start_time = time.time()
+    ensure_products_anchored()
     get_latest_mihomo()
 
     group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
@@ -529,8 +541,11 @@ def main():
         sys.exit(1)
 
     files_map = []
-    for root, _, files in os.walk(SRC_ROOT):
+    for root, dirs, files in os.walk(SRC_ROOT):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
+            if f.startswith("."):
+                continue
             if f.endswith(".txt"):
                 files_map.append(os.path.join(root, f))
 

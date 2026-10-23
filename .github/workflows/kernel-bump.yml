@@ -94,3 +94,56 @@ jobs:
           git commit -m "chore: mihomo 内核升级到 ${TAG}"
           git pull --rebase origin "${REF_NAME}"
           git push
+
+  notify-on-failure:
+    name: "失败告警"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    needs: [prepare, validate_arm64, commit]
+    if: always()
+    permissions:
+      issues: write
+    steps:
+      - name: 失败时评论/创建告警 Issue，恢复时关闭
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          R_PREPARE: ${{ needs.prepare.result }}
+          R_VALIDATE: ${{ needs.validate_arm64.result }}
+          R_COMMIT: ${{ needs.commit.result }}
+          CHANGED: ${{ needs.prepare.outputs.changed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RESULTS="prepare=$R_PREPARE validate_arm64=$R_VALIDATE commit=$R_COMMIT changed=$CHANGED"
+          echo "本轮结果: $RESULTS"
+          TITLE="[告警] Mihomo 内核自动升级失败"
+          NUMBER=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          FAILED=0
+          if echo "$R_PREPARE $R_VALIDATE $R_COMMIT" | grep -qE "failure|cancelled"; then
+            FAILED=1
+          fi
+          if [ "$CHANGED" = "true" ] && { [ "$R_VALIDATE" != "success" ] || [ "$R_COMMIT" != "success" ]; }; then
+            FAILED=1
+          fi
+          if [ "$FAILED" -eq 0 ]; then
+            if [ -n "$NUMBER" ]; then
+              RECOVERED=$(printf '内核升级流水线已恢复。\n\n- Run: %s\n- 结果: %s\n- 时间(UTC): %s\n' \
+                "$RUN_URL" "$RESULTS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+              gh issue close "$NUMBER" --comment "$RECOVERED"
+              echo "已评论并关闭告警 Issue #$NUMBER"
+            else
+              echo "无失败/取消的 job，且无开放告警 Issue"
+            fi
+            exit 0
+          fi
+          BODY=$(printf 'Mihomo 内核自动升级失败，请检查。\n\n- Run: %s\n- 结果: %s\n- 时间(UTC): %s\n' \
+            "$RUN_URL" "$RESULTS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --body "$BODY"
+            echo "已评论既有告警 Issue #$NUMBER"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+            echo "已创建告警 Issue"
+          fi

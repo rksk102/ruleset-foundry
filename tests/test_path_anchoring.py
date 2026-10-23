@@ -52,3 +52,17 @@ class TestRepoRootAnchor:
             assert Path.cwd() == REPO
         finally:
             os.chdir(original)
+
+
+class TestRepoSubdirProtection:
+    def test_protected_top_level_is_rejected(self):
+        assert utils.is_repo_subdir(REPO / "scripts") is False
+        assert utils.is_repo_subdir(REPO / "merged-rules") is True
+
+    def test_symlink_to_protected_dir_is_rejected(self, work_dir):
+        link = work_dir / "link"
+        try:
+            link.symlink_to(REPO / "scripts", target_is_directory=True)
+        except OSError as e:
+            pytest.skip(f"symlink unavailable: {e}")
+        assert utils.is_repo_subdir(link) is False

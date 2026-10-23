@@ -211,6 +211,107 @@ class TestWindowsPathValues:
             reset_config()
 
 
+class TestPathValidationHardening:
+    @pytest.mark.parametrize(
+        "value",
+        ["./.", ".//.", "scripts", "Scripts", ".git/config", "docs", "tests/../scripts"],
+    )
+    def test_dot_and_protected_paths_are_rejected(self, work_dir, value):
+        use_config(work_dir, f'paths:\n  merged_output_dir: "{value}"\n')
+        try:
+            with pytest.raises(config_loader.ConfigError):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_path_value_is_stripped(self):
+        assert config_loader._validate_path_value("x", "  rulesets  ") == "rulesets"
+
+    def test_stripped_path_is_written_back(self, work_dir):
+        use_config(work_dir, 'paths:\n  merged_output_dir: "  merged-rules  "\n')
+        try:
+            cfg = config_loader.load_config()
+            assert cfg["paths"]["merged_output_dir"] == "merged-rules"
+        finally:
+            reset_config()
+
+    def test_merge_input_is_stripped_and_written_back(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            '    inputs: ["  block/domain/A/a.txt  "]\n'
+        )
+        use_config(work_dir, body)
+        try:
+            cfg = config_loader.load_config()
+            assert cfg["merges"][0]["inputs"][0] == "block/domain/A/a.txt"
+        finally:
+            reset_config()
+
+
+class TestMergeOutputUniqueness:
+    def test_duplicate_output_is_rejected(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            "    inputs: ['x.txt']\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            "    inputs: ['y.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_duplicate_output_case_insensitive_is_rejected(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            "    inputs: ['x.txt']\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: O\n"
+            "    filename: a.txt\n"
+            "    inputs: ['y.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_trailing_dot_output_is_rejected(self, work_dir):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt.\n"
+            "    inputs: ['x.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="不能以点结尾"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+
 class TestValidationMatrix:
     @pytest.mark.parametrize(
         "body",

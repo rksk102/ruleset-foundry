@@ -14,6 +14,7 @@ import processor
 from config_loader import ConfigError, get
 from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
+    WINDOWS_RESERVED_NAMES,
     anchor_cwd_to_repo_root,
     atomic_write,
     beijing_now,
@@ -143,8 +144,10 @@ def clean_path_component(value, fallback):
     text = _UNSAFE_COMPONENT_CHARS_RE.sub("_", value or "")
     while ".." in text:
         text = text.replace("..", ".")
-    text = text.lstrip(".")
-    return text or fallback
+    text = text.strip(". ")
+    if not text or text.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+        return fallback
+    return text
 
 
 def ensure_within_rulesets(abs_path):
@@ -226,10 +229,8 @@ def plan_groups(tasks):
         )
         group["members"].append((idx, task))
         group["sources"].append(task["url"])
-        if task.get("domain_kind") != group["domain_kind"]:
+        if task.get("domain_kind", "exact") != group["domain_kind"]:
             group["domain_kind"] = "mixed"
-        elif task.get("domain_kind") == "suffix":
-            group["domain_kind"] = "suffix"
 
     conflicts = []
     for key, group in groups.items():
@@ -285,18 +286,21 @@ def _gate_unrecognized(unrecognized, total, contributing, errors):
     return True
 
 
-def process_group(group, raw_by_index):
+def process_group(group, raw_by_index, err_by_index=None):
     all_lines = []
     errors = {"download": [], "parse": []}
     contributing = []
     for idx, task in group["members"]:
         raw = raw_by_index.get(idx)
         if raw is None:
-            errors["download"].append((task["url"], "下载失败"))
+            errors["download"].append((task["url"], (err_by_index or {}).get(idx) or "下载失败"))
             continue
         try:
-            all_lines.extend(processor.parse_lines(processor.safe_decode(raw)))
-            contributing.append(task["url"])
+            parsed = processor.parse_lines(processor.safe_decode(raw))
+            # 表头只记录解析出非空行的源；规则最终是否保留由后续去重/门禁决定
+            if parsed:
+                all_lines.extend(parsed)
+                contributing.append(task["url"])
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
 
@@ -349,7 +353,7 @@ def process_group(group, raw_by_index):
             errors["parse"].append((task["url"], "未解析出有效规则"))
         return None, errors
 
-    header = [f"# Source: {url}" for url in group.get("sources", [])]
+    header = [f"# Source: {url}" for url in contributing]
     ensure_within_rulesets(group["path"])
     atomic_write(group["path"], header + result)
     return len(result), errors
@@ -487,7 +491,8 @@ async def download_one(session, task):
                     if not content:
                         warning(f"  空响应: {url}")
                         return (task, None, "空响应")
-                    if not processor.is_text_data(processor.safe_decode(content)):
+                    # 全量 NUL 检查 + 前 64 KB 采样解码；后段无 NUL 的二进制会进入解析并被未识别门禁拦下
+                    if b"\x00" in content or not processor.is_text_data(processor.safe_decode(content[:65536])):
                         warning(f"  非文本响应: {url}")
                         return (task, None, "非文本响应")
                     return (task, content, None)
@@ -548,7 +553,11 @@ def clean_orphans(expected_files):
         group_end()
         return
 
-    actual_files = {str(p) for p in RULESETS_DIR.rglob("*.txt") if p.is_file()}
+    actual_files = {
+        str(p)
+        for p in RULESETS_DIR.rglob("*.txt")
+        if p.is_file() and not any(part.startswith(".") for part in p.relative_to(RULESETS_DIR).parts)
+    }
     expected_set = set(str(f) for f in expected_files)
 
     removed = 0
@@ -655,13 +664,16 @@ def main():
 
     groups = plan_groups(tasks)
     raw_by_index = {}
-    for idx, (_task, raw_bytes, _err) in enumerate(results):
+    err_by_index = {}
+    for idx, (_task, raw_bytes, err) in enumerate(results):
         if raw_bytes is not None:
             raw_by_index[idx] = raw_bytes
+        elif err:
+            err_by_index[idx] = err
 
     expected_files = []
     for group in groups:
-        count, errors = process_group(group, raw_by_index)
+        count, errors = process_group(group, raw_by_index, err_by_index)
         for url, reason in errors["download"]:
             stats.download_errors.append((url, reason))
             warning(f"  下载失败: {url} | {reason}")

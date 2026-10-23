@@ -1,10 +1,14 @@
+import json
+
+
 class GhStub:
-    def __init__(self, fail_when=None, responses=None, asset_names=None, release_exists=True):
+    def __init__(self, fail_when=None, responses=None, asset_names=None, release_exists=True, latest_tag=None):
         self.calls = []
         self.fail_when = fail_when or (lambda cmd: False)
         self.responses = responses or {}
         self.asset_names = asset_names
         self.release_exists = release_exists
+        self.latest_tag = latest_tag
 
     def __call__(self, cmd):
         self.calls.append(list(cmd))
@@ -17,6 +21,8 @@ class GhStub:
         if key in self.responses:
             return self.responses[key]
         if key == ("release", "list"):
+            if self.latest_tag:
+                return json.dumps([{"tagName": self.latest_tag, "createdAt": "2026-01-01T00:00:00Z"}])
             return "[]"
         if key == ("release", "view"):
             if "assets" in cmd:

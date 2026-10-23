@@ -87,6 +87,11 @@ class TestProductPathStability:
         assert main.clean_path_component("a/b\\c:d*e?f", "x") == "a_b_c_d_e_f"
         assert main.clean_path_component("..", "x") == "x"
 
+    def test_trailing_dot_and_reserved_names_fall_back(self):
+        assert main.clean_path_component("foo.", "rules") == "foo"
+        assert main.clean_path_component("CON", "rules") == "rules"
+        assert main.clean_path_component("CON.txt", "rules") == "rules"
+
 
 class TestAuthHeaders:
     def test_token_sent_to_trusted_host(self, monkeypatch):
@@ -435,6 +440,10 @@ class TestPlanGroups:
         groups = main.plan_groups([self.task(url), self.task(url)])
         assert groups[0]["sources"] == [url, url]
 
+    def test_defaults_to_exact_without_domain_kind(self):
+        groups = main.plan_groups([self.task("https://github.com/o/r/raw/m/x.txt")])
+        assert groups[0]["domain_kind"] == "exact"
+
     def test_empty_input(self):
         assert main.plan_groups([]) == []
 
@@ -570,3 +579,19 @@ class TestProcessIpGroup:
 
         assert result == ["1.0.0.0/24"]
         assert stats["dropped_default_route"] == 1
+
+
+class TestCleanOrphans:
+    def test_hidden_files_are_left_alone(self, tmp_path, monkeypatch):
+        root = tmp_path / "rulesets"
+        (root / ".hidden").mkdir(parents=True)
+        (root / ".hidden" / "keep.txt").write_text("x\n", encoding="utf-8")
+        (root / "a.txt").write_text("a\n", encoding="utf-8")
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
+        for name in ("group_start", "group_end", "info", "debug"):
+            monkeypatch.setattr(main, name, lambda *a, **k: None)
+
+        main.clean_orphans([root / "a.txt"])
+
+        assert (root / "a.txt").exists()
+        assert (root / ".hidden" / "keep.txt").exists()

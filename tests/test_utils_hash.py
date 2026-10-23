@@ -83,3 +83,11 @@ class TestDirHashIsPathSensitive:
         second, _c2 = utils.dir_hash(str(root), "*.mrs")
 
         assert first != second
+
+
+class TestDirHashSkipsHidden:
+    def test_hidden_dir_is_ignored(self, work_dir):
+        root = work_dir / "rules"
+        (root / ".hidden").mkdir(parents=True)
+        (root / ".hidden" / "a.txt").write_text("a.com\n", encoding="utf-8")
+        assert utils.dir_hash(str(root), "*.txt") == ("", 0)

@@ -96,12 +96,18 @@ def _valid_wildcard(value):
     labels = value.split(".")
     if len(labels) < 2 or labels[0] != "*":
         return False
+    seen_entity = False
     for label in labels[1:]:
         if label == "*":
+            if seen_entity:
+                return False
             continue
+        seen_entity = True
         if not label or label[0] == "-" or label[-1] == "-" or not all(c.isalnum() or c in "-_" for c in label):
             return False
-    return True
+    if not seen_entity:
+        return False
+    return not labels[-1].isdigit()
 
 
 def ipcidr_drop_reason(type_name):
@@ -169,7 +175,7 @@ def _yaml_payload_lines(content):
     except Exception:
         return None
     try:
-        data = yaml.safe_load(content)
+        data = yaml.load(content, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -320,7 +326,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 s = s[1:]
             else:
                 semantic = "subdomain"
-                s = s.lstrip(".")
+                s = s[1:]
 
         parts = s.split()
         if len(parts) >= 2 and parts[0] in ("127.0.0.1", "0.0.0.0", "::1"):
@@ -329,10 +335,19 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if s.startswith("||"):
             s = s[2:]
         if "$" in s:
-            s = s.split("$")[0]
+            s, _, modifiers = s.partition("$")
+            names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
+            if "badfilter" in names:
+                stats["dropped_exception"] += 1
+                continue
         if "^" in s:
             s = s.replace("^", "")
-        s = re.sub(r"^(\+\.)", "", s)
+        if s.startswith("+."):
+            if semantic == "exact":
+                stats["unrecognized"] += 1
+                continue
+            semantic = "suffix"
+            s = s[2:]
         if "/" in s:
             s = s.split("/")[0]
         s = s.strip("[]")
