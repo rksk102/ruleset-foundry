@@ -97,6 +97,11 @@ class TestDownloadCap:
         assert content is None
         assert err == "非文本响应"
 
+    def test_nul_beyond_sample_window_still_rejected(self):
+        _task, content, err = download([b"a" * 70000, b"\0"])
+        assert content is None
+        assert err == "非文本响应"
+
     def test_client_error_not_retried(self):
         _task, content, err = download([b""], status=404)
         assert content is None
@@ -234,7 +239,11 @@ class TestProcessGroupIpRouting:
         finally:
             main.atomic_write = original
         assert count == 2
-        assert written["rulesets/direct/ipcidr/Owner/cn.txt"] == ["1.0.1.0/24", "1.0.2.0/23"]
+        assert written["rulesets/direct/ipcidr/Owner/cn.txt"] == [
+            "# Source: https://raw.githubusercontent.com/o/r/cn.txt",
+            "1.0.1.0/24",
+            "1.0.2.0/23",
+        ]
         assert errors["parse"] == []
 
 
@@ -312,6 +321,38 @@ class TestProcessGroupUnrecognizedGate:
         flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
         assert flagged == [alive]
 
+    def test_header_only_lists_contributing_sources(self):
+        dead = "https://raw.githubusercontent.com/o/r/dead.txt"
+        alive = "https://raw.githubusercontent.com/o/r/ads.txt"
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": dead}), (1, {"url": alive})],
+            "sources": [dead, alive],
+        }
+        written = {}
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: written.update({path: content})
+        try:
+            count, errors = main.process_group(group, {1: b"good.com\n"})
+        finally:
+            main.atomic_write = original
+        assert count == 1
+        assert written[group["path"]] == ["# Source: " + alive, "good.com"]
+        assert errors["download"] == [(dead, "下载失败")]
+
+    def test_download_error_reason_is_preserved(self):
+        group = self.make_group()
+        original = main.atomic_write
+        main.atomic_write = lambda path, content: None
+        try:
+            count, errors = main.process_group(group, {}, {0: "HTTP 404"})
+        finally:
+            main.atomic_write = original
+        assert count is None
+        assert errors["download"] == [("https://raw.githubusercontent.com/o/r/ads.txt", "HTTP 404")]
+
     def test_small_sample_ratio_only_warns(self):
         lines = [f"bad line {i}" for i in range(5)] + ["good.com"]
         raw = ("\n".join(lines) + "\n").encode()
@@ -358,3 +399,36 @@ class TestProcessGroupIpUnrecognizedGate:
         count, errors = self.run_group(raw)
         assert count == 50
         assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+
+class _Boom(BaseException):
+    pass
+
+
+class TestDownloadAll:
+    def test_normal_results_preserved(self, monkeypatch):
+        async def fake_download_one(_session, task):
+            return (task, b"ok", None)
+
+        monkeypatch.setattr(main, "download_one", fake_download_one)
+        tasks = [{"url": "https://example.com/a.txt"}, {"url": "https://example.com/b.txt"}]
+
+        results = asyncio.run(main.download_all(tasks))
+
+        assert results == [(tasks[0], b"ok", None), (tasks[1], b"ok", None)]
+
+    def test_base_exception_is_normalized(self, monkeypatch):
+        async def fake_download_one(_session, task):
+            if task["url"].endswith("bad.txt"):
+                raise _Boom("boom")
+            return (task, b"ok", None)
+
+        monkeypatch.setattr(main, "download_one", fake_download_one)
+        tasks = [{"url": "https://example.com/good.txt"}, {"url": "https://example.com/bad.txt"}]
+
+        results = asyncio.run(main.download_all(tasks))
+
+        assert results[0] == (tasks[0], b"ok", None)
+        assert results[1][0] is tasks[1]
+        assert results[1][1] is None
+        assert results[1][2] == "_Boom: boom"
