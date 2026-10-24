@@ -78,7 +78,17 @@ _PATH_KEYS = {
     ("mihomo", "kernel_cache_path"),
 }
 
+_PATH_DIR_KEYS = (
+    ("paths", "rulesets_dir"),
+    ("paths", "merged_output_dir"),
+    ("paths", "mrs_output_dir"),
+    ("paths", "log_dir"),
+    ("mihomo", "kernel_cache_path"),
+)
+
 _MERGE_REQUIRED = ("strategy", "type", "owner", "filename", "inputs")
+
+_MERGE_ALLOWED = frozenset({"strategy", "type", "owner", "filename", "description", "inputs"})
 
 _KNOWN_SECTIONS = ("network", "paths", "merges", "behavior", "mihomo")
 
@@ -202,6 +212,36 @@ def _validate_scalar(section, key, value):
     return value
 
 
+def _normalized_path_parts(value):
+    return tuple(part.casefold() for part in value.replace("\\", "/").split("/") if part)
+
+
+def _paths_overlap(parts_a, parts_b):
+    return parts_a[: len(parts_b)] == parts_b or parts_b[: len(parts_a)] == parts_a
+
+
+def _validate_path_relationships(cfg):
+    entries = []
+    for section, key in _PATH_DIR_KEYS:
+        value = cfg[section][key]
+        entries.append((f"{section}.{key}", value, _normalized_path_parts(value)))
+    for pos, (label_a, value_a, parts_a) in enumerate(entries):
+        for label_b, value_b, parts_b in entries[pos + 1 :]:
+            if _paths_overlap(parts_a, parts_b):
+                raise ConfigError(
+                    f"{label_a}={value_a!r} 与 {label_b}={value_b!r} 路径冲突："
+                    "目录之间不能相等或互相嵌套（按路径段、大小写不敏感比较）"
+                )
+    sources_value = cfg["paths"]["sources_file"]
+    sources_parts = _normalized_path_parts(sources_value)
+    for label, value, parts in entries:
+        if _paths_overlap(sources_parts, parts):
+            raise ConfigError(
+                f"paths.sources_file={sources_value!r} 与 {label}={value!r} 路径冲突："
+                "sources_file 与该目录不能相等或互相嵌套（按路径段、大小写不敏感比较）"
+            )
+
+
 def _validate_merges(merges):
     if merges is None:
         raise ConfigError("merges 不能为 null，需为列表（空列表表示不配置合并任务）")
@@ -211,6 +251,17 @@ def _validate_merges(merges):
     for idx, task in enumerate(merges):
         if not isinstance(task, dict):
             raise ConfigError(f"merges[{idx}] 期望 dict，实际 {type(task).__name__}")
+        unknown = [key for key in task if key not in _MERGE_ALLOWED]
+        if unknown:
+            raise ConfigError(
+                f"merges[{idx}] 包含未知字段: {', '.join(sorted(map(str, unknown)))}"
+                f"（允许 {'/'.join(sorted(_MERGE_ALLOWED))}）"
+            )
+        if "description" in task and not isinstance(task["description"], str):
+            raise ConfigError(
+                f"merges[{idx}].description 期望 str，实际 {type(task['description']).__name__}"
+                f"（{task['description']!r}）"
+            )
         missing = [k for k in _MERGE_REQUIRED if k not in task]
         if missing:
             raise ConfigError(f"merges[{idx}] 缺少必需字段: {', '.join(missing)}")
@@ -277,6 +328,7 @@ def load_config():
             if (section, key) not in _TYPES:
                 raise ConfigError(f"未知配置项: {section}.{key}（请检查拼写）")
             values[key] = _validate_scalar(section, key, value)
+    _validate_path_relationships(cfg)
     _validate_merges(cfg.get("merges"))
 
     _CONFIG = cfg
