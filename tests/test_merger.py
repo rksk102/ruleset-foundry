@@ -380,12 +380,11 @@ class TestDetectCrossPolicyConflicts:
         )
         assert explicit == {} and implicit == {}
 
-    def test_ipcidr_substring_in_parent_dir_does_not_hide_conflicts(self):
-        with tempfile.TemporaryDirectory(prefix="ipcidr_work_") as root:
-            base = Path(root)
-            write(base / "block/domain/A/x.txt", "same.example.com\n")
-            write(base / "policy/domain/A/y.txt", "same.example.com\n")
-            explicit, _implicit = merger.detect_cross_policy_conflicts(str(base))
+    def test_ipcidr_substring_in_parent_dir_does_not_hide_conflicts(self, work_dir):
+        base = work_dir / "ipcidr-work"
+        write(base / "block/domain/A/x.txt", "same.example.com\n")
+        write(base / "policy/domain/A/y.txt", "same.example.com\n")
+        explicit, _implicit = merger.detect_cross_policy_conflicts(str(base))
         assert explicit == {"block ↔ policy": ["same.example.com"]}
 
     def test_ipcidr_substring_in_owner_does_not_hide_conflicts(self, tmp_path):
