@@ -257,7 +257,7 @@ def plan_groups(tasks):
     deduped = []
     seen = set()
     for idx, task in enumerate(tasks):
-        key = (str(_base_rel_path(task)), normalize_source_url(task["url"]))
+        key = (str(_base_rel_path(task)), normalize_source_url(task["url"]), task.get("domain_kind", "exact"))
         if key in seen:
             warning(f"  重复来源已去重: {task['url']} -> {Path(key[0]).as_posix()}")
             continue

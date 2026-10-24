@@ -384,6 +384,17 @@ class TestPlanGroups:
         assert len(groups) == 1
         assert groups[0]["sources"] == ["https://github.com/o/r/raw/m/x.txt"]
 
+    def test_same_url_with_conflicting_domain_kind_becomes_mixed(self):
+        url = "https://github.com/o/r/raw/m/x.txt"
+        groups = main.plan_groups(
+            [
+                {**self.task(url), "domain_kind": "exact"},
+                {**self.task(url), "domain_kind": "suffix"},
+            ]
+        )
+        assert len(groups) == 1
+        assert groups[0]["domain_kind"] == "mixed"
+
     def test_same_url_twice_is_deduped(self):
         url = "https://github.com/o/r/raw/m/x.txt"
         groups = main.plan_groups([self.task(url), self.task(url)])
