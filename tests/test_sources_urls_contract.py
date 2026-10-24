@@ -78,6 +78,14 @@ class TestRealSourcesContract:
             assert task["type"] in ("domain", "ipcidr")
             assert task["domain_kind"] in ("exact", "suffix")
 
+    def test_meta_rules_raw_sources_use_canonical_urls(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
+        urls = [task["url"] for task in main.parse_sources()]
+        assert not any(url.startswith("https://github.com/MetaCubeX/meta-rules-dat/raw/") for url in urls)
+        assert not any(
+            url.startswith("https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/") for url in urls
+        )
+
 
 class TestNoMixedKindPerProduct:
     def test_single_kind_source_is_not_mixed(self, work_dir, monkeypatch):

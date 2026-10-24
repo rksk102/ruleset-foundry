@@ -62,6 +62,14 @@ class TestHttpsRedirects:
         assert "HTTPS" in err
 
 
+def test_request_includes_explicit_user_agent():
+    session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+    asyncio.run(main.download_one(session, TASK))
+
+    assert session.calls[0]["headers"]["User-Agent"] == main.USER_AGENT
+
+
 def with_limit(value, fn):
     original = main.MAX_SOURCE_BYTES
     main.MAX_SOURCE_BYTES = value

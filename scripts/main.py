@@ -51,6 +51,7 @@ AUTH_HOST_SUFFIXES = (
     "githubusercontent.com",
     "github.com",
 )
+USER_AGENT = "mihomo-rule-library/1.0"
 
 
 def is_trusted_host(url):
@@ -467,7 +468,8 @@ def _retry_delay(resp, attempt, backoff_budget):
 
 async def download_one(session, task):
     url = task["url"]
-    headers = auth_headers(url)
+    headers = dict(auth_headers(url) or {})
+    headers["User-Agent"] = USER_AGENT
     backoff_budget = MAX_RETRY_AFTER * 2
 
     for attempt in range(RETRIES + 1):
