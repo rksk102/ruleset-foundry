@@ -51,9 +51,11 @@ def test_scan_args_cover_lockfile_and_config():
 
 def test_permissions_grant_security_events_write():
     workflow = load_workflow()
-    assert workflow["permissions"]["security-events"] == "write"
-    assert workflow["permissions"]["actions"] == "read"
-    assert workflow["permissions"]["contents"] == "read"
+    job = workflow["jobs"]["osv-scanner"]
+    assert job["permissions"]["security-events"] == "write"
+    assert job["permissions"]["actions"] == "read"
+    assert job["permissions"]["contents"] == "read"
+    assert "security-events" not in workflow["permissions"]
 
 
 def test_ignored_vulns_have_reason_and_ignore_until():
