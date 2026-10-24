@@ -3,6 +3,10 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
+DEFAULT_BRANCH_GATE = (
+    "(github.event_name == 'schedule' || "
+    "github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
+)
 
 
 def load_workflow(name):
@@ -24,13 +28,18 @@ def test_notify_requires_release_success():
 
 def test_write_jobs_gate_on_default_branch():
     workflow = load_workflow("pipeline.yml")
-    for job_id in ("publish", "notify-on-failure"):
-        assert "github.event.repository.default_branch" in workflow["jobs"][job_id]["if"]
+    assert workflow["jobs"]["publish"]["if"] == DEFAULT_BRANCH_GATE
+    assert workflow["jobs"]["notify-on-failure"]["if"] == f"always() && {DEFAULT_BRANCH_GATE}"
 
 
-def test_kernel_notify_gates_on_default_branch():
+def test_kernel_write_and_notify_gate_on_default_branch():
     workflow = load_workflow("kernel-bump.yml")
-    assert "github.event.repository.default_branch" in workflow["jobs"]["notify-on-failure"]["if"]
+    commit_if = workflow["jobs"]["commit"]["if"]
+    assert commit_if.startswith(
+        "needs.prepare.outputs.changed == 'true' && needs.validate_arm64.result == 'success' && "
+    )
+    assert commit_if.endswith(DEFAULT_BRANCH_GATE)
+    assert workflow["jobs"]["notify-on-failure"]["if"] == f"always() && {DEFAULT_BRANCH_GATE}"
 
 
 def test_ci_push_only_on_main():
