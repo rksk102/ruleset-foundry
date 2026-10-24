@@ -70,6 +70,26 @@ def test_request_includes_explicit_user_agent():
     assert session.calls[0]["headers"]["User-Agent"] == main.USER_AGENT
 
 
+def test_download_session_accepts_large_github_headers(monkeypatch):
+    captured = {}
+
+    class Session:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(main.aiohttp, "ClientSession", Session)
+
+    asyncio.run(main.download_all([]))
+
+    assert captured["max_field_size"] > 9217
+
+
 def with_limit(value, fn):
     original = main.MAX_SOURCE_BYTES
     main.MAX_SOURCE_BYTES = value

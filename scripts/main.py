@@ -536,7 +536,11 @@ async def download_one(session, task):
 
 async def download_all(tasks):
     connector = aiohttp.TCPConnector(limit=CONCURRENCY, limit_per_host=PER_HOST)
-    async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
+    async with aiohttp.ClientSession(
+        connector=connector,
+        trust_env=True,
+        max_field_size=16 * 1024,
+    ) as session:
         coros = [download_one(session, t) for t in tasks]
         results = await asyncio.gather(*coros, return_exceptions=True)
 

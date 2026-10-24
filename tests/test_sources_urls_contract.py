@@ -86,6 +86,13 @@ class TestRealSourcesContract:
             url.startswith("https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/") for url in urls
         )
 
+    def test_github_release_assets_do_not_use_raw_host(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
+        urls = [task["url"] for task in main.parse_sources()]
+        assert not any(
+            url.startswith("https://raw.githubusercontent.com/") and "/releases/download/" in url for url in urls
+        )
+
 
 class TestNoMixedKindPerProduct:
     def test_single_kind_source_is_not_mixed(self, work_dir, monkeypatch):
