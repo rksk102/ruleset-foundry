@@ -62,6 +62,8 @@ def test_ci_kernel_smoke_reuses_pipeline_kernel_cache():
     assert job["runs-on"] == "ubuntu-latest"
     runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
     assert "--verify-current-kernel" in runs
+    assert "convert-ruleset" in runs
+    assert "test -s" in runs
 
     pipeline_steps = load_workflow("pipeline.yml")["jobs"]["build"]["steps"]
     expected = next(
