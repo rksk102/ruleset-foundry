@@ -174,7 +174,7 @@ class TestReleaseReusable:
         monkeypatch.setattr(release_handler, "run_gh", stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is False
-        assert "zip" in why
+        assert "zip 的远端 digest" in why
 
     def test_rejects_missing_digest(self, publish_workspace, monkeypatch):
         stub, zip_name = remote_release_stub(publish_workspace, "abc123abc123")
@@ -182,7 +182,7 @@ class TestReleaseReusable:
         monkeypatch.setattr(release_handler, "run_gh", stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is False
-        assert "digest" in why
+        assert "未提供 sha256 digest" in why
 
     def test_needs_repair_when_latest_is_not_current_content(self, monkeypatch):
         stub = GhStub(latest_tag="rules-20261004-2100")

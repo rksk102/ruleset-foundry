@@ -28,7 +28,7 @@ class GhStub:
         if cmd[0] == "release" and len(cmd) > 1 and cmd[1] in ("create", "upload"):
             self.release_exists = True
             self.asset_names = None  # 发布成功后恢复为完整集合推导
-        if cmd[0] == "api":
+        if cmd[0] == "api" and any("/releases/tags/" in part for part in cmd):
             if self.asset_digests is None:
                 return None
             return "\n".join(f"{name}\t{digest}" for name, digest in self.asset_digests.items())
