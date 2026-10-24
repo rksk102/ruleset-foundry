@@ -19,6 +19,7 @@ from utils import (
     atomic_write,
     beijing_now,
     beijing_timestamp,
+    file_sha256,
     get_owner_from_url,
     is_safe_component,
     normalize_policy,
@@ -632,8 +633,10 @@ def finalize_products(expected_files):
         )
         sys.exit(1)
 
-    manifest.save_manifest(MANIFEST_FILE, produced)
-    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项）")
+    hashes = {rel: file_sha256(str(RULESETS_DIR / rel)) for rel in sorted(produced)}
+    generation = manifest.current_generation()
+    manifest.save_manifest(MANIFEST_FILE, hashes, generation=generation)
+    info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项，generation={generation}）")
     return produced
 
 

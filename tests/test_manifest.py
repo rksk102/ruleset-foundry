@@ -1,16 +1,24 @@
+import hashlib
+
 import manifest
 import pytest
+
+H1 = hashlib.sha256(b"1").hexdigest()
+H2 = hashlib.sha256(b"2").hexdigest()
 
 
 class TestSaveLoad:
     def test_roundtrip(self, work_dir):
         path = work_dir / "state" / "products.txt"
-        manifest.save_manifest(path, ["b/2.txt", "a/1.txt"])
-        assert manifest.load_manifest(path) == ["a/1.txt", "b/2.txt"]
+        manifest.save_manifest(path, {"b/2.txt": H2, "a/1.txt": H1}, generation="g-1")
+        loaded = manifest.load_manifest(path)
+        assert loaded.generation == "g-1"
+        assert loaded.entries == {"a/1.txt": H1, "b/2.txt": H2}
+        assert loaded.paths == ("a/1.txt", "b/2.txt")
 
     def test_no_temp_file_left_behind(self, work_dir):
         path = work_dir / "products.txt"
-        manifest.save_manifest(path, ["a/1.txt"])
+        manifest.save_manifest(path, {"a/1.txt": H1})
         assert [p.name for p in work_dir.iterdir()] == ["products.txt"]
 
     def test_missing_returns_none(self, work_dir):
@@ -18,13 +26,43 @@ class TestSaveLoad:
 
     def test_comments_and_blanks_ignored(self, work_dir):
         path = work_dir / "m.txt"
-        path.write_text("# header\n\na.txt\n\nb.txt\n", encoding="utf-8")
-        assert manifest.load_manifest(path) == ["a.txt", "b.txt"]
+        path.write_text(
+            f"{manifest.MANIFEST_MAGIC}\n# generation: g\n\n{H1}  a.txt\n\n{H2}  b.txt\n",
+            encoding="utf-8",
+        )
+        assert manifest.load_manifest(path).entries == {"a.txt": H1, "b.txt": H2}
 
     def test_backslashes_normalised(self, work_dir):
         path = work_dir / "m.txt"
-        path.write_text("block\\domain\\a.txt\n", encoding="utf-8")
-        assert manifest.load_manifest(path) == ["block/domain/a.txt"]
+        path.write_text(f"{manifest.MANIFEST_MAGIC}\n# generation: g\n{H1}  block\\domain\\a.txt\n", encoding="utf-8")
+        assert list(manifest.load_manifest(path).entries) == ["block/domain/a.txt"]
+
+    def test_old_format_is_rejected(self, work_dir):
+        path = work_dir / "m.txt"
+        path.write_text("block/domain/a.txt\n", encoding="utf-8")
+        with pytest.raises(manifest.ManifestError, match="不支持"):
+            manifest.load_manifest(path)
+
+    def test_missing_generation_is_rejected(self, work_dir):
+        path = work_dir / "m.txt"
+        path.write_text(f"{manifest.MANIFEST_MAGIC}\n{H1}  a.txt\n", encoding="utf-8")
+        with pytest.raises(manifest.ManifestError, match="generation"):
+            manifest.load_manifest(path)
+
+    def test_duplicate_entry_is_rejected(self, work_dir):
+        path = work_dir / "m.txt"
+        path.write_text(
+            f"{manifest.MANIFEST_MAGIC}\n# generation: g\n{H1}  a.txt\n{H2}  a.txt\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(manifest.ManifestError, match="重复"):
+            manifest.load_manifest(path)
+
+    def test_traversal_entry_is_rejected(self, work_dir):
+        path = work_dir / "m.txt"
+        path.write_text(f"{manifest.MANIFEST_MAGIC}\n# generation: g\n{H1}  ../a.txt\n", encoding="utf-8")
+        with pytest.raises(manifest.ManifestError, match="越界"):
+            manifest.load_manifest(path)
 
 
 class TestCollect:
@@ -70,6 +108,18 @@ class TestDiffAndVerify:
         with pytest.raises(manifest.ManifestError) as exc:
             manifest.verify_matches(["a.txt"], ["a.txt", "z.txt"], "publish")
         assert "多出 1" in str(exc.value)
+
+    def test_verify_manifest_checks_hashes(self, work_dir):
+        (work_dir / "a.txt").write_text("a\n", encoding="utf-8")
+        m = manifest.Manifest("g", {"a.txt": H1})
+        with pytest.raises(manifest.ManifestError, match="哈希"):
+            manifest.verify_manifest(m, work_dir, "ctx")
+
+    def test_verify_manifest_accepts_matching_hash(self, work_dir):
+        (work_dir / "a.txt").write_text("a\n", encoding="utf-8")
+        digest = manifest.file_sha256(str(work_dir / "a.txt"))
+        m = manifest.Manifest("g", {"a.txt": digest})
+        assert manifest.verify_manifest(m, work_dir, "ctx") is True
 
 
 class TestMergeInputs:

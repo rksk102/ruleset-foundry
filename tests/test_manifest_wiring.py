@@ -17,20 +17,43 @@ def mrs_of(entries):
     return [rel[: -len(".txt")] + ".mrs" for rel in entries]
 
 
+GEN = "test-generation"
+
+
+def write_v2_manifest(root, entries=None, generation=GEN):
+    root.mkdir(parents=True, exist_ok=True)
+    rels = sorted(manifest.collect_files(root) if entries is None else set(entries))
+    hashes = {}
+    for rel in rels:
+        target = root / rel
+        hashes[rel] = manifest.file_sha256(str(target)) if target.exists() else "0" * 64
+    manifest.save_manifest(root / manifest.MANIFEST_NAME, hashes, generation=generation)
+
+
 def repo_merge_paths():
     return sorted(release_handler.merge_product_entries(release_handler.get("merges")))
 
 
-def build_products(root, txt_entries, mrs_entries=None, manifest_entries=None, manifest_file=True, rulesets_dir=True):
+def build_products(
+    root,
+    txt_entries,
+    mrs_entries=None,
+    manifest_entries=None,
+    manifest_file=True,
+    rulesets_dir=True,
+    merged_manifest=True,
+):
     for rel in txt_entries:
         write(root / "merged-rules" / rel, "rule.example\n")
     for rel in mrs_of(txt_entries) if mrs_entries is None else mrs_entries:
         write(root / "merged-rules-mrs" / rel, "MRS")
-    if rulesets_dir:
-        os.makedirs(root / "rulesets", exist_ok=True)
+    if merged_manifest:
+        write_v2_manifest(root / "merged-rules")
+    if not rulesets_dir:
+        return
+    os.makedirs(root / "rulesets", exist_ok=True)
     if manifest_file:
-        entries = txt_entries if manifest_entries is None else manifest_entries
-        write(root / "rulesets" / "products.manifest", "\n".join(entries) + "\n")
+        write_v2_manifest(root / "rulesets", entries=txt_entries if manifest_entries is None else manifest_entries)
 
 
 class TestFinalizeProducts:
@@ -47,7 +70,10 @@ class TestFinalizeProducts:
         produced = main.finalize_products(expected)
         assert produced == {"block/domain/Owner/a.txt"}
         assert not (root / "sync-summary.txt").exists()
-        assert (root / "products.manifest").read_text(encoding="utf-8").split() == ["block/domain/Owner/a.txt"]
+        loaded = manifest.load_manifest(root / "products.manifest")
+        assert list(loaded.entries) == ["block/domain/Owner/a.txt"]
+        assert loaded.generation
+        assert manifest.verify_manifest(loaded, root, "finalize") is True
 
     def test_manifest_mismatch_fails_closed(self, work_dir, monkeypatch, capsys):
         _root, expected = self._prepare(work_dir, monkeypatch, ["block/domain/Owner/a.txt"], ["sync-summary.txt"])
@@ -169,7 +195,7 @@ class TestReleaseBaseline:
         write(work_dir / "rulesets" / "products.manifest", "# 只有注释，没有条目\n\n")
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-        assert release_handler.BASELINE_MISSING in caplog.text
+        assert "产物清单" in caplog.text or "不支持" in caplog.text
 
     def test_verify_products_raises_without_baseline(self, work_dir):
         rulesets, merges = self.sample()
@@ -183,8 +209,7 @@ class TestReleaseBaseline:
         build_products(work_dir, rulesets[:2] + merges, manifest_entries=rulesets)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-        out = caplog.text
-        assert f"缺失: {rulesets[2]}" in out
+        assert rulesets[2] in caplog.text
 
     def test_extra_product_is_fatal(self, work_dir, caplog):
         rulesets, merges = self.sample()
@@ -192,7 +217,7 @@ class TestReleaseBaseline:
         build_products(work_dir, rulesets + merges + [extra], manifest_entries=rulesets)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-        assert f"多出: {extra}" in caplog.text
+        assert extra in caplog.text
 
     def test_missing_merge_product_is_fatal(self, work_dir):
         rulesets, merges = self.sample()
@@ -228,7 +253,12 @@ class TestReleaseBaseline:
             assert release_handler.verify_products() == len(rulesets) + len(merges)
 
     def test_allow_partial_filters_merge_products_without_baseline_inputs(self, work_dir, monkeypatch):
-        write(work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\n")
+        write(work_dir / "rulesets" / "products.manifest", "")
+        manifest.save_manifest(
+            work_dir / "rulesets" / "products.manifest",
+            {"block/domain/OwnerA/ads.txt": "0" * 64},
+            generation=GEN,
+        )
         merges = [
             {
                 "strategy": "block",
@@ -248,7 +278,7 @@ class TestReleaseBaseline:
         monkeypatch.setattr(release_handler, "ALLOW_PARTIAL", True)
         monkeypatch.setattr(release_handler, "get", lambda *a, **k: merges)
         monkeypatch.chdir(work_dir)
-        expected = release_handler.load_baseline()
+        _expected_baseline, expected = release_handler.load_baseline()
         assert "block/domain/rksk/all-ads.txt" in expected
         assert "policy/domain/rksk/all-proxy.txt" not in expected
 
@@ -271,6 +301,7 @@ class TestReleaseBaseline:
 class TestMergerInputs:
     def test_all_missing_inputs_reported_at_once(self, work_dir, caplog):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "keep.txt", "a.com\n")
+        write_v2_manifest(work_dir / "rulesets")
         merges = [
             {
                 "strategy": "block",
@@ -306,7 +337,7 @@ class TestMergerInputs:
 
     def test_present_inputs_merge_and_verify(self, work_dir):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write(work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\n")
+        write_v2_manifest(work_dir / "rulesets")
         merges = [
             {
                 "strategy": "block",
@@ -320,10 +351,45 @@ class TestMergerInputs:
             assert run.run() is None
         assert (work_dir / "merged-rules" / "block" / "domain" / "OwnerA" / "ads.txt").is_file()
         assert (work_dir / "merged-rules" / "block" / "domain" / "rksk" / "all-ads.txt").is_file()
+        merged = manifest.load_manifest(work_dir / "merged-rules" / "products.manifest")
+        assert merged is not None
+        assert "block/domain/rksk/all-ads.txt" in merged.entries
+        assert manifest.verify_manifest(merged, work_dir / "merged-rules", "merged") is True
+
+    def test_merger_rejects_tampered_source_file(self, work_dir):
+        source = work_dir / "rulesets"
+        write(source / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
+        write_v2_manifest(source)
+        write(source / "block" / "domain" / "OwnerA" / "ads.txt", "tampered.example\n")
+        with MergerRun(work_dir, []) as run:
+            assert run.run() == 1
+
+    def test_merge_headers_are_byte_stable(self, work_dir):
+        write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
+        write_v2_manifest(work_dir / "rulesets")
+        merges = [
+            {
+                "strategy": "block",
+                "type": "domain",
+                "owner": "rksk",
+                "filename": "all-ads.txt",
+                "inputs": ["block/domain/OwnerA/ads.txt"],
+            },
+        ]
+        with MergerRun(work_dir, merges) as run:
+            assert run.run() is None
+        target = work_dir / "merged-rules" / "block" / "domain" / "rksk" / "all-ads.txt"
+        before = target.read_bytes()
+
+        with MergerRun(work_dir, merges) as run:
+            assert run.run() is None
+
+        assert target.read_bytes() == before
+        assert b"# Date:" not in before
 
     def test_allow_partial_merges_remaining_inputs(self, work_dir, monkeypatch):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write(work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\n")
+        write_v2_manifest(work_dir / "rulesets")
         merges = [
             {
                 "strategy": "block",
@@ -343,7 +409,7 @@ class TestMergerInputs:
 
     def test_allow_partial_skips_task_with_all_inputs_missing(self, work_dir, monkeypatch):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write(work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\n")
+        write_v2_manifest(work_dir / "rulesets")
         merges = [
             {
                 "strategy": "block",
@@ -366,15 +432,16 @@ class TestMergerInputs:
 
     def test_product_missing_from_baseline_is_fatal(self, work_dir):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write(
-            work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\nblock/domain/OwnerA/ghost.txt\n"
+        write_v2_manifest(
+            work_dir / "rulesets", entries=["block/domain/OwnerA/ads.txt", "block/domain/OwnerA/ghost.txt"]
         )
         with MergerRun(work_dir, []) as run:
             assert run.run() == 1
 
     def test_verify_merged_products_uses_baseline(self, work_dir):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write(work_dir / "rulesets" / "products.manifest", "block/domain/OwnerA/ads.txt\n")
+        write_v2_manifest(work_dir / "rulesets")
         write(work_dir / "merged-rules" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
         with MergerRun(work_dir, []):
             assert merger.verify_merged_products([]) is True
+            assert (work_dir / "merged-rules" / "products.manifest").is_file()

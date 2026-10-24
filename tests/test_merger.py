@@ -1,8 +1,13 @@
 import tempfile
 from pathlib import Path
 
+import manifest
 import merger
 import pytest
+
+
+def fake_manifest(*rels):
+    return manifest.Manifest("test", {rel: "0" * 64 for rel in rels})
 
 
 def write(path, text):
@@ -483,6 +488,9 @@ class TestConflictPolicyIgnore:
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+        monkeypatch.setattr(
+            merger, "load_and_verify_source_manifest", lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt")
+        )
         monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
         monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
 
@@ -522,6 +530,11 @@ class TestConflictPolicyReporting:
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+        monkeypatch.setattr(
+            merger,
+            "load_and_verify_source_manifest",
+            lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt", "policy/domain/Owner/proxy.txt"),
+        )
         monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
         monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
         return summary
@@ -565,6 +578,9 @@ class TestMergerGuards:
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": tasks})
+        monkeypatch.setattr(
+            merger, "load_and_verify_source_manifest", lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt")
+        )
 
         with pytest.raises(SystemExit) as exc:
             merger.main()

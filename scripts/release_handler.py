@@ -165,12 +165,13 @@ def merge_product_entries(merge_tasks=None, baseline=None):
 
 def load_baseline(baseline_paths=None):
     for path in baseline_paths or baseline_files():
-        entries = manifest.load_manifest(path)
-        if entries:
-            expected = sorted(set(entries) | merge_product_entries(baseline=entries))
+        baseline = manifest.load_manifest(path)
+        if baseline:
+            entries = set(baseline.entries)
+            expected = sorted(entries | merge_product_entries(baseline=entries))
             info(f"  清单基线 {path}: {len(entries)} 项，含合并产物共 {len(expected)} 项")
-            return expected
-    return None
+            return baseline, expected
+    return None, None
 
 
 def check_expected(expected, actual, context):
@@ -189,9 +190,10 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     if require_baseline is None:
         require_baseline = baseline_required()
 
-    baseline = load_baseline()
+    baseline, expected = load_baseline()
     txt_files = sorted(manifest.collect_files(txt_dir, ".txt"))
     mrs_files = sorted(manifest.collect_files(mrs_dir, ".mrs"))
+    merged_manifest = manifest.load_manifest(os.path.join(txt_dir, manifest.MANIFEST_NAME))
 
     if baseline is None:
         if require_baseline:
@@ -205,14 +207,36 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
             )
         warning(f"  {BASELINE_MISSING}: {manifest.MANIFEST_NAME} 不存在或为空，跳过绝对基准校验")
     else:
-        check_expected(baseline, txt_files, f"{txt_dir} 绝对基准校验")
+        expected_generation = manifest.expected_generation()
+        if expected_generation and baseline.generation != expected_generation:
+            raise manifest.ManifestError(
+                f"清单 generation 与当前运行不一致: {baseline.generation} != {expected_generation}"
+                "（疑似上一轮中断产物，请重新运行 main.py / merger.py）"
+            )
+        if merged_manifest is None:
+            raise manifest.ManifestError(
+                f"合并完成清单缺失: {os.path.join(txt_dir, manifest.MANIFEST_NAME)}（需重新运行 merger.py）"
+            )
+        if merged_manifest.generation != baseline.generation:
+            raise manifest.ManifestError(
+                f"合并清单 generation 与输入清单不一致: {merged_manifest.generation} != {baseline.generation}"
+                "（疑似跨轮混合产物，拒绝发布）"
+            )
+        if sorted(merged_manifest.entries) != expected:
+            missing, extra = manifest.diff_against(expected, merged_manifest.entries)
+            raise manifest.ManifestError(
+                f"{txt_dir} 合并产物清单不一致（缺失 {missing[:5]}，多出 {extra[:5]}）"
+            )
+        manifest.verify_manifest(merged_manifest, txt_dir, f"{txt_dir} 合并产物哈希校验")
+        if manifest.collect_files(RULESETS_DIR, ".txt"):
+            manifest.verify_manifest(baseline, RULESETS_DIR, f"{RULESETS_DIR} 输入产物哈希校验")
 
     check_expected(
         [path[: -len(".txt")] for path in txt_files],
         [path[: -len(".mrs")] for path in mrs_files],
         f"{txt_dir} 与 {mrs_dir} 产物逐一对应校验",
     )
-    return len(baseline) if baseline else None
+    return len(expected) if baseline is not None else None
 
 
 def enforce_products(txt_dir=None, mrs_dir=None):

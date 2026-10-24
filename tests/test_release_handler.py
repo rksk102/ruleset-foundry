@@ -5,6 +5,7 @@ import os
 import sys
 import zipfile
 
+import manifest
 import pytest
 import release_handler
 from support import GhStub
@@ -639,9 +640,18 @@ def verify_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "MRS_DIR", "merged-rules-mrs")
     monkeypatch.setattr(release_handler, "merge_product_entries", lambda *a, **k: set())
     (work_dir / "rulesets").mkdir(parents=True)
-    (work_dir / "rulesets" / "products.manifest").write_text("block/domain/A/x.txt\n", encoding="utf-8")
+    manifest.save_manifest(
+        work_dir / "rulesets" / "products.manifest",
+        {"block/domain/A/x.txt": "0" * 64},
+        generation="verify-gen",
+    )
     (work_dir / "merged-rules" / "block" / "domain" / "A").mkdir(parents=True)
     (work_dir / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text("x", encoding="utf-8")
+    manifest.save_manifest(
+        work_dir / "merged-rules" / "products.manifest",
+        {"block/domain/A/x.txt": hashlib.sha256(b"x").hexdigest()},
+        generation="verify-gen",
+    )
     mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
     mrs_dir.mkdir(parents=True)
     (mrs_dir / "x.mrs").write_text("y", encoding="utf-8")
@@ -662,6 +672,13 @@ class TestVerifyOnly:
             run_with_stub(stub, release_handler.verify_only)
         assert exc.value.code == 1
         assert stub.calls == []
+
+    def test_tampered_merged_product_is_fatal(self, verify_workspace):
+        target = verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt"
+        target.write_text("tampered", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only()
+        assert exc.value.code == 1
 
     def test_missing_baseline_exits_nonzero_when_rulesets_present(self, verify_workspace):
         os.unlink("rulesets/products.manifest")
