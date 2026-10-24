@@ -336,6 +336,11 @@ class TestAdblockModifierSemantics:
         assert out == ["ads.example.com"]
         assert stats["dropped_modifier"] == 0
 
+    def test_anchor_with_path_is_dropped(self):
+        out, stats = processor.process_domain_detailed(["||cdn.example.com/ads/x.js^"], "exact")
+        assert out == []
+        assert stats["dropped_path"] == 1
+
 
 class TestNoSilentDrop:
     DROPPED_SHAPES = (
@@ -352,6 +357,9 @@ class TestNoSilentDrop:
         "trailing.com.",
         "-bad.com",
         "has space.com",
+        "ads.example.com$third-party",
+        "||ads.example.com^$script,domain=example.com",
+        "||cdn.example.com/ads/x.js^",
     )
 
     def test_every_dropped_shape_is_counted(self):
@@ -364,6 +372,7 @@ class TestNoSilentDrop:
                 stats["unrecognized"]
                 + stats["dropped_exception"]
                 + stats["dropped_modifier"]
+                + stats["dropped_path"]
                 + stats["dropped_keyword"]
                 + stats["ip_in_domain"]
                 + sum(stats["dropped_rule_type"].values())

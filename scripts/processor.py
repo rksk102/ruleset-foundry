@@ -130,6 +130,7 @@ def new_stats():
         "ip_in_domain": 0,
         "dropped_exception": 0,
         "dropped_modifier": 0,
+        "dropped_path": 0,
         "dropped_keyword": 0,
         "dropped_default_route": 0,
         "dropped_rule_type": {},
@@ -333,7 +334,8 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if len(parts) >= 2 and parts[0] in ("127.0.0.1", "0.0.0.0", "::1"):
             s = parts[1]
 
-        if s.startswith("||"):
+        adblock_anchor = s.startswith("||")
+        if adblock_anchor:
             s = s[2:]
             # ABP 的 || 锚点匹配根域及其子域，对应 mihomo 的 +.
             if semantic is None:
@@ -345,6 +347,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 stats["dropped_exception"] += 1
             else:
                 stats["dropped_modifier"] += 1
+            continue
+        if adblock_anchor and "/" in s:
+            stats["dropped_path"] += 1
             continue
         if "^" in s:
             s = s.replace("^", "")
