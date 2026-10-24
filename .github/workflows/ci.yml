@@ -74,6 +74,59 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python -m pytest tests/ -q --cov=scripts --cov-branch --cov-report=term-missing --cov-fail-under=70
 
+  kernel-smoke:
+    name: "内核冒烟"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 安装 Python 环境
+        uses: ./.github/actions/setup-python-env
+      - name: 计算内核缓存键
+        id: kernel-key
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          from config_loader import get
+
+          raw = "|".join(
+              str(get("mihomo", key, default=""))
+              for key in ("pinned_version", "kernel_sha256", "kernel_sha256_arm64")
+          )
+          print("key=" + hashlib.sha256(raw.encode("utf-8")).hexdigest())
+          print("path=" + get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
+          PY
+      - name: 恢复 Mihomo 内核缓存
+        id: kernel-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.kernel-key.outputs.path }}
+          key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+          restore-keys: |
+            mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
+            mihomo-${{ runner.os }}-${{ runner.arch }}-
+      - name: 校验当前内核可运行
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python scripts/convert_mrs.py --verify-current-kernel
+      - name: 用缓存内核转换最小 ipcidr 输入
+        env:
+          KERNEL: ${{ steps.kernel-key.outputs.path }}/mihomo
+        run: |
+          set -euo pipefail
+          TMP_DIR="${RUNNER_TEMP}/kernel-smoke"
+          rm -rf "$TMP_DIR"
+          mkdir -p "$TMP_DIR"
+          printf '1.1.1.0/24\n172.16.0.0/12\n' > "$TMP_DIR/ipcidr.txt"
+          "$KERNEL" convert-ruleset ipcidr text "$TMP_DIR/ipcidr.txt" "$TMP_DIR/ipcidr.mrs"
+          test -s "$TMP_DIR/ipcidr.mrs"
+          echo "OK: ipcidr 转换产物非空（$(stat -c%s "$TMP_DIR/ipcidr.mrs") 字节）"
+
   dependency-review:
     name: "依赖审查"
     if: github.event_name == 'pull_request'
