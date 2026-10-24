@@ -83,7 +83,7 @@ def release_id_for_hash(product_hash):
 
 
 def latest_rules_release_tag():
-    raw = run_gh(["release", "list", "--limit", "100", "--json", "tagName"])
+    raw = run_gh(["release", "list", "--limit", "100", "--json", "tagName,isLatest"])
     if raw is None:
         return None
     try:
@@ -94,13 +94,17 @@ def latest_rules_release_tag():
     if not isinstance(releases, list):
         warning("  gh release list 返回的不是列表，按查询失败处理")
         return None
+    fallback = None
     for rel in releases:
         if not isinstance(rel, dict):
             continue
         tag = rel.get("tagName")
         if isinstance(tag, str) and RULES_TAG_RE.fullmatch(tag):
-            return tag
-    return None
+            if fallback is None:
+                fallback = tag
+            if rel.get("isLatest") is True:
+                return tag
+    return fallback
 
 
 def needs_release_repair():
@@ -449,6 +453,10 @@ def main():
     sums_file = None
     if asset_names is not None and expected <= asset_names:
         info(f"  Release {release_tag} 已存在且资产完整，复用")
+        if run_gh(["release", "edit", release_tag, "--latest"]) is None:
+            error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
+            gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
+            sys.exit(1)
     else:
         zip_file, file_map = zip_target_files(tag_id)
         sums_file = write_sha256sums(zip_file, file_map)

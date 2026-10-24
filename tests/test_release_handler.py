@@ -73,6 +73,16 @@ class TestLatestRulesRelease:
         monkeypatch.setattr(release_handler, "run_gh", stub)
         assert release_handler.latest_rules_release_tag() == "rules-0123456789ab"
 
+    def test_prefers_explicit_latest_over_list_order(self, monkeypatch):
+        listing = release_listing(
+            {"tagName": "rules-bbbbbbbbbbbb", "isLatest": False},
+            {"tagName": "rules-aaaaaaaaaaaa", "isLatest": True},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+
+        assert release_handler.latest_rules_release_tag() == "rules-aaaaaaaaaaaa"
+
     def test_returns_none_on_gh_failure(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
         assert release_handler.latest_rules_release_tag() is None
@@ -404,9 +414,23 @@ class TestMainOrchestration:
 
         run_with_stub(stub, release_handler.main)
 
-        mutating = [action for action in stub.release_actions() if action in ("create", "upload", "edit", "delete")]
-        assert mutating == [], "同哈希 Release 资产完整时不得重复发布"
+        actions = stub.release_actions()
+        assert actions.count("edit") == 1, "复用完整 Release 时应重新标记 latest"
+        assert "create" not in actions and "upload" not in actions, "同哈希 Release 资产完整时不得重复上传"
         assert saved == [product_hash], "复用完整 Release 后仍应推进状态哈希"
+
+    def test_reuse_latest_failure_does_not_save_hash(self, publish_workspace, monkeypatch):
+        product_hash = "d" * 64
+        saved = []
+        stub = GhStub(fail_when=lambda cmd: cmd[:2] == ["release", "edit"])
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(stub, release_handler.main)
+
+        assert exc.value.code == 1
+        assert saved == [], "latest 标记失败时不得保存哈希"
+        assert "upload" not in stub.release_actions()
 
     def test_incomplete_release_for_same_hash_is_repaired(self, publish_workspace, monkeypatch):
         product_hash = "c" * 64
@@ -429,7 +453,9 @@ class TestMainOrchestration:
         run_with_stub(stub, release_handler.main)
 
         assert saved == ["same"], "FORCE_RELEASE=true 时内容无变化也应保存哈希"
-        assert not [action for action in stub.release_actions() if action in ("create", "upload", "edit")]
+        actions = stub.release_actions()
+        assert actions.count("edit") == 1
+        assert "create" not in actions and "upload" not in actions
         assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
@@ -545,7 +571,7 @@ class TestMainOrchestration:
         assert flat.count("release delete") == 2, "首个删除失败后仍应继续清理其余旧 Release"
         assert "git/refs/tags" not in flat, "Release 删除失败时不得继续删 tag"
         assert saved == ["new"], "清理失败不得跳过 state/release.sha256 的写入"
-        zip_name = f"merged-rules-{release_handler.beijing_now().strftime('%Y%m%d-%H%M')}.zip"
+        zip_name = f"merged-rules-{hashlib.sha256(b'new').hexdigest()[:12]}.zip"
         assert not os.path.exists(zip_name), "清理失败后 main() 仍应执行到收尾"
         assert not os.path.exists("SHA256SUMS"), "收尾应同时清理临时 SHA256SUMS"
 
