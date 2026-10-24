@@ -2,27 +2,44 @@ import json
 
 
 class GhStub:
-    def __init__(self, fail_when=None, responses=None, asset_names=None, release_exists=True, latest_tag=None):
+    def __init__(
+        self,
+        fail_when=None,
+        responses=None,
+        asset_names=None,
+        release_exists=True,
+        latest_tag=None,
+        asset_digests=None,
+        sha256sums=None,
+    ):
         self.calls = []
         self.fail_when = fail_when or (lambda cmd: False)
         self.responses = responses or {}
         self.asset_names = asset_names
         self.release_exists = release_exists
         self.latest_tag = latest_tag
+        self.asset_digests = asset_digests
+        self.sha256sums = sha256sums
 
-    def __call__(self, cmd):
+    def __call__(self, cmd, strip=True):
         self.calls.append(list(cmd))
         if self.fail_when(cmd):
             return None
         if cmd[0] == "release" and len(cmd) > 1 and cmd[1] in ("create", "upload"):
             self.release_exists = True
             self.asset_names = None  # 发布成功后恢复为完整集合推导
+        if cmd[0] == "api":
+            if self.asset_digests is None:
+                return None
+            return "\n".join(f"{name}\t{digest}" for name, digest in self.asset_digests.items())
+        if cmd[0] == "release" and len(cmd) > 1 and cmd[1] == "download":
+            return self.sha256sums
         key = (cmd[0], cmd[1]) if len(cmd) > 1 else (cmd[0],)
         if key in self.responses:
             return self.responses[key]
         if key == ("release", "list"):
             if self.latest_tag:
-                return json.dumps([{"tagName": self.latest_tag, "createdAt": "2026-01-01T00:00:00Z"}])
+                return json.dumps([{"tagName": self.latest_tag, "isLatest": True}])
             return "[]"
         if key == ("release", "view"):
             if "assets" in cmd:

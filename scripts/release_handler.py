@@ -58,6 +58,111 @@ def expected_assets(asset_id):
     return {f"merged-rules-{asset_id}.zip", SHA256SUMS_NAME}
 
 
+def release_assets(release_tag):
+    raw = run_gh(
+        [
+            "api",
+            f"repos/{{owner}}/{{repo}}/releases/tags/{release_tag}",
+            "--jq",
+            '.assets[] | [.name, (.digest // "")] | @tsv',
+        ]
+    )
+    if raw is None:
+        return None
+    assets = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            warning(f"  无法解析远端资产行: {line!r}")
+            return None
+        assets[parts[0]] = parts[1].strip().lower()
+    return assets
+
+
+def release_sha256sums(release_tag):
+    return run_gh(["release", "download", release_tag, "-p", SHA256SUMS_NAME, "-O", "-"], strip=False)
+
+
+def parse_sha256sums(text):
+    entries = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        parts = s.split(None, 1)
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+            raise ValueError(f"非法 SHA256SUMS 行: {line!r}")
+        entries[parts[1].strip().replace("\\", "/")] = parts[0].lower()
+    return entries
+
+
+def local_product_hashes():
+    entries = {}
+    for folder, ext in TARGET_CONFIG.items():
+        if not os.path.exists(folder):
+            continue
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for file in files:
+                if file.startswith(".") or not file.endswith(ext):
+                    continue
+                path = os.path.join(root, file)
+                rel = os.path.relpath(path, REPO_ROOT).replace("\\", "/")
+                entries[rel] = file_sha256(path)
+    return entries
+
+
+def verify_release_reusable(release_tag, tag_id):
+    assets = release_assets(release_tag)
+    if assets is None:
+        return False, "无法读取远端资产列表"
+    expected = expected_assets(tag_id)
+    missing = sorted(expected - set(assets))
+    if missing:
+        return False, f"缺少资产 {missing}"
+
+    zip_name = f"merged-rules-{tag_id}.zip"
+    zip_digest = assets.get(zip_name, "").removeprefix("sha256:")
+    sums_digest = assets.get(SHA256SUMS_NAME, "").removeprefix("sha256:")
+    if not zip_digest or not sums_digest:
+        return False, "远端资产未提供 sha256 digest"
+
+    sums_text = release_sha256sums(release_tag)
+    if sums_text is None:
+        return False, f"无法下载 {SHA256SUMS_NAME}"
+    if hashlib.sha256(sums_text.encode("utf-8")).hexdigest() != sums_digest:
+        return False, f"{SHA256SUMS_NAME} 自身 digest 不匹配"
+
+    try:
+        sums_entries = parse_sha256sums(sums_text)
+    except ValueError as e:
+        return False, str(e)
+    if sums_entries.get(zip_name) != zip_digest:
+        return False, "zip 的远端 digest 与 SHA256SUMS 首行不一致"
+
+    local_hashes = local_product_hashes()
+    if not local_hashes:
+        return False, "本地没有可校验产物"
+    if sums_entries != {zip_name: zip_digest, **local_hashes}:
+        return False, "SHA256SUMS 的逐文件哈希与本地产物不一致"
+    return True, "资产与当前内容一致"
+
+
+def release_repair_reason(current_hash):
+    expected_tag = f"rules-{release_id_for_hash(current_hash)}"
+    tag = latest_rules_release_tag()
+    if tag is None:
+        return "未找到 isLatest 的 rules-* Release"
+    if tag != expected_tag:
+        return f"latest 指向 {tag}，当前内容应为 {expected_tag}"
+    reusable, why = verify_release_reusable(tag, expected_tag[len("rules-") :])
+    if not reusable:
+        return why
+    return None
+
+
 def release_asset_names(release_tag):
     raw = run_gh(
         [
@@ -94,28 +199,26 @@ def latest_rules_release_tag():
     if not isinstance(releases, list):
         warning("  gh release list 返回的不是列表，按查询失败处理")
         return None
-    fallback = None
     for rel in releases:
         if not isinstance(rel, dict):
             continue
         tag = rel.get("tagName")
-        if isinstance(tag, str) and RULES_TAG_RE.fullmatch(tag):
-            if fallback is None:
-                fallback = tag
-            if rel.get("isLatest") is True:
-                return tag
-    return fallback
+        if isinstance(tag, str) and RULES_TAG_RE.fullmatch(tag) and rel.get("isLatest") is True:
+            return tag
+    return None
 
 
-def needs_release_repair():
-    """无内容变化时，最近一次 rules-* Release 缺失或资产不全则需要补发。"""
-    tag = latest_rules_release_tag()
-    if tag is None:
-        return True
-    names = release_asset_names(tag)
-    if names is None:
-        return True
-    return not expected_assets(tag[len("rules-") :]) <= names
+def needs_release_repair(current_hash=None):
+    """无内容变化时，latest 必须指向当前内容且资产可校验，否则需要补发。"""
+    if current_hash is None:
+        tag = latest_rules_release_tag()
+        if tag is None:
+            return True
+        names = release_asset_names(tag)
+        if names is None:
+            return True
+        return not expected_assets(tag[len("rules-") :]) <= names
+    return release_repair_reason(current_hash) is not None
 
 
 def confirm_release_assets(release_tag, expected):
@@ -258,10 +361,10 @@ def verify_only():
     group_end()
 
 
-def run_gh(cmd_list):
+def run_gh(cmd_list, strip=True):
     try:
         result = subprocess.run(["gh", *cmd_list], capture_output=True, text=True, check=True, timeout=GH_TIMEOUT)
-        return result.stdout.strip()
+        return result.stdout.strip() if strip else result.stdout
     except subprocess.TimeoutExpired:
         warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
         return None
@@ -431,7 +534,7 @@ def main():
         force = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
         publish, _why = should_publish(current, load_last_hash(), CHANGE_DETECTION, force=force)
         if not publish:
-            publish = needs_release_repair()
+            publish = needs_release_repair(current)
         print("true" if publish else "false")
         return
 
@@ -461,7 +564,7 @@ def main():
         force_release = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
         publish, why = should_publish(combined_hash, load_last_hash(), True, force=force_release)
         info(f"  {why} ({c1 + c2} 个文件)")
-        if not publish and needs_release_repair():
+        if not publish and needs_release_repair(combined_hash):
             publish, why = True, "最近一次 Release 资产不全或不存在，补发"
             info(f"  {why}")
         if not publish:
@@ -475,13 +578,18 @@ def main():
     asset_names = release_asset_names(release_tag) if exists else None
     zip_file = None
     sums_file = None
+    reusable = False
     if asset_names is not None and expected <= asset_names:
-        info(f"  Release {release_tag} 已存在且资产完整，复用")
-        if run_gh(["release", "edit", release_tag, "--latest"]) is None:
-            error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
-            gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
-            sys.exit(1)
-    else:
+        reusable, why = verify_release_reusable(release_tag, tag_id)
+        if reusable:
+            info(f"  Release {release_tag} 已存在且资产摘要与当前内容一致，复用")
+            if run_gh(["release", "edit", release_tag, "--latest"]) is None:
+                error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
+                gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
+                sys.exit(1)
+        else:
+            info(f"  Release {release_tag} 资产不可复用（{why}），重新打包上传")
+    if not reusable:
         zip_file, file_map = zip_target_files(tag_id)
         sums_file = write_sha256sums(zip_file, file_map)
 
