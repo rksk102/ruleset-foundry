@@ -161,6 +161,10 @@ rules:
 > 需要固定版本或整包下载请使用 [Releases](https://github.com/rksk102/mihomo-rule-library/releases)
 > （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
 
+Releases 仅适合**短期固定**：默认只保留最近 30 天，过期的 Release 与 tag 会在**后续成功发布**
+的收尾阶段清理（不是独立的每日定时任务）；需要长期使用时请跟随
+[`latest`](https://github.com/rksk102/mihomo-rule-library/releases/latest) 或自行镜像产物。
+
 ## 安全与许可
 
 脚本与工作流以 MIT 许可发布；规则内容来自上游项目，使用前请自行确认其许可与准确性。

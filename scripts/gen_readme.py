@@ -260,6 +260,7 @@ def make_inventory(files_std, files_mrs):
 def make_static_sections(repo_name=None, branch=None):
     repo_name = repo_name or os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
     branch = branch or os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    keep_days = get("behavior", "release_keep_days", default=3)
     return f"""
 <details>
 <summary><b>规则语义：domain 写法对照</b>（点击展开）</summary>
@@ -282,6 +283,10 @@ def make_static_sections(repo_name=None, branch=None):
 > 产物每次以孤立提交**强制推送**到 `{branch}` 分支，历史会被重写，**不适合固定 commit**。
 > 需要固定版本或整包下载请使用 [Releases](https://github.com/{repo_name}/releases)
 > （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
+
+Releases 仅适合**短期固定**：默认只保留最近 {keep_days} 天，过期的 Release 与 tag 会在**后续成功发布**
+的收尾阶段清理（不是独立的每日定时任务）；需要长期使用时请跟随
+[`latest`](https://github.com/{repo_name}/releases/latest) 或自行镜像产物。
 
 ## 安全与许可
 
