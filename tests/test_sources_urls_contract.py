@@ -76,6 +76,24 @@ class TestMarkerParsing:
         assert [task["url"] for task in tasks] == [URL]
 
 
+class TestSourceUrlValidation:
+    @pytest.mark.parametrize(
+        ("line", "reason"),
+        [
+            ("https://example.com:abc/x.txt", "端口"),
+            ("https://example.com:0/x.txt", "端口"),
+            ("https:///x.txt", "主机名"),
+        ],
+    )
+    def test_invalid_authority_is_rejected_with_line_number(self, work_dir, monkeypatch, capsys, line, reason):
+        with pytest.raises(SystemExit) as exc:
+            parse(monkeypatch, work_dir, line + "\n")
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "sources.urls:1" in out
+        assert reason in out
+
+
 class TestRealSourcesContract:
     def test_real_file_parses(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))

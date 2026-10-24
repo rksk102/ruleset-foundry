@@ -269,6 +269,13 @@ class TestBaseRelPath:
         assert rel.name == "foo.bar.txt"
 
 
+class TestNormalizeSourceUrl:
+    def test_userinfo_is_kept_for_deduplication(self):
+        assert main.normalize_source_url("https://user1@localhost/x") != main.normalize_source_url(
+            "https://user2@localhost/x"
+        )
+
+
 class TestCollidingOutputPaths:
     def task(self, url, policy="policy", type_="domain"):
         return {"url": url, "policy": policy, "type": type_}

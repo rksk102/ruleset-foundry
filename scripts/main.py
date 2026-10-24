@@ -173,9 +173,30 @@ def _base_rel_path(task):
 def normalize_source_url(url):
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    port = parts.port
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    userinfo = ""
+    if parts.username is not None:
+        userinfo = parts.username
+        if parts.password is not None:
+            userinfo += ":" + parts.password
+        userinfo += "@"
     netloc = host if port in (None, 443) else f"{host}:{port}"
-    return urlunsplit(("https", netloc, parts.path, parts.query, ""))
+    return urlunsplit(("https", f"{userinfo}{netloc}", parts.path, parts.query, ""))
+
+
+def validate_source_url(url, line_no, line):
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as e:
+        _fail_marker(line_no, line, f"来源 URL 端口或主机名非法: {e}")
+    if not parts.hostname:
+        _fail_marker(line_no, line, "来源 URL 缺少主机名")
+    if port == 0:
+        _fail_marker(line_no, line, "来源 URL 端口非法: 0")
 
 
 def check_same_slug_collisions(tasks):
@@ -471,6 +492,7 @@ def parse_sources():
                 line,
                 "来源行必须是独占一行的 https:// URL（可在空白后加 # 尾随注释）",
             )
+        validate_source_url(source.group(1), line_no, line)
         tasks.append(
             {
                 "policy": current_policy,
