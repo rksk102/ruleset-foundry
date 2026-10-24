@@ -99,12 +99,15 @@ class TestDomainCleaning:
         assert stats["relaxed_exact"] == 0
 
     def test_adblock_anchor_normalized(self):
-        result, _stats = processor.process_domain_detailed(["||ads.example.com^"])
-        assert result == ["ads.example.com"]
+        result, stats = processor.process_domain_detailed(["||ads.example.com^"])
+        assert result == ["+.ads.example.com"]
+        assert stats["suffix"] == 1
+        assert stats["relaxed_exact"] == 0
 
-    def test_dollar_modifier_stripped_before_anchor(self):
-        result, _stats = processor.process_domain_detailed(["ads.example.com$third-party"])
-        assert result == ["ads.example.com"]
+    def test_dollar_modifier_rule_dropped(self):
+        result, stats = processor.process_domain_detailed(["ads.example.com$third-party"])
+        assert result == []
+        assert stats["dropped_modifier"] == 1
 
     def test_hosts_file_format(self):
         assert self.clean(["127.0.0.1 ads.example.com"]) == ["ads.example.com"]
@@ -301,11 +304,37 @@ class TestDomainCleaningEdges:
         out, stats = processor.process_domain_detailed(["||example.com^$badfilter"], "exact")
         assert out == []
         assert stats["dropped_exception"] == 1
+        assert stats["dropped_modifier"] == 0
 
-    def test_denyallow_value_is_not_badfilter(self):
+    def test_denyallow_value_is_not_badfilter_modifier(self):
         out, stats = processor.process_domain_detailed(["||example.com^$denyallow=badfilter"], "exact")
-        assert out == ["example.com"]
+        assert out == []
         assert stats["dropped_exception"] == 0
+        assert stats["dropped_modifier"] == 1
+
+
+class TestAdblockModifierSemantics:
+    def test_adblock_anchor_is_suffix_in_exact_source(self):
+        out, stats = processor.process_domain_detailed(["||ads.example.com^"], "exact")
+        assert out == ["+.ads.example.com"]
+        assert stats["suffix"] == 1
+        assert stats["relaxed_exact"] == 0
+
+    def test_badfilter_counts_as_exception_not_modifier(self):
+        out, stats = processor.process_domain_detailed(["||example.com^$badfilter"], "exact")
+        assert out == []
+        assert stats["dropped_exception"] == 1
+        assert stats["dropped_modifier"] == 0
+
+    def test_multiple_modifiers_drop_whole_rule(self):
+        out, stats = processor.process_domain_detailed(["ads.example.com$script,image,domain=example.com"], "exact")
+        assert out == []
+        assert stats["dropped_modifier"] == 1
+
+    def test_plain_domain_without_modifier_stays_exact(self):
+        out, stats = processor.process_domain_detailed(["ads.example.com"], "exact")
+        assert out == ["ads.example.com"]
+        assert stats["dropped_modifier"] == 0
 
 
 class TestNoSilentDrop:
@@ -334,6 +363,7 @@ class TestNoSilentDrop:
             claimed = (
                 stats["unrecognized"]
                 + stats["dropped_exception"]
+                + stats["dropped_modifier"]
                 + stats["dropped_keyword"]
                 + stats["ip_in_domain"]
                 + sum(stats["dropped_rule_type"].values())
@@ -372,8 +402,9 @@ class TestMixedBatch:
 
     def test_mixed_batch_result_and_stats(self):
         result, stats = processor.process_domain_detailed(self.MIXED)
-        assert result == ["anchor.com", "exact.com", "normal.com"]
-        assert stats["relaxed_exact"] == 3
+        assert result == ["+.anchor.com", "exact.com", "normal.com"]
+        assert stats["suffix"] == 1
+        assert stats["relaxed_exact"] == 2
         assert stats["dropped_exception"] == 1
         assert stats["dropped_keyword"] == 1
         assert stats["dropped_exception"] + stats["dropped_keyword"] == len(self.MIXED) - len(result)

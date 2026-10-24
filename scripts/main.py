@@ -374,6 +374,7 @@ def process_group(group, raw_by_index, err_by_index=None):
         for key, label in (
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),
+            ("dropped_modifier", "含 $ 修饰符的规则被丢弃"),
             ("ip_in_domain", "IP 规则出现在 domain 源中，已丢弃"),
         ):
             if special.get(key):

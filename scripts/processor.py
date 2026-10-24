@@ -129,6 +129,7 @@ def new_stats():
         "bare_single_label": 0,
         "ip_in_domain": 0,
         "dropped_exception": 0,
+        "dropped_modifier": 0,
         "dropped_keyword": 0,
         "dropped_default_route": 0,
         "dropped_rule_type": {},
@@ -334,12 +335,17 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
 
         if s.startswith("||"):
             s = s[2:]
+            # ABP 的 || 锚点匹配根域及其子域，对应 mihomo 的 +.
+            if semantic is None:
+                semantic = "suffix"
         if "$" in s:
-            s, _, modifiers = s.partition("$")
+            modifiers = s.split("$", 1)[1]
             names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
             if "badfilter" in names:
                 stats["dropped_exception"] += 1
-                continue
+            else:
+                stats["dropped_modifier"] += 1
+            continue
         if "^" in s:
             s = s.replace("^", "")
         if s.startswith("+."):
