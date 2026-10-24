@@ -66,12 +66,12 @@ class TestLatestRulesRelease:
     def test_skips_non_rules_and_returns_latest(self, monkeypatch):
         listing = release_listing(
             {"tagName": "v1.0.0"},
-            {"tagName": "rules-20261005-0600"},
+            {"tagName": "rules-0123456789ab"},
             {"tagName": "rules-20261004-2100"},
         )
         stub = GhStub(responses={("release", "list"): listing})
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        assert release_handler.latest_rules_release_tag() == "rules-20261005-0600"
+        assert release_handler.latest_rules_release_tag() == "rules-0123456789ab"
 
     def test_returns_none_on_gh_failure(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
@@ -384,7 +384,43 @@ class TestMainOrchestration:
         )
         assert not os.path.exists("SHA256SUMS"), "发布后应删除临时 SHA256SUMS"
 
-    def test_force_release_env_overrides_unchanged_hash(self, publish_workspace, monkeypatch):
+    def test_new_release_identity_uses_product_hash(self, publish_workspace, monkeypatch):
+        product_hash = "b" * 64
+        release_id = hashlib.sha256(product_hash.encode()).hexdigest()[:12]
+        stub = GhStub(release_exists=False)
+        stub_hash_state(monkeypatch, current=product_hash, last=None)
+
+        run_with_stub(stub, release_handler.main)
+
+        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
+        assert create[2] == f"rules-{release_id}"
+        assert create[3] == f"merged-rules-{release_id}.zip"
+
+    def test_retry_reuses_complete_release_for_same_hash(self, publish_workspace, monkeypatch):
+        product_hash = "a" * 64
+        saved = []
+        stub = GhStub()
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+
+        run_with_stub(stub, release_handler.main)
+
+        mutating = [action for action in stub.release_actions() if action in ("create", "upload", "edit", "delete")]
+        assert mutating == [], "同哈希 Release 资产完整时不得重复发布"
+        assert saved == [product_hash], "复用完整 Release 后仍应推进状态哈希"
+
+    def test_incomplete_release_for_same_hash_is_repaired(self, publish_workspace, monkeypatch):
+        product_hash = "c" * 64
+        release_id = hashlib.sha256(product_hash.encode()).hexdigest()[:12]
+        saved = []
+        stub = GhStub(asset_names=f"merged-rules-{release_id}.zip")
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+
+        run_with_stub(stub, release_handler.main)
+
+        assert "upload" in stub.release_actions(), "缺少 SHA256SUMS 时应修复现有 Release"
+        assert saved == [product_hash]
+
+    def test_force_release_reuses_complete_release_without_duplicate(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
@@ -392,8 +428,8 @@ class TestMainOrchestration:
 
         run_with_stub(stub, release_handler.main)
 
-        assert saved == ["same"], "FORCE_RELEASE=true 时内容无变化也应发布并保存哈希"
-        assert any(call[1] in ("create", "upload") for call in stub.calls if call[0] == "release")
+        assert saved == ["same"], "FORCE_RELEASE=true 时内容无变化也应保存哈希"
+        assert not [action for action in stub.release_actions() if action in ("create", "upload", "edit")]
         assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
@@ -457,7 +493,7 @@ class TestMainOrchestration:
         assert "create" in stub.release_actions()
 
     def test_prunes_old_releases_and_keeps_current(self, publish_workspace, monkeypatch):
-        now_id = release_handler.beijing_now().strftime("%Y%m%d-%H%M")
+        now_id = hashlib.sha256(b"new").hexdigest()[:12]
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": f"rules-{now_id}", "createdAt": old},
@@ -634,6 +670,7 @@ class TestAssetConfirmation:
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("new-hash", 1, 1))
         monkeypatch.setattr(release_handler, "product_dirs", lambda: ("txt", "mrs"))
         monkeypatch.setattr(release_handler, "enforce_products", lambda *a: calls.append("enforce"))
+        monkeypatch.setattr(release_handler, "expected_assets", lambda tag_id: set(self.FULL))
         monkeypatch.setattr(release_handler, "zip_target_files", lambda d: ("z.zip", {}))
         monkeypatch.setattr(release_handler, "write_sha256sums", lambda *a: "SHA256SUMS")
         monkeypatch.setattr(release_handler, "generate_release_notes", lambda *a: "notes")
