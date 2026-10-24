@@ -142,6 +142,17 @@ def remote_release_stub(work_dir, tag_id, corrupt_file=None, corrupt_zip_digest=
     return stub, zip_name
 
 
+class TestParseSha256sums:
+    def test_duplicate_path_is_rejected(self):
+        text = f"{'a' * 64}  a.txt\n{'b' * 64}  a.txt\n"
+        with pytest.raises(ValueError, match="重复"):
+            release_handler.parse_sha256sums(text)
+
+    def test_valid_entries_are_parsed(self):
+        text = f"{'a' * 64}  a.txt\n{'b' * 64}  dir/b.txt\n"
+        assert release_handler.parse_sha256sums(text) == {"a.txt": "a" * 64, "dir/b.txt": "b" * 64}
+
+
 class TestReleaseReusable:
     def test_reusable_when_digests_match(self, publish_workspace, monkeypatch):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")

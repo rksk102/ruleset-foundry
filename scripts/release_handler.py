@@ -94,7 +94,10 @@ def parse_sha256sums(text):
         parts = s.split(None, 1)
         if len(parts) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
             raise ValueError(f"非法 SHA256SUMS 行: {line!r}")
-        entries[parts[1].strip().replace("\\", "/")] = parts[0].lower()
+        rel = parts[1].strip().replace("\\", "/")
+        if rel in entries:
+            raise ValueError(f"重复的 SHA256SUMS 路径: {rel!r}")
+        entries[rel] = parts[0].lower()
     return entries
 
 
