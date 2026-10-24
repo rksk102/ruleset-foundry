@@ -193,8 +193,8 @@ def _validate_scalar(section, key, value):
         )
     if (section, key) in _POSITIVE_INTS and value <= 0:
         raise ConfigError(f"{section}.{key} 必须为正整数，实际 {value!r}")
-    if (section, key) == ("behavior", "release_keep_days") and value > 25:
-        raise ConfigError(f"{section}.{key} 不能超过 25，实际 {value!r}（发布清理每次最多读取 50 条 release）")
+    if (section, key) == ("behavior", "release_keep_days") and value > 90:
+        raise ConfigError(f"{section}.{key} 不能超过 90，实际 {value!r}（发布清理每次最多读取 200 条 release）")
     if (section, key) in _RATIOS and not 0.0 <= value <= 1.0:
         raise ConfigError(f"{section}.{key} 必须在 0..1 之间，实际 {value!r}")
     if (section, key) == ("behavior", "conflict_policy") and value not in CONFLICT_POLICIES:

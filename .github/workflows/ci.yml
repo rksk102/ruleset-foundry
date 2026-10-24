@@ -2,6 +2,7 @@ name: "CI"
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -23,7 +24,7 @@ jobs:
       - name: 检查生成产物是否被跟踪
         run: |
           set -euo pipefail
-          tracked=$(git ls-files 'merged-rules/*' 'merged-rules-mrs/*' 'rulesets/*' 'logs/*' '.cache/*' || true)
+          tracked=$(git ls-files 'merged-rules/*' 'merged-rules-mrs/*' 'rulesets/*' 'logs/*' '.cache/*')
           if [ -n "$tracked" ]; then
             echo "::error::生成产物不得进入 git（merged-rules/ merged-rules-mrs/ rulesets/ logs/ .cache/）。"
             echo "$tracked" | head -20

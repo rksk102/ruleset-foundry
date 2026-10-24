@@ -4,7 +4,7 @@
 
 <p><strong>从上游开源规则自动合并、去重并构建为 mihomo 规则集（.txt / .mrs）</strong></p>
 
-<p><sub>每日两次自动构建（北京时间 03:00 / 16:00） · 按 <code>block &gt; direct &gt; policy</code> 策略分组</sub></p>
+<p><sub>每日两次自动构建（北京时间清晨与傍晚，具体时间以 Actions 运行记录为准） · 按 <code>block &gt; direct &gt; policy</code> 策略分组</sub></p>
 
 <p>
   <a href="https://github.com/rksk102/mihomo-rule-library/actions">

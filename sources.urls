@@ -5,7 +5,7 @@
 [policy:reject]
 [type:domain]
 [domain-kind:exact]
-https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ads-all.list
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 [domain-kind:suffix]
@@ -18,7 +18,7 @@ https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.t
 [type:domain]
 [domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/geolocation-cn.list
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-cn.list
 https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
 [domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
@@ -28,7 +28,7 @@ https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-li
 [domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
-https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.list
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.list
 [domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
@@ -37,6 +37,6 @@ https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
 [type:ipcidr]
 [domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt
-https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geoip/cn.list
+https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.list
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/lancidr.txt
 

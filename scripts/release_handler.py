@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -53,8 +54,8 @@ ASSET_CONFIRM_DELAY = 3
 SHA256SUMS_NAME = "SHA256SUMS"
 
 
-def expected_assets(tag_date):
-    return {f"merged-rules-{tag_date}.zip", SHA256SUMS_NAME}
+def expected_assets(asset_id):
+    return {f"merged-rules-{asset_id}.zip", SHA256SUMS_NAME}
 
 
 def release_asset_names(release_tag):
@@ -74,11 +75,15 @@ def release_asset_names(release_tag):
     return {line.strip() for line in raw.splitlines() if line.strip()}
 
 
-RULES_TAG_RE = re.compile(r"^rules-\d{4}-\d{2}-\d{2}$")
+RULES_TAG_RE = re.compile(r"^rules-(?:[0-9a-f]{12}|\d{8}-\d{4})$")
+
+
+def release_id_for_hash(product_hash):
+    return hashlib.sha256(product_hash.encode("utf-8")).hexdigest()[:12]
 
 
 def latest_rules_release_tag():
-    raw = run_gh(["release", "list", "--limit", "100", "--json", "tagName"])
+    raw = run_gh(["release", "list", "--limit", "100", "--json", "tagName,isLatest"])
     if raw is None:
         return None
     try:
@@ -89,13 +94,17 @@ def latest_rules_release_tag():
     if not isinstance(releases, list):
         warning("  gh release list 返回的不是列表，按查询失败处理")
         return None
+    fallback = None
     for rel in releases:
         if not isinstance(rel, dict):
             continue
         tag = rel.get("tagName")
         if isinstance(tag, str) and RULES_TAG_RE.fullmatch(tag):
-            return tag
-    return None
+            if fallback is None:
+                fallback = tag
+            if rel.get("isLatest") is True:
+                return tag
+    return fallback
 
 
 def needs_release_repair():
@@ -253,8 +262,8 @@ def should_publish(current_hash, last_hash, enabled, force=False):
     return False, "内容无变化"
 
 
-def zip_target_files(tag_date):
-    zip_name = f"merged-rules-{tag_date}.zip"
+def zip_target_files(asset_id):
+    zip_name = f"merged-rules-{asset_id}.zip"
     info(f"打包文件到 {zip_name}...")
 
     file_manifest = {}
@@ -408,13 +417,13 @@ def main():
     now_bj = beijing_now()
     tag_date = now_bj.strftime("%Y-%m-%d")
     tag_time = now_bj.strftime("%H:%M:%S")
-    release_tag = f"rules-{tag_date}"
-
-    info(f"目标发布标签: {release_tag}")
 
     section("产物校验")
     txt_dir, mrs_dir = product_dirs()
     combined_hash, c1, c2 = combined_products_hash(txt_dir, mrs_dir)
+    tag_id = release_id_for_hash(combined_hash)
+    release_tag = f"rules-{tag_id}"
+    info(f"目标发布标签: {release_tag}")
 
     enforce_products(txt_dir, mrs_dir)
 
@@ -437,48 +446,58 @@ def main():
     else:
         info(f"  变更检测已关闭，直接发布 ({c1 + c2} 个文件)")
 
-    zip_file, file_map = zip_target_files(tag_date)
-    sums_file = write_sha256sums(zip_file, file_map)
-
-    info("生成发布说明...")
-    notes = generate_release_notes(tag_date, tag_time, file_map)
+    expected = expected_assets(tag_id)
     exists = bool(run_gh(["release", "view", release_tag]))
-    info(f"{'更新' if exists else '创建'} Release {release_tag}...")
+    asset_names = release_asset_names(release_tag) if exists else None
+    zip_file = None
+    sums_file = None
+    if asset_names is not None and expected <= asset_names:
+        info(f"  Release {release_tag} 已存在且资产完整，复用")
+        if run_gh(["release", "edit", release_tag, "--latest"]) is None:
+            error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
+            gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
+            sys.exit(1)
+    else:
+        zip_file, file_map = zip_target_files(tag_id)
+        sums_file = write_sha256sums(zip_file, file_map)
 
-    title = f"Merged Rules - {tag_date}"
-    if publish_release(release_tag, zip_file, title, notes, exists, extra_assets=[sums_file]) is None:
-        error("  Release 发布失败，不保存哈希，下次运行将重试")
-        gh_error(f"Release {release_tag} 发布失败（不保存哈希，下次运行重试）")
-        for artifact in (zip_file, sums_file):
-            if os.path.exists(artifact):
-                os.unlink(artifact)
-        sys.exit(1)
+        info("生成发布说明...")
+        notes = generate_release_notes(tag_date, tag_time, file_map)
+        info(f"{'更新' if exists else '创建'} Release {release_tag}...")
 
-    expected = {zip_file, SHA256SUMS_NAME}
-    asset_names = confirm_release_assets(release_tag, expected)
-    if asset_names is None:
-        error(f"  Release {release_tag} 的资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
-        gh_error(f"Release {release_tag} 资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
-        for artifact in (zip_file, sums_file):
-            if os.path.exists(artifact):
-                os.unlink(artifact)
-        sys.exit(1)
-    if not expected <= asset_names:
-        missing = sorted(expected - asset_names)
-        error(f"  Release {release_tag} 缺少资产 {missing}（应含 zip 与 {SHA256SUMS_NAME}），判定失败")
-        gh_error(f"Release {release_tag} 缺少资产 {missing}")
-        for artifact in (zip_file, sums_file):
-            if os.path.exists(artifact):
-                os.unlink(artifact)
-        sys.exit(1)
-    info(f"  已确认 Release 资产: {sorted(asset_names)}")
+        title = f"Merged Rules - {tag_date} {tag_time}"
+        if publish_release(release_tag, zip_file, title, notes, exists, extra_assets=[sums_file]) is None:
+            error("  Release 发布失败，不保存哈希，下次运行将重试")
+            gh_error(f"Release {release_tag} 发布失败（不保存哈希，下次运行重试）")
+            for artifact in (zip_file, sums_file):
+                if os.path.exists(artifact):
+                    os.unlink(artifact)
+            sys.exit(1)
+
+        asset_names = confirm_release_assets(release_tag, expected)
+        if asset_names is None:
+            error(f"  Release {release_tag} 的资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
+            gh_error(f"Release {release_tag} 资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
+            for artifact in (zip_file, sums_file):
+                if os.path.exists(artifact):
+                    os.unlink(artifact)
+            sys.exit(1)
+        if not expected <= asset_names:
+            missing = sorted(expected - asset_names)
+            error(f"  Release {release_tag} 缺少资产 {missing}（应含 zip 与 {SHA256SUMS_NAME}），判定失败")
+            gh_error(f"Release {release_tag} 缺少资产 {missing}")
+            for artifact in (zip_file, sums_file):
+                if os.path.exists(artifact):
+                    os.unlink(artifact)
+            sys.exit(1)
+        info(f"  已确认 Release 资产: {sorted(asset_names)}")
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)
         info("  已保存当前内容哈希")
 
     info(f"清理 {KEEP_DAYS} 天前的旧 Release...")
-    releases_json = run_gh(["release", "list", "--limit", "50", "--json", "tagName,createdAt"])
+    releases_json = run_gh(["release", "list", "--limit", "200", "--json", "tagName,createdAt"])
 
     if releases_json:
         try:
@@ -512,9 +531,9 @@ def main():
         if cleaned == 0:
             info("  无需清理")
 
-    if os.path.exists(zip_file):
+    if zip_file and os.path.exists(zip_file):
         os.unlink(zip_file)
-    if os.path.exists(sums_file):
+    if sums_file and os.path.exists(sums_file):
         os.unlink(sums_file)
 
     group_end()
@@ -526,9 +545,8 @@ def main():
             f.write("\n### 发布报告\n\n")
             f.write("| 项目 | 值 |\n| :--- | :--- |\n")
             f.write(f"| 发布标签 | `{release_tag}` |\n")
-            summary_txt, summary_mrs = product_dirs()
-            f.write(f"| 文本规则 | **{len(file_map.get(summary_txt, []))}** |\n")
-            f.write(f"| MRS 规则 | **{len(file_map.get(summary_mrs, []))}** |\n")
+            f.write(f"| 文本规则 | **{c1}** |\n")
+            f.write(f"| MRS 规则 | **{c2}** |\n")
 
 
 if __name__ == "__main__":

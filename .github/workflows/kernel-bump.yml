@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [prepare, validate_arm64]
-    if: needs.prepare.outputs.changed == 'true' && needs.validate_arm64.result == 'success'
+    if: needs.prepare.outputs.changed == 'true' && needs.validate_arm64.result == 'success' && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     permissions:
         contents: write  # 需要推送更新后的 config.yaml
     steps:
@@ -100,9 +100,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     needs: [prepare, validate_arm64, commit]
-    if: always()
+    if: always() && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     permissions:
       issues: write
+      actions: read  # 读取失败 job/step 明细
     steps:
       - name: 失败时评论/创建告警 Issue，恢复时关闭
         env:
@@ -112,13 +113,22 @@ jobs:
           R_VALIDATE: ${{ needs.validate_arm64.result }}
           R_COMMIT: ${{ needs.commit.result }}
           CHANGED: ${{ needs.prepare.outputs.changed }}
+          EVENT_NAME: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           RESULTS="prepare=$R_PREPARE validate_arm64=$R_VALIDATE commit=$R_COMMIT changed=$CHANGED"
+          FAILED_STEPS=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name + ": " + ([.steps[] | select(.conclusion == "failure") | .name] | join(", "))] | join("\n")' \
+            2>/dev/null || true)
+          if [ -z "$FAILED_STEPS" ]; then
+            FAILED_STEPS="未知（未能读取 job 明细）"
+          fi
           echo "本轮结果: $RESULTS"
           TITLE="[告警] Mihomo 内核自动升级失败"
-          NUMBER=$(gh issue list --state open --limit 100 --json number,title \
+          NUMBER=$(gh issue list --state open --limit 1000 --json number,title \
             --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
           FAILED=0
           if echo "$R_PREPARE $R_VALIDATE $R_COMMIT" | grep -qE "failure|cancelled"; then
@@ -138,8 +148,8 @@ jobs:
             fi
             exit 0
           fi
-          BODY=$(printf 'Mihomo 内核自动升级失败，请检查。\n\n- Run: %s\n- 结果: %s\n- 时间(UTC): %s\n' \
-            "$RUN_URL" "$RESULTS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          BODY=$(printf 'Mihomo 内核自动升级失败，请检查。\n\n- Run: %s\n- 触发: %s @ %s\n- 结果: %s\n- 失败步骤:\n%s\n- 时间(UTC): %s\n' \
+            "$RUN_URL" "$EVENT_NAME" "$SHA" "$RESULTS" "$FAILED_STEPS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
           if [ -n "$NUMBER" ]; then
             gh issue comment "$NUMBER" --body "$BODY"
             echo "已评论既有告警 Issue #$NUMBER"

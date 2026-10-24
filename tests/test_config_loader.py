@@ -178,7 +178,7 @@ class TestGet:
             reset_config()
 
     def test_release_keep_days_over_list_capacity_is_rejected(self, work_dir):
-        use_config(work_dir, "behavior:\n  release_keep_days: 26\n")
+        use_config(work_dir, "behavior:\n  release_keep_days: 91\n")
         try:
             with pytest.raises(config_loader.ConfigError):
                 config_loader.load_config()

@@ -105,9 +105,7 @@ class TestProcessTaskLogic:
         assert result["opt"] == 3
         assert result["path"] == "block/domain/Owner"
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
-        assert "ads.example.com" in content
-        assert "google.com" in content
-        assert "sub.google.com" in content
+        assert {"ads.example.com", "google.com", "sub.google.com"} <= set(content.splitlines())
 
     def test_suffix_parent_dedups_children(self, tmp_path):
         source = tmp_path / "rulesets"
