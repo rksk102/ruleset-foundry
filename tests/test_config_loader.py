@@ -224,6 +224,15 @@ class TestPathValidationHardening:
         finally:
             reset_config()
 
+    @pytest.mark.parametrize("value", ["data.", "out/data.", "data /x", "out/data /x"])
+    def test_trailing_dot_or_space_segments_are_rejected(self, work_dir, value):
+        use_config(work_dir, f'paths:\n  merged_output_dir: "{value}"\n')
+        try:
+            with pytest.raises(config_loader.ConfigError, match="点或空格"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
     def test_path_value_is_stripped(self):
         assert config_loader._validate_path_value("x", "  rulesets  ") == "rulesets"
 
@@ -248,6 +257,121 @@ class TestPathValidationHardening:
         try:
             cfg = config_loader.load_config()
             assert cfg["merges"][0]["inputs"][0] == "block/domain/A/a.txt"
+        finally:
+            reset_config()
+
+
+def path_config(paths=None, mihomo=None):
+    def yaml_value(value):
+        return value.replace("\\", "\\\\")
+
+    lines = []
+    if paths:
+        lines.append("paths:")
+        lines.extend(f'  {key}: "{yaml_value(value)}"' for key, value in paths.items())
+    if mihomo:
+        lines.append("mihomo:")
+        lines.extend(f'  {key}: "{yaml_value(value)}"' for key, value in mihomo.items())
+    return "\n".join(lines) + "\n"
+
+
+class TestPathRelationshipValidation:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            path_config({"rulesets_dir": "shared", "merged_output_dir": "shared"}),
+            path_config({"rulesets_dir": "Shared", "merged_output_dir": "shared/txt"}),
+            path_config({"merged_output_dir": "shared/logs", "log_dir": "shared"}),
+            path_config({"rulesets_dir": "shared", "mrs_output_dir": "shared\\mrs"}),
+            path_config({"log_dir": "shared"}, {"kernel_cache_path": "shared"}),
+        ],
+    )
+    def test_directories_must_not_equal_or_nest(self, work_dir, body):
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            path_config({"rulesets_dir": "shared/rulesets", "sources_file": "shared/rulesets/sources.urls"}),
+            path_config({"merged_output_dir": "shared/merged", "sources_file": "shared/merged/sources.urls"}),
+            path_config({"mrs_output_dir": "shared/mrs", "sources_file": "shared/mrs/sources.urls"}),
+            path_config({"log_dir": "shared/logs", "sources_file": "shared/logs/sources.urls"}),
+            path_config({"sources_file": "shared/kernel/sources.urls"}, {"kernel_cache_path": "shared/kernel"}),
+        ],
+    )
+    def test_sources_file_must_not_live_under_directory(self, work_dir, body):
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            path_config({"rulesets_dir": "shared/rulesets", "sources_file": "shared/rulesets"}),
+            path_config({"sources_file": "shared/kernel"}, {"kernel_cache_path": "shared/kernel"}),
+        ],
+    )
+    def test_sources_file_must_not_equal_directory(self, work_dir, body):
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_repo_default_config_paths_are_accepted(self, work_dir):
+        config_loader._CONFIG = None
+        config_loader._CONFIG_FILE = config_loader._REPO_CONFIG_FILE
+        try:
+            cfg = config_loader.load_config()
+            assert cfg["paths"]["rulesets_dir"] == "rulesets"
+            assert cfg["paths"]["merged_output_dir"] == "merged-rules"
+            assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
+        finally:
+            reset_config()
+
+
+class TestMergeFieldWhitelist:
+    def merge_body(self, extra):
+        return (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            "    inputs: ['x.txt']\n" + extra
+        )
+
+    @pytest.mark.parametrize(
+        ("extra", "pattern"),
+        [
+            ("    descripton: 拼写错误\n", "未知字段"),
+            ("    unexpected: 1\n", "未知字段"),
+            ("    description: 123\n", "description 期望 str"),
+            ("    description: [a, b]\n", "description 期望 str"),
+        ],
+    )
+    def test_invalid_merge_fields_are_rejected(self, work_dir, extra, pattern):
+        use_config(work_dir, self.merge_body(extra))
+        try:
+            with pytest.raises(config_loader.ConfigError, match=pattern):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+    def test_valid_description_is_accepted(self, work_dir):
+        use_config(work_dir, self.merge_body("    description: 合并广告列表\n"))
+        try:
+            cfg = config_loader.load_config()
+            assert cfg["merges"][0]["description"] == "合并广告列表"
         finally:
             reset_config()
 

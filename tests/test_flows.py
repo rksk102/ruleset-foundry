@@ -8,6 +8,7 @@ from pathlib import Path
 
 import convert_mrs
 import main
+import manifest
 import pytest
 
 SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
@@ -81,10 +82,8 @@ class TestMainFlow:
         return rulesets
 
     def manifest_entries(self, rulesets):
-        manifest = rulesets / "products.manifest"
-        if not manifest.exists():
-            return None
-        return manifest.read_text(encoding="utf-8").split()
+        loaded = manifest.load_manifest(rulesets / "products.manifest")
+        return sorted(loaded.entries) if loaded else None
 
     def disk_entries(self, rulesets):
         return sorted(str(p.relative_to(rulesets)).replace("\\", "/") for p in rulesets.rglob("*.txt"))

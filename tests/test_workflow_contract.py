@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -54,3 +55,38 @@ def test_cache_path_comes_from_config():
     cache_steps = [s for s in steps if s.get("uses", "").startswith("actions/cache/")]
     assert cache_steps
     assert all(s["with"]["path"] == "${{ steps.kernel-key.outputs.path }}" for s in cache_steps)
+
+
+def test_ci_kernel_smoke_reuses_pipeline_kernel_cache():
+    job = load_workflow("ci.yml")["jobs"]["kernel-smoke"]
+    assert job["runs-on"] == "ubuntu-latest"
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "--verify-current-kernel" in runs
+    assert "convert-ruleset" in runs
+    assert "test -s" in runs
+
+    pipeline_steps = load_workflow("pipeline.yml")["jobs"]["build"]["steps"]
+    expected = next(
+        step for step in pipeline_steps if step.get("uses", "").startswith("actions/cache/restore@")
+    )
+    restored = [
+        step for step in job["steps"] if step.get("uses", "").startswith("actions/cache/restore@")
+    ]
+    assert len(restored) == 1, "kernel-smoke 应只 restore 内核缓存一次"
+    actual = restored[0]
+    assert actual["uses"] == expected["uses"]
+    assert actual["with"]["path"] == expected["with"]["path"]
+    assert actual["with"]["key"] == expected["with"]["key"]
+    assert actual["with"]["restore-keys"].splitlines() == expected["with"]["restore-keys"].splitlines()
+    assert not [step for step in job["steps"] if step.get("uses", "").startswith("actions/cache/save@")]
+
+
+def test_setup_python_env_pins_exact_patch_version():
+    action_path = REPO / ".github" / "actions" / "setup-python-env" / "action.yml"
+    action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+    setup = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("actions/setup-python@")
+    )
+    assert re.fullmatch(r"\d+\.\d+\.\d+", setup["with"]["python-version"])

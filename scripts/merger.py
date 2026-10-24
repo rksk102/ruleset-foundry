@@ -10,7 +10,6 @@ from utils import (
     DomainTrie,
     anchor_cwd_to_repo_root,
     atomic_write_with_header,
-    beijing_timestamp,
     clean_directory,
     dedup_domain_suffix,
     flatten_ip_cidr,
@@ -56,19 +55,40 @@ def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, all
     out_dir = output_dir or OUTPUT_DIR
     manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
     baseline = manifest.load_manifest(manifest_file)
-    if not baseline:
-        raise manifest.ManifestError(f"清单基线缺失: {manifest_file} 不存在或为空（需先运行 scripts/main.py）")
+    if baseline is None:
+        raise manifest.ManifestError(f"清单基线缺失: {manifest_file} 不存在（需先运行 scripts/main.py）")
     tasks = merge_tasks
     if allow_partial:
-        baseline_set = set(baseline)
+        baseline_set = set(baseline.entries)
         tasks = [
             task
             for task in merge_tasks or []
             if isinstance(task, dict) and any(rel in baseline_set for rel in task.get("inputs") or [])
         ]
-    expected = sorted(set(baseline) | merge_product_paths(tasks))
+    expected = sorted(set(baseline.entries) | merge_product_paths(tasks))
     actual = sorted(manifest.collect_files(out_dir, ".txt"))
-    return manifest.verify_matches(expected, actual, f"{out_dir} 绝对基准校验")
+    manifest.verify_matches(expected, actual, f"{out_dir} 绝对基准校验")
+    manifest.save_manifest(
+        os.path.join(out_dir, manifest.MANIFEST_NAME),
+        manifest.hash_entries(out_dir, actual),
+        generation=baseline.generation,
+    )
+    return True
+
+
+def load_and_verify_source_manifest(source_dir=None):
+    root = source_dir or SOURCE_DIR
+    baseline = manifest.load_manifest(os.path.join(root, manifest.MANIFEST_NAME))
+    if baseline is None:
+        raise manifest.ManifestError(f"清单基线缺失: {os.path.join(root, manifest.MANIFEST_NAME)} 不存在")
+    expected = manifest.expected_generation()
+    if expected and baseline.generation != expected:
+        raise manifest.ManifestError(
+            f"清单 generation 与当前运行不一致: {baseline.generation} != {expected}"
+            "（疑似上一轮中断产物，请重新运行 main.py）"
+        )
+    manifest.verify_manifest(baseline, root, f"{root} 输入清单校验")
+    return baseline
 
 
 def _ensure_within(base_dir, target_path, what):
@@ -159,7 +179,6 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow
         "strategy": strategy,
         "type": rule_type,
         "owner": owner,
-        "date": beijing_timestamp(),
         "mode": mode,
         "count": count_desc,
         "desc": desc,
@@ -340,6 +359,13 @@ def main():
     if not os.path.exists(SOURCE_DIR):
         error(f"源目录 '{SOURCE_DIR}' 不存在！")
         gh_error(f"源目录 '{SOURCE_DIR}' 不存在，合并中止")
+        sys.exit(1)
+
+    try:
+        load_and_verify_source_manifest()
+    except manifest.ManifestError as e:
+        error(f"  {e}")
+        gh_error(f"输入产物校验失败: {e}")
         sys.exit(1)
 
     if config_tasks:

@@ -30,11 +30,11 @@ class TestProductsAnchored:
     def test_outside_repo_is_rejected(self, monkeypatch):
         monkeypatch.setattr(convert_mrs, "error", lambda *a, **k: None)
         monkeypatch.setattr(convert_mrs, "gh_error", lambda *a, **k: None)
-        with tempfile.TemporaryDirectory() as outside:
-            monkeypatch.setattr(convert_mrs, "SRC_ROOT", outside)
-            monkeypatch.setattr(convert_mrs, "DST_ROOT", outside)
-            with pytest.raises(SystemExit) as exc:
-                convert_mrs.ensure_products_anchored()
+        outside = Path(tempfile.gettempdir()) / "mihomo-rule-library-outside-repo"
+        monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(outside))
+        monkeypatch.setattr(convert_mrs, "DST_ROOT", str(outside))
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.ensure_products_anchored()
         assert exc.value.code == 1
 
     def test_subdir_is_accepted(self, monkeypatch):

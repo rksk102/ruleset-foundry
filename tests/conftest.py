@@ -13,6 +13,12 @@ import logger
 
 
 @pytest.fixture(autouse=True)
+def _isolate_github_env(monkeypatch):
+    """CI 会设置 GITHUB_RUN_ID；测试用固定 generation 清单，需保持环境无关。"""
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_logger():
     log_dir = Path(__file__).resolve().parent.parent / ".tools" / "pytest-logs"
     log_dir.mkdir(parents=True, exist_ok=True)

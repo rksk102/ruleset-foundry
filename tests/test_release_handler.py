@@ -5,6 +5,7 @@ import os
 import sys
 import zipfile
 
+import manifest
 import pytest
 import release_handler
 from support import GhStub
@@ -63,11 +64,20 @@ class TestShouldPublish:
 
 
 class TestLatestRulesRelease:
-    def test_skips_non_rules_and_returns_latest(self, monkeypatch):
+    def test_requires_is_latest_flag(self, monkeypatch):
         listing = release_listing(
             {"tagName": "v1.0.0"},
             {"tagName": "rules-0123456789ab"},
             {"tagName": "rules-20261004-2100"},
+        )
+        stub = GhStub(responses={("release", "list"): listing})
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.latest_rules_release_tag() is None
+
+    def test_returns_latest_rules_release(self, monkeypatch):
+        listing = release_listing(
+            {"tagName": "v1.0.0"},
+            {"tagName": "rules-0123456789ab", "isLatest": True},
         )
         stub = GhStub(responses={("release", "list"): listing})
         monkeypatch.setattr(release_handler, "run_gh", stub)
@@ -110,11 +120,95 @@ class TestLatestRulesRelease:
         assert release_handler.needs_release_repair() is False
 
 
+def remote_release_stub(work_dir, tag_id, corrupt_file=None, corrupt_zip_digest=False):
+    files = {}
+    for folder, ext in (("merged-rules", ".txt"), ("merged-rules-mrs", ".mrs")):
+        for path in sorted((work_dir / folder).rglob(f"*{ext}")):
+            rel = path.relative_to(work_dir).as_posix()
+            files[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if corrupt_file:
+        files[corrupt_file] = "0" * 64
+    zip_name = f"merged-rules-{tag_id}.zip"
+    zip_digest = hashlib.sha256(b"zip-bytes").hexdigest()
+    sums_zip_digest = hashlib.sha256(b"other-zip").hexdigest() if corrupt_zip_digest else zip_digest
+    sums = "\n".join([f"{sums_zip_digest}  {zip_name}"] + [f"{d}  {r}" for r, d in sorted(files.items())]) + "\n"
+    stub = GhStub(
+        asset_digests={
+            zip_name: "sha256:" + zip_digest,
+            "SHA256SUMS": "sha256:" + hashlib.sha256(sums.encode("utf-8")).hexdigest(),
+        },
+        sha256sums=sums,
+    )
+    return stub, zip_name
+
+
+class TestParseSha256sums:
+    def test_duplicate_path_is_rejected(self):
+        text = f"{'a' * 64}  a.txt\n{'b' * 64}  a.txt\n"
+        with pytest.raises(ValueError, match="重复"):
+            release_handler.parse_sha256sums(text)
+
+    def test_valid_entries_are_parsed(self):
+        text = f"{'a' * 64}  a.txt\n{'b' * 64}  dir/b.txt\n"
+        assert release_handler.parse_sha256sums(text) == {"a.txt": "a" * 64, "dir/b.txt": "b" * 64}
+
+
+class TestReleaseReusable:
+    def test_reusable_when_digests_match(self, publish_workspace, monkeypatch):
+        stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
+        assert ok is True, why
+
+    def test_rejects_wrong_file_hash(self, publish_workspace, monkeypatch):
+        stub, _zip = remote_release_stub(
+            publish_workspace, "abc123abc123", corrupt_file="merged-rules/A/x.txt"
+        )
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
+        assert ok is False
+        assert "逐文件哈希" in why
+
+    def test_rejects_zip_digest_mismatch(self, publish_workspace, monkeypatch):
+        stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", corrupt_zip_digest=True)
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
+        assert ok is False
+        assert "zip 的远端 digest" in why
+
+    def test_rejects_missing_digest(self, publish_workspace, monkeypatch):
+        stub, zip_name = remote_release_stub(publish_workspace, "abc123abc123")
+        stub.asset_digests[zip_name] = ""
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
+        assert ok is False
+        assert "未提供 sha256 digest" in why
+
+    def test_needs_repair_when_latest_is_not_current_content(self, monkeypatch):
+        stub = GhStub(latest_tag="rules-20261004-2100")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.needs_release_repair("new") is True
+
+    def test_needs_repair_when_digests_do_not_match(self, monkeypatch):
+        tag = expected_tag("new")
+        stub = GhStub(latest_tag=tag)
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad"))
+        assert release_handler.needs_release_repair("new") is True
+
+    def test_no_repair_when_tag_and_digests_match(self, monkeypatch):
+        tag = expected_tag("new")
+        stub = GhStub(latest_tag=tag)
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
+        assert release_handler.needs_release_repair("new") is False
+
+
 class TestNeedsPublishMode:
     def test_prints_false_when_unchanged_and_release_complete(self, monkeypatch, capsys):
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
-        monkeypatch.setattr(release_handler, "needs_release_repair", lambda: False)
+        monkeypatch.setattr(release_handler, "needs_release_repair", lambda *a, **k: False)
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
 
         release_handler.main()
@@ -124,7 +218,7 @@ class TestNeedsPublishMode:
     def test_prints_true_when_repair_needed(self, monkeypatch, capsys):
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
-        monkeypatch.setattr(release_handler, "needs_release_repair", lambda: True)
+        monkeypatch.setattr(release_handler, "needs_release_repair", lambda *a, **k: True)
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
 
         release_handler.main()
@@ -371,6 +465,10 @@ def publish_workspace(work_dir, monkeypatch):
     return work_dir
 
 
+def expected_tag(product_hash):
+    return "rules-" + hashlib.sha256(product_hash.encode()).hexdigest()[:12]
+
+
 def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
     monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: (current, 1, 1))
     monkeypatch.setattr(release_handler, "load_last_hash", lambda: last)
@@ -411,6 +509,7 @@ class TestMainOrchestration:
         saved = []
         stub = GhStub()
         stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
 
         run_with_stub(stub, release_handler.main)
 
@@ -424,6 +523,7 @@ class TestMainOrchestration:
         saved = []
         stub = GhStub(fail_when=lambda cmd: cmd[:2] == ["release", "edit"])
         stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
 
         with pytest.raises(SystemExit) as exc:
             run_with_stub(stub, release_handler.main)
@@ -444,11 +544,25 @@ class TestMainOrchestration:
         assert "upload" in stub.release_actions(), "缺少 SHA256SUMS 时应修复现有 Release"
         assert saved == [product_hash]
 
+    def test_complete_assets_with_bad_digest_are_reuploaded(self, publish_workspace, monkeypatch):
+        product_hash = "e" * 64
+        saved = []
+        stub = GhStub()
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad"))
+
+        run_with_stub(stub, release_handler.main)
+
+        actions = stub.release_actions()
+        assert "upload" in actions and "create" not in actions
+        assert saved == [product_hash]
+
     def test_force_release_reuses_complete_release_without_duplicate(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
         monkeypatch.setenv("FORCE_RELEASE", "true")
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
 
         run_with_stub(stub, release_handler.main)
 
@@ -459,8 +573,9 @@ class TestMainOrchestration:
         assert not os.path.exists("SHA256SUMS")
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
-        stub = GhStub(latest_tag="rules-20261004-2100")
+        stub = GhStub(latest_tag=expected_tag("same"))
         stub_hash_state(monkeypatch, current="same", last="same")
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
 
         run_with_stub(stub, release_handler.main)
 
@@ -484,7 +599,9 @@ class TestMainOrchestration:
 
     def test_republishes_when_asset_incomplete(self, publish_workspace, monkeypatch):
         """哈希未变但最近一次 Release 缺 SHA256SUMS 时应补发自愈。"""
-        stub = GhStub(latest_tag="rules-20261004-2100", asset_names="merged-rules-20261004-2100.zip")
+        tag = expected_tag("same")
+        release_id = tag.removeprefix("rules-")
+        stub = GhStub(latest_tag=tag, asset_names=f"merged-rules-{release_id}.zip")
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
 
@@ -639,9 +756,18 @@ def verify_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "MRS_DIR", "merged-rules-mrs")
     monkeypatch.setattr(release_handler, "merge_product_entries", lambda *a, **k: set())
     (work_dir / "rulesets").mkdir(parents=True)
-    (work_dir / "rulesets" / "products.manifest").write_text("block/domain/A/x.txt\n", encoding="utf-8")
+    manifest.save_manifest(
+        work_dir / "rulesets" / "products.manifest",
+        {"block/domain/A/x.txt": "0" * 64},
+        generation="verify-gen",
+    )
     (work_dir / "merged-rules" / "block" / "domain" / "A").mkdir(parents=True)
     (work_dir / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text("x", encoding="utf-8")
+    manifest.save_manifest(
+        work_dir / "merged-rules" / "products.manifest",
+        {"block/domain/A/x.txt": hashlib.sha256(b"x").hexdigest()},
+        generation="verify-gen",
+    )
     mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
     mrs_dir.mkdir(parents=True)
     (mrs_dir / "x.mrs").write_text("y", encoding="utf-8")
@@ -662,6 +788,13 @@ class TestVerifyOnly:
             run_with_stub(stub, release_handler.verify_only)
         assert exc.value.code == 1
         assert stub.calls == []
+
+    def test_tampered_merged_product_is_fatal(self, verify_workspace):
+        target = verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt"
+        target.write_text("tampered", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only()
+        assert exc.value.code == 1
 
     def test_missing_baseline_exits_nonzero_when_rulesets_present(self, verify_workspace):
         os.unlink("rulesets/products.manifest")

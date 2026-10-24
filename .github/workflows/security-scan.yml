@@ -1,0 +1,29 @@
+name: "安全扫描"
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
+jobs:
+  osv-scanner:
+    name: "OSV 依赖漏洞扫描"
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36  # v2.7.0
+    with:
+      scan-args: |-
+        --lockfile=uv.lock
+        --config=osv-scanner.toml
+      fail-on-vuln: true
+      upload-sarif: true

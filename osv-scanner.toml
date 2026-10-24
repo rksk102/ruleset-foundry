@@ -1,0 +1,5 @@
+# OSV-Scanner 配置。
+#
+# 例外策略：任何 [[IgnoredVulns]] 条目都必须同时给出 reason 与 ignoreUntil，
+# 只允许有到期日的临时豁免；缺失任一字段的例外会被 tests/test_security_scan_contract.py 拒绝。
+# 当前无豁免条目。
