@@ -163,6 +163,8 @@ def _validate_path_value(label, value):
     if ":" in normalized:
         raise ConfigError(f"{label} 不能包含 ':'（Windows ADS/设备路径）")
     for part in parts:
+        if part != part.rstrip(" ."):
+            raise ConfigError(f"{label} 的路径段不能以点或空格结尾（Windows 会视为同名目录）: {value!r}")
         stem = part.rstrip(" .").split(".", 1)[0].upper()
         if stem in WINDOWS_RESERVED_NAMES:
             raise ConfigError(f"{label} 不能使用 Windows 保留设备名: {value!r}")

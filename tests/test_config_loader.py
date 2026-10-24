@@ -224,6 +224,15 @@ class TestPathValidationHardening:
         finally:
             reset_config()
 
+    @pytest.mark.parametrize("value", ["data.", "out/data.", "data /x", "out/data /x"])
+    def test_trailing_dot_or_space_segments_are_rejected(self, work_dir, value):
+        use_config(work_dir, f'paths:\n  merged_output_dir: "{value}"\n')
+        try:
+            with pytest.raises(config_loader.ConfigError, match="点或空格"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
     def test_path_value_is_stripped(self):
         assert config_loader._validate_path_value("x", "  rulesets  ") == "rulesets"
 
