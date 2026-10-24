@@ -1,4 +1,5 @@
 import main
+import pytest
 
 
 def write(path, text):
@@ -275,14 +276,15 @@ class TestCollidingOutputPaths:
     def posix_plan(self, plan):
         return {main.Path(k).as_posix(): v for k, v in plan.items()}
 
-    def test_same_owner_path_same_repo_not_flagged(self):
-        plan = main.colliding_output_paths(
-            [
-                self.task("https://github.com/Loyalsoldier/x/raw/r/gfw.txt"),
-                self.task("https://github.com/Loyalsoldier/x/raw/r2/gfw.txt"),
-            ]
-        )
-        assert plan == {}
+    def test_same_repo_same_output_path_is_rejected(self):
+        with pytest.raises(SystemExit) as exc:
+            main.plan_groups(
+                [
+                    self.task("https://github.com/Loyalsoldier/x/raw/r/gfw.txt"),
+                    self.task("https://github.com/Loyalsoldier/x/raw/r2/gfw.txt"),
+                ]
+            )
+        assert exc.value.code == 1
 
     def test_different_repos_same_owner_and_filename_flagged(self):
         plan = self.posix_plan(
@@ -375,11 +377,32 @@ class TestPlanGroups:
         assert len(groups) == 1
         assert groups[0]["sources"] == ["https://github.com/o/r/raw/m/x.txt"]
 
-    def test_same_url_twice_merges_into_one_group(self):
+    def test_same_url_twice_is_deduped(self):
         url = "https://github.com/o/r/raw/m/x.txt"
         groups = main.plan_groups([self.task(url), self.task(url)])
         assert len(groups) == 1
-        assert len(groups[0]["members"]) == 2
+        assert len(groups[0]["members"]) == 1
+        assert groups[0]["sources"] == [url]
+
+    def test_same_url_host_case_is_deduped(self):
+        groups = main.plan_groups(
+            [
+                self.task("https://github.com/o/r/raw/m/x.txt"),
+                self.task("https://GitHub.com/o/r/raw/m/x.txt"),
+            ]
+        )
+        assert len(groups) == 1
+        assert len(groups[0]["members"]) == 1
+
+    def test_same_repo_collision_fails(self):
+        with pytest.raises(SystemExit) as exc:
+            main.plan_groups(
+                [
+                    self.task("https://github.com/o/r/raw/m/x.txt"),
+                    self.task("https://github.com/o/r/raw/other/x.txt"),
+                ]
+            )
+        assert exc.value.code == 1
 
     def test_same_owner_different_repos_split_to_avoid_overwrite(self):
         groups = main.plan_groups(
@@ -431,14 +454,14 @@ class TestPlanGroups:
         tasks = [self.task(url), self.task(url)]
         groups = main.plan_groups(tasks)
         indices = [i for i, _t in groups[0]["members"]]
-        assert indices == [0, 1]
+        assert indices == [0]
         for i, t in groups[0]["members"]:
             assert t is tasks[i]
 
     def test_all_sources_recorded(self):
         url = "https://github.com/o/r/raw/m/x.txt"
         groups = main.plan_groups([self.task(url), self.task(url)])
-        assert groups[0]["sources"] == [url, url]
+        assert groups[0]["sources"] == [url]
 
     def test_defaults_to_exact_without_domain_kind(self):
         groups = main.plan_groups([self.task("https://github.com/o/r/raw/m/x.txt")])
@@ -562,9 +585,34 @@ class TestParseSources:
             else:
                 raise AssertionError(f"{bad} 不应被静默跳过，应 SystemExit(1)")
 
-    def test_prose_line_without_scheme_still_skipped(self, tmp_path):
-        tasks = self.load(tmp_path, "这行没有协议前缀\nhttps://github.com/a/b/raw/m/x.txt\n")
-        assert len(tasks) == 1
+    def test_prose_line_without_scheme_is_rejected(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            self.load(tmp_path, "这行没有协议前缀\nhttps://github.com/a/b/raw/m/x.txt\n")
+        assert exc.value.code == 1
+
+
+class TestMixedDomainKind:
+    def test_mixed_group_is_parse_error_without_writing(self, monkeypatch):
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "domain_kind": "mixed",
+            "members": [
+                (0, {"url": "https://example.com/a.txt", "policy": "block", "type": "domain", "domain_kind": "exact"}),
+                (1, {"url": "https://example.com/b.txt", "policy": "block", "type": "domain", "domain_kind": "suffix"}),
+            ],
+            "sources": ["https://example.com/a.txt", "https://example.com/b.txt"],
+        }
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(group, {0: b"a.com\n", 1: b"b.com\n"})
+
+        assert count is None
+        assert len(errors["parse"]) == 2
+        assert all("mixed" in reason or "混用" in reason for _url, reason in errors["parse"])
+        assert writes == []
 
 
 class TestProcessIpGroup:

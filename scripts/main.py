@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 import manifest
@@ -169,6 +169,32 @@ def _base_rel_path(task):
     return Path(policy) / type_name / owner / filename
 
 
+def normalize_source_url(url):
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    port = parts.port
+    netloc = host if port in (None, 443) else f"{host}:{port}"
+    return urlunsplit(("https", netloc, parts.path, parts.query, ""))
+
+
+def check_same_slug_collisions(tasks):
+    by_path = {}
+    for task in tasks:
+        rel = str(_base_rel_path(task))
+        slug = source_repo_slug(task["url"]) or rel
+        by_path.setdefault(rel, {}).setdefault(slug, {}).setdefault(normalize_source_url(task["url"]), task["url"])
+
+    for rel, slug_map in sorted(by_path.items()):
+        for slug, urls in sorted(slug_map.items()):
+            if len(urls) > 1:
+                detail = "、".join(sorted(urls))
+                gh_error(
+                    f"同仓库来源映射到同一产物 {Path(rel).as_posix()}（{slug}: {detail}）；"
+                    "请为来源使用不同文件名，显式输出别名尚未支持"
+                )
+                sys.exit(1)
+
+
 def colliding_output_paths(tasks):
     by_path = {}
     for task in tasks:
@@ -204,17 +230,29 @@ def build_filepath(task, collide_plan=None, taken=None):
 
 
 def plan_groups(tasks):
-    collide_plan = colliding_output_paths(tasks)
+    check_same_slug_collisions(tasks)
+
+    deduped = []
+    seen = set()
+    for idx, task in enumerate(tasks):
+        key = (str(_base_rel_path(task)), normalize_source_url(task["url"]))
+        if key in seen:
+            warning(f"  重复来源已去重: {task['url']} -> {Path(key[0]).as_posix()}")
+            continue
+        seen.add(key)
+        deduped.append((idx, task))
+
+    collide_plan = colliding_output_paths([task for _idx, task in deduped])
     for rel, slugs in sorted(collide_plan.items()):
         warning(f"  输出路径跨来源冲突 {rel} -> 已按来源拆分为 {slugs}")
 
     taken = {}
-    for task in tasks:
+    for _idx, task in deduped:
         base = _base_rel_path(task)
         taken.setdefault(str(base), source_repo_slug(task["url"]) or base.parent.name)
 
     groups = {}
-    for idx, task in enumerate(tasks):
+    for idx, task in deduped:
         _, _, _, abs_path = build_filepath(task, collide_plan, taken)
         key = str(abs_path)
         group = groups.setdefault(
@@ -317,12 +355,10 @@ def process_group(group, raw_by_index, err_by_index=None):
     else:
         effective_kind = group.get("domain_kind", "exact")
         if effective_kind == "mixed":
-            promoted = sum(1 for _i, t in group["members"] if t.get("domain_kind") == "suffix")
-            warning(
-                f"    同一输出混用精确/后缀语义源（后缀源 {promoted}/"
-                f"{len(group['members'])}），按精确语义处理: {group['path']}"
-            )
-            effective_kind = "exact"
+            for _i, task in group["members"]:
+                errors["parse"].append((task["url"], "同一输出混用 exact/suffix 语义来源，拒绝静默降级"))
+            warning(f"    同一输出混用精确/后缀语义源，拒绝按单一语义输出: {group['path']}")
+            return None, errors
         result, special = processor.process_domain_detailed(all_lines, effective_kind)
         if special.get("suffix_promoted"):
             info(f"    后缀语义源: 提升 {special['suffix_promoted']} 条裸域名为 '+.' 形式")
@@ -373,6 +409,7 @@ class SyncStats:
 
 
 _MARKER_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]*)\s*:([^\]]*)\]\s*(?:#.*)?$")
+_SOURCE_LINE_RE = re.compile(r"^(https://[^\s#]+)(?:\s+#.*)?$")
 
 
 def _fail_marker(line_no, text, detail):
@@ -425,21 +462,21 @@ def parse_sources():
                 "无法识别的标记（标记必须独占一行且形如 [policy:...] / [type:...] / [domain-kind:exact|suffix]）",
             )
 
-        url_match = re.search(r"https?://[^\s#]+", line)
-        if url_match:
-            url = url_match.group(0)
-            if not url.startswith("https://"):
-                _fail_marker(line_no, line, "仅接受 https:// 来源（规则即配置，明文 http 可被中间人篡改）")
-            tasks.append(
-                {
-                    "policy": current_policy,
-                    "type": current_type,
-                    "domain_kind": current_domain_kind,
-                    "url": url,
-                }
+        source = _SOURCE_LINE_RE.match(line)
+        if not source:
+            _fail_marker(
+                line_no,
+                line,
+                "来源行必须是独占一行的 https:// URL（可在空白后加 # 尾随注释）",
             )
-        elif re.search(r"[A-Za-z][A-Za-z0-9+.-]*://", line):
-            _fail_marker(line_no, line, "仅接受 https:// 来源（其他协议/写法的行不允许静默跳过）")
+        tasks.append(
+            {
+                "policy": current_policy,
+                "type": current_type,
+                "domain_kind": current_domain_kind,
+                "url": source.group(1),
+            }
+        )
 
     return tasks
 

@@ -56,13 +56,24 @@ class TestMarkerParsing:
         tasks = parse(monkeypatch, work_dir, f"[domain-kind:exact]\n{URL}\n[domain-kind:suffix]\n{other}\n")
         assert {task["url"]: task["domain_kind"] for task in tasks} == {URL: "exact", other: "suffix"}
 
-    def test_inline_marker_is_ignored(self, work_dir, monkeypatch):
-        tasks = parse(monkeypatch, work_dir, "前缀 [policy:block] 后缀\n" + URL + "\n")
-        assert tasks[0]["policy"] == "policy"
+    def test_inline_marker_is_rejected(self, work_dir, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            parse(monkeypatch, work_dir, "前缀 [policy:block] 后缀\n" + URL + "\n")
+        assert exc.value.code == 1
 
-    def test_plain_line_without_url_is_ignored(self, work_dir, monkeypatch):
-        tasks = parse(monkeypatch, work_dir, "不是链接\n" + URL + "\n")
-        assert len(tasks) == 1
+    def test_plain_line_without_url_is_rejected(self, work_dir, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            parse(monkeypatch, work_dir, "不是链接\n" + URL + "\n")
+        assert exc.value.code == 1
+
+    def test_malformed_https_scheme_is_rejected(self, work_dir, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            parse(monkeypatch, work_dir, "https//example.com/x.txt\n")
+        assert exc.value.code == 1
+
+    def test_trailing_comment_after_source_url_is_allowed(self, work_dir, monkeypatch):
+        tasks = parse(monkeypatch, work_dir, URL + "  # 主列表\n")
+        assert [task["url"] for task in tasks] == [URL]
 
 
 class TestRealSourcesContract:
