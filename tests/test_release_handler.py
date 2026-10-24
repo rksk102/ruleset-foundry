@@ -544,6 +544,19 @@ class TestMainOrchestration:
         assert "upload" in stub.release_actions(), "缺少 SHA256SUMS 时应修复现有 Release"
         assert saved == [product_hash]
 
+    def test_complete_assets_with_bad_digest_are_reuploaded(self, publish_workspace, monkeypatch):
+        product_hash = "e" * 64
+        saved = []
+        stub = GhStub()
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad"))
+
+        run_with_stub(stub, release_handler.main)
+
+        actions = stub.release_actions()
+        assert "upload" in actions and "create" not in actions
+        assert saved == [product_hash]
+
     def test_force_release_reuses_complete_release_without_duplicate(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
         saved = []

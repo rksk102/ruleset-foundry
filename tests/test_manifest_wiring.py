@@ -372,6 +372,18 @@ class TestMergerInputs:
         with MergerRun(work_dir, []) as run:
             assert run.run() == 1
 
+    def test_merger_rejects_generation_mismatch(self, work_dir, monkeypatch):
+        write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
+        write_v2_manifest(work_dir / "rulesets", generation="github-match")
+
+        monkeypatch.setenv("GITHUB_RUN_ID", "other")
+        with MergerRun(work_dir, []) as run:
+            assert run.run() == 1
+
+        monkeypatch.setenv("GITHUB_RUN_ID", "match")
+        with MergerRun(work_dir, []) as run:
+            assert run.run() is None
+
     def test_merge_headers_are_byte_stable(self, work_dir):
         write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
         write_v2_manifest(work_dir / "rulesets")
