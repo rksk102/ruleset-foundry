@@ -6,7 +6,7 @@
 [type:domain]
 [domain-kind:exact]
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.list
-https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
+https://raw.githubusercontent.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/ads.list
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
 [domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
@@ -19,7 +19,7 @@ https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/win-spy.t
 [domain-kind:exact]
 https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-cn.list
-https://github.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
+https://raw.githubusercontent.com/DustinWin/ruleset_geodata/releases/download/mihomo-ruleset/microsoft-cn.list
 [domain-kind:suffix]
 https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
 
