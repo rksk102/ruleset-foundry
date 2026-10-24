@@ -195,7 +195,15 @@ class TestReleaseBaseline:
         write(work_dir / "rulesets" / "products.manifest", "# 只有注释，没有条目\n\n")
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-        assert "产物清单" in caplog.text or "不支持" in caplog.text
+        assert "不支持的产物清单格式" in caplog.text
+
+    def test_empty_v2_manifest_is_fatal(self, work_dir, caplog):
+        rulesets, merges = self.sample()
+        build_products(work_dir, rulesets + merges, manifest_file=False)
+        write_v2_manifest(work_dir / "rulesets", entries=[])
+        with ReleaseRun(work_dir) as run:
+            assert run.run() == 1
+        assert release_handler.BASELINE_MISSING in caplog.text
 
     def test_verify_products_raises_without_baseline(self, work_dir):
         rulesets, merges = self.sample()

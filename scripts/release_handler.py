@@ -272,7 +272,7 @@ def merge_product_entries(merge_tasks=None, baseline=None):
 def load_baseline(baseline_paths=None):
     for path in baseline_paths or baseline_files():
         baseline = manifest.load_manifest(path)
-        if baseline:
+        if baseline is not None and baseline.entries:
             entries = set(baseline.entries)
             expected = sorted(entries | merge_product_entries(baseline=entries))
             info(f"  清单基线 {path}: {len(entries)} 项，含合并产物共 {len(expected)} 项")
