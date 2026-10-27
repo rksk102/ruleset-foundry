@@ -26,7 +26,7 @@ except ConfigError as _cfg_err:
     gh_error(f"配置校验失败: {_cfg_err}")
     sys.exit(1)
 README_FILE = os.path.join(REPO_ROOT, "README.md")
-DEFAULT_REPO_NAME = "rksk102/mihomo-rule-library"
+DEFAULT_REPO_NAME = "rksk102/ruleset-foundry"
 DEFAULT_ARTIFACTS_BRANCH = "artifacts"
 REPO_NAME = os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
 ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH

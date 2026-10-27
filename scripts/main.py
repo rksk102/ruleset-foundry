@@ -52,7 +52,7 @@ AUTH_HOST_SUFFIXES = (
     "githubusercontent.com",
     "github.com",
 )
-USER_AGENT = "mihomo-rule-library/1.0"
+USER_AGENT = "ruleset-foundry/1.0"
 
 
 def is_trusted_host(url):

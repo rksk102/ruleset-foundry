@@ -1,7 +1,6 @@
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import config_loader
@@ -30,7 +29,8 @@ class TestProductsAnchored:
     def test_outside_repo_is_rejected(self, monkeypatch):
         monkeypatch.setattr(convert_mrs, "error", lambda *a, **k: None)
         monkeypatch.setattr(convert_mrs, "gh_error", lambda *a, **k: None)
-        outside = Path(tempfile.gettempdir()) / "mihomo-rule-library-outside-repo"
+        # 受限环境 TMP 不可写时 gettempdir() 会回退到仓库根，改用仓库上级目录保证在仓库外
+        outside = Path(__file__).resolve().parents[2] / "ruleset-foundry-outside-repo"
         monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(outside))
         monkeypatch.setattr(convert_mrs, "DST_ROOT", str(outside))
         with pytest.raises(SystemExit) as exc:

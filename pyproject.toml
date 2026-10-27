@@ -1,5 +1,5 @@
 [project]
-name = "mihomo-rule-library"
+name = "ruleset-foundry"
 version = "0.0.0"
 description = "从上游开源规则自动合并、去重并构建为 mihomo 规则集"
 requires-python = ">=3.14"
