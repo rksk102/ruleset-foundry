@@ -7,6 +7,7 @@ import urllib.parse
 from io import StringIO
 from pathlib import Path
 
+import manifest
 from config_loader import ConfigError, get
 from logger import error, gh_error, group_end, group_start, info, success
 from utils import (
@@ -77,7 +78,9 @@ def resolve_badge_time():
     if not get("behavior", "release_change_detection", default=True):
         return None
     try:
-        current, _c1, _c2 = combined_products_hash(DIR_RULES, DIR_MRS)
+        current, _c1, _c2 = combined_products_hash(
+            DIR_RULES, DIR_MRS, format_tag=manifest.MANIFEST_MAGIC
+        )
         if current != load_last_hash():
             return None
     except Exception:

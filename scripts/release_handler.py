@@ -529,11 +529,11 @@ def main():
         return
 
     if "--print-hash" in sys.argv[1:]:
-        print(combined_products_hash(*product_dirs())[0])
+        print(combined_products_hash(*product_dirs(), format_tag=manifest.MANIFEST_MAGIC)[0])
         return
 
     if "--needs-publish" in sys.argv[1:]:
-        current, _c1, _c2 = combined_products_hash(*product_dirs())
+        current, _c1, _c2 = combined_products_hash(*product_dirs(), format_tag=manifest.MANIFEST_MAGIC)
         force = os.getenv("FORCE_RELEASE", "").lower() in ("1", "true", "yes")
         publish, _why = should_publish(current, load_last_hash(), CHANGE_DETECTION, force=force)
         if not publish:
@@ -550,7 +550,9 @@ def main():
 
     section("产物校验")
     txt_dir, mrs_dir = product_dirs()
-    combined_hash, c1, c2 = combined_products_hash(txt_dir, mrs_dir)
+    combined_hash, c1, c2 = combined_products_hash(
+        txt_dir, mrs_dir, format_tag=manifest.MANIFEST_MAGIC
+    )
     tag_id = release_id_for_hash(combined_hash)
     release_tag = f"rules-{tag_id}"
     info(f"目标发布标签: {release_tag}")

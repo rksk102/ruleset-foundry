@@ -237,6 +237,17 @@ class TestCombinedProductsHash:
         assert combined.count("|") == 3
         assert combined.endswith("|1|1")
 
+    def test_format_tag_changes_hash(self, tmp_path):
+        txt = tmp_path / "t"
+        mrs = tmp_path / "m"
+        txt.mkdir()
+        mrs.mkdir()
+        (txt / "a.txt").write_text("a.com\n", encoding="utf-8")
+        (mrs / "a.mrs").write_text("MRS", encoding="utf-8")
+        first, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs), format_tag="v1")
+        second, _c1, _c2 = utils.combined_products_hash(str(txt), str(mrs), format_tag="v2")
+        assert first != second
+
     def test_header_change_does_not_trigger_release(self, tmp_path):
         txt = tmp_path / "t"
         mrs = tmp_path / "m"
