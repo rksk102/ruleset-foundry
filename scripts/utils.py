@@ -164,9 +164,12 @@ def dir_hash(dirpath, pattern="*", skip_comments=False):
     return h_all.hexdigest(), count
 
 
-def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs"):
+def combined_products_hash(txt_dir="merged-rules", mrs_dir="merged-rules-mrs", format_tag=""):
+    """format_tag 参与哈希，使清单表头变化也能触发一次发布。"""
     h1, c1 = dir_hash(txt_dir, "*.txt", skip_comments=True)
     h2, c2 = dir_hash(mrs_dir, "*.mrs")
+    if format_tag:
+        h1 = hashlib.sha256(f"{h1}\0{format_tag}".encode()).hexdigest()
     return f"{h1}|{h2}|{c1}|{c2}", c1, c2
 
 

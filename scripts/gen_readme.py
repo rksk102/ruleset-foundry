@@ -7,6 +7,7 @@ import urllib.parse
 from io import StringIO
 from pathlib import Path
 
+import manifest
 from config_loader import ConfigError, get
 from logger import error, gh_error, group_end, group_start, info, success
 from utils import (
@@ -26,7 +27,7 @@ except ConfigError as _cfg_err:
     gh_error(f"配置校验失败: {_cfg_err}")
     sys.exit(1)
 README_FILE = os.path.join(REPO_ROOT, "README.md")
-DEFAULT_REPO_NAME = "rksk102/mihomo-rule-library"
+DEFAULT_REPO_NAME = "rksk102/ruleset-foundry"
 DEFAULT_ARTIFACTS_BRANCH = "artifacts"
 REPO_NAME = os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
 ARTIFACTS_BRANCH = os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
@@ -77,7 +78,9 @@ def resolve_badge_time():
     if not get("behavior", "release_change_detection", default=True):
         return None
     try:
-        current, _c1, _c2 = combined_products_hash(DIR_RULES, DIR_MRS)
+        current, _c1, _c2 = combined_products_hash(
+            DIR_RULES, DIR_MRS, format_tag=manifest.MANIFEST_MAGIC
+        )
         if current != load_last_hash():
             return None
     except Exception:

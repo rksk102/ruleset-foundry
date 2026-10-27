@@ -7,7 +7,7 @@ from pathlib import Path
 from utils import atomic_write, beijing_timestamp, file_sha256
 
 MANIFEST_NAME = "products.manifest"
-MANIFEST_MAGIC = "# mihomo-rule-library products manifest v2"
+MANIFEST_MAGIC = "# ruleset-foundry products manifest v2"
 _MANIFEST_LINE_RE = re.compile(r"^(?P<sha>[0-9a-f]{64})\s+(?P<path>\S.*)$")
 _GENERATION_PREFIX = "# generation: "
 
