@@ -773,8 +773,8 @@ class TestStagedSync:
 
         main.main()
 
-        assert "good.com" in (root / "block/domain/Owner/a.txt").read_text(encoding="utf-8")
-        assert "other.com" in (root / "block/domain/Owner/b.txt").read_text(encoding="utf-8")
+        assert (root / "block/domain/Owner/a.txt").read_text(encoding="utf-8").splitlines()[-1] == "good.com"
+        assert (root / "block/domain/Owner/b.txt").read_text(encoding="utf-8").splitlines()[-1] == "other.com"
         assert (root / "products.manifest").is_file()
         assert not list(root.glob(f"{main._STAGING_PREFIX}*"))
 
