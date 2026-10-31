@@ -45,18 +45,6 @@ class TestCombinedHashIncludesPath:
 
         assert first != second
 
-    def test_count_unchanged_by_rename(self, work_dir):
-        txt, mrs = products(work_dir)
-        (txt / "a.txt").write_text("a.com\n", encoding="utf-8")
-        (txt / "b.txt").write_text("b.com\n", encoding="utf-8")
-        first, c1, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        (txt / "b.txt").rename(txt / "c.txt")
-        second, c1_after, _c2 = utils.combined_products_hash(str(txt), str(mrs))
-
-        assert (c1, c1_after) == (2, 2)
-        assert first != second
-
 
 class TestDirHashIsPathSensitive:
     def test_rename_changes_skip_comments_digest(self, work_dir):

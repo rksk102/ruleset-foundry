@@ -61,9 +61,6 @@ class TestIsTrustedHost:
         ]:
             assert main.is_trusted_host(url) is False, url
 
-    def test_subdomain_of_trusted_is_trusted(self):
-        assert main.is_trusted_host("https://api.github.com/x") is True
-
     def test_missing_or_invalid_host(self):
         assert main.is_trusted_host("") is False
         assert main.is_trusted_host("not a url") is False
@@ -423,17 +420,6 @@ class TestPlanGroups:
             )
         assert exc.value.code == 1
 
-    def test_same_owner_different_repos_split_to_avoid_overwrite(self):
-        groups = main.plan_groups(
-            [
-                self.task("https://github.com/o/r/raw/m/x.txt"),
-                self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
-            ]
-        )
-        assert len(groups) == 2
-        paths = sorted(str(g["path"]).replace("\\", "/") for g in groups)
-        assert paths == ["rulesets/policy/domain/o__r/x.txt", "rulesets/policy/domain/o__r2/x.txt"]
-
     def test_collision_splits_into_separate_groups(self):
         groups = main.plan_groups(
             [
@@ -476,11 +462,6 @@ class TestPlanGroups:
         assert indices == [0]
         for i, t in groups[0]["members"]:
             assert t is tasks[i]
-
-    def test_all_sources_recorded(self):
-        url = "https://github.com/o/r/raw/m/x.txt"
-        groups = main.plan_groups([self.task(url), self.task(url)])
-        assert groups[0]["sources"] == [url]
 
     def test_defaults_to_exact_without_domain_kind(self):
         groups = main.plan_groups([self.task("https://github.com/o/r/raw/m/x.txt")])

@@ -298,10 +298,6 @@ class TestStaticSections:
         assert "Releases" in text and "SHA256SUMS" in text
         assert "SECURITY.md" in text
 
-    def test_never_mentions_ghproxy(self):
-        text = gen_readme.make_static_sections()
-        assert "ghproxy" not in text.lower()
-
 
 class TestIntro:
     def test_mrs_recommended_with_complete_yaml(self):

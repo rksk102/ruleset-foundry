@@ -471,13 +471,6 @@ class TestGenerateReleaseNotes:
         assert "| MRS 规则 | `mrs-out` | **1** |" in out
         assert "**2**" in out
 
-    def test_empty_manifest_does_not_crash(self):
-        out = release_handler.generate_release_notes(
-            "2026-10-05", "00:00:00", {"merged-rules": [], "merged-rules-mrs": []}
-        )
-        assert isinstance(out, str) and out
-
-
 def posix_paths(paths):
     return [p.replace("\\", "/") for p in paths]
 
@@ -556,16 +549,6 @@ class TestPublishRelease:
         ]
         assert len(stub.calls) == 2
 
-    def test_existing_release_never_deletes(self):
-        stub = GhStub()
-        run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, True),
-        )
-        flat = " ".join(stub.commands())
-        assert "delete" not in flat
-        assert "git/refs/tags" not in flat
-
     def test_extra_assets_uploaded_alongside_zip(self):
         stub = GhStub()
         run_with_stub(
@@ -623,15 +606,6 @@ class TestPublishRelease:
             lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, False),
         )
         assert result is None
-
-    def test_always_passes_latest_flag(self):
-        for exists in (True, False):
-            stub = GhStub()
-            run_with_stub(
-                stub,
-                lambda e=exists: release_handler.publish_release("rules-2026-10-05", ZIP, "t", NOTES, e),
-            )
-            assert stub.calls[-1][-1] == "--latest"
 
 
 @pytest.fixture

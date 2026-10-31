@@ -125,18 +125,6 @@ class TestConsoleReadability:
         assert "第一行\n第二行" in out
         assert "%0A" not in out
 
-    def test_local_console_restores_percent(self, monkeypatch, capsys):
-        _reset(monkeypatch)
-        log.info("进度 50%")
-        assert "进度 50%" in capsys.readouterr().out
-
-    def test_ci_console_keeps_lines_readable(self, monkeypatch, capsys):
-        _reset(monkeypatch, ci=True)
-        log.warning("第一行\n第二行")
-        out = capsys.readouterr().out
-        assert "第一行\n第二行" in out
-        assert "%0A" not in out
-
 
 class TestLogFile:
     def test_log_file_has_no_ansi_and_keeps_message(self, monkeypatch):

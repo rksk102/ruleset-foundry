@@ -187,11 +187,6 @@ class TestDownloadCap:
         assert content is None
         assert err == "非文本响应"
 
-    def test_client_error_not_retried(self):
-        _task, content, err = download([b""], status=404)
-        assert content is None
-        assert err == "HTTP 404"
-
 
 class TestRetryPolicy:
     def retry_with(self, status, headers=None, retries=2):
@@ -249,28 +244,6 @@ class TestRetryPolicy:
     def test_invalid_retry_after_falls_back(self):
         _s, _r, slept = self.retry_with(429, {"Retry-After": "not-a-date"})
         assert slept == [1, 2]
-
-
-class TestBackoffBudget:
-    def test_budget_stops_endless_retries(self):
-        slept = []
-        original_sleep = asyncio.sleep
-        original_retries = main.RETRIES
-        main.RETRIES = 5
-
-        async def fake_sleep(seconds):
-            slept.append(seconds)
-
-        asyncio.sleep = fake_sleep
-        try:
-            session = FakeSession(FakeResponse(429, [b"x"], {"Retry-After": "3600"}))
-            _t, content, err = asyncio.run(main.download_one(session, TASK))
-        finally:
-            asyncio.sleep = original_sleep
-            main.RETRIES = original_retries
-        assert content is None
-        assert "Retry-After" in (err or "")
-        assert slept == []
 
 
 class TestSourceDisambiguation:

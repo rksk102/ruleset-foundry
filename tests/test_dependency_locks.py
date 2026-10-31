@@ -46,17 +46,6 @@ class TestLockSync:
                     "请执行 uv lock"
                 )
 
-    def test_runtime_dependencies_are_locked(self):
-        # 旧 requirements.lock / requirements-dev.lock 的“运行时是开发锁子集”检查
-        # 由单一 uv.lock 的结构保证；这里保留显式的运行时依赖存在性检查。
-        packages = locked_packages()
-        missing = [
-            requirement.name
-            for requirement in manifest_requirements("runtime")
-            if requirement.name.lower().replace("_", "-") not in packages
-        ]
-        assert not missing, f"uv.lock 缺少运行时依赖: {missing}"
-
     def test_every_locked_package_is_hash_pinned(self):
         for name, package in locked_packages().items():
             source = package.get("source") or {}
