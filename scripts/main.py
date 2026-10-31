@@ -1,7 +1,9 @@
 import asyncio
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -190,6 +192,36 @@ def ensure_within_rulesets(abs_path):
         gh_error(f"输出路径越界，拒绝写入: {target}（须位于 {root} 内）")
         sys.exit(1)
     return target
+
+
+_STAGING_PREFIX = ".staging-"
+
+
+def _staging_output_path(staging_root, final_path):
+    root = _resolved_rulesets_dir()
+    final = ensure_within_rulesets(final_path)
+    relative = final.relative_to(root)
+    return ensure_within_rulesets(Path(staging_root) / relative)
+
+
+def _cleanup_stale_staging(root):
+    for path in root.iterdir():
+        if path.name.startswith(_STAGING_PREFIX) and path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def commit_staged_products(staging_root, expected_files):
+    root = _resolved_rulesets_dir()
+    moves = []
+    for expected in expected_files:
+        final = ensure_within_rulesets(expected)
+        staged = ensure_within_rulesets(Path(staging_root) / final.relative_to(root))
+        if not staged.is_file():
+            raise FileNotFoundError(f"暂存产物缺失: {staged}")
+        moves.append((staged, final))
+    for staged, final in moves:
+        final.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staged, final)
 
 
 def _base_rel_path(task):
@@ -396,7 +428,7 @@ def _gate_unrecognized(unrecognized, total, contributing, errors, label="未识�
     return True
 
 
-def process_group(group, raw_by_index, err_by_index=None):
+def process_group(group, raw_by_index, err_by_index=None, write_root=None):
     all_lines = []
     errors = {"download": [], "parse": []}
     contributing = []
@@ -475,7 +507,8 @@ def process_group(group, raw_by_index, err_by_index=None):
         return None, errors
 
     header = [f"# Source: {url}" for url in contributing]
-    output_path = ensure_within_rulesets(group["path"])
+    final_path = ensure_within_rulesets(group["path"])
+    output_path = final_path if write_root is None else _staging_output_path(write_root, final_path)
     atomic_write(output_path, header + result)
     return len(result), errors
 
@@ -812,7 +845,9 @@ def main():
     stats = SyncStats()
 
     group_start("初始化")
-    _resolved_rulesets_dir().mkdir(parents=True, exist_ok=True)
+    root = _resolved_rulesets_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_staging(root)
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次")
     tasks = parse_sources()
     info(f"  加载 {len(tasks)} 个上游源")
@@ -832,74 +867,81 @@ def main():
         elif err:
             err_by_index[idx] = err
 
-    expected_files = []
-    for group in groups:
-        count, errors = process_group(group, raw_by_index, err_by_index)
-        for url, reason in errors["download"]:
-            stats.download_errors.append((url, reason))
-            warning(f"  下载失败: {url} | {reason}")
-        for url, reason in errors["parse"]:
-            stats.parse_errors.append((url, reason))
-            warning(f"  解析失败: {url} | {reason}")
-        if count is None:
-            warning(f"  跳过（无可用规则）: {group['path']}")
-            continue
-        expected_files.append(Path(group["path"]))
-        stats.success += 1
-        stats.total_lines += count
-        label = f"[{group['policy']}/{group['type']}] {Path(group['path']).name}"
-        success(f"  {label} -> {count} 条规则")
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=str(root)))
+    try:
+        expected_files = []
+        for group in groups:
+            count, errors = process_group(group, raw_by_index, err_by_index, write_root=staging)
+            for url, reason in errors["download"]:
+                stats.download_errors.append((url, reason))
+                warning(f"  下载失败: {url} | {reason}")
+            for url, reason in errors["parse"]:
+                stats.parse_errors.append((url, reason))
+                warning(f"  解析失败: {url} | {reason}")
+            if count is None:
+                warning(f"  跳过（无可用规则）: {group['path']}")
+                continue
+            expected_files.append(Path(group["path"]))
+            stats.success += 1
+            stats.total_lines += count
+            label = f"[{group['policy']}/{group['type']}] {Path(group['path']).name}"
+            success(f"  {label} -> {count} 条规则")
 
-    degraded = stats.success == 0
-    degraded_reasons = []
-    if degraded:
-        degraded_reasons.append(f"没有任何可用产物（成功 0/{len(groups)}）")
-    if not degraded and groups:
-        ratio = stats.success / len(groups)
-        if MIN_SUCCESS_RATIO > 0 and ratio < MIN_SUCCESS_RATIO:
-            degraded = True
-            degraded_reasons.append(
-                f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）"
+        degraded = stats.success == 0
+        degraded_reasons = []
+        if degraded:
+            degraded_reasons.append(f"没有任何可用产物（成功 0/{len(groups)}）")
+        if not degraded and groups:
+            ratio = stats.success / len(groups)
+            if MIN_SUCCESS_RATIO > 0 and ratio < MIN_SUCCESS_RATIO:
+                degraded = True
+                degraded_reasons.append(
+                    f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）"
+                )
+                gh_error(
+                    f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）"
+                )
+            partial_failures = bool(stats.download_errors or stats.parse_errors)
+            if partial_failures and not ALLOW_PARTIAL:
+                degraded = True
+                degraded_reasons.append(
+                    f"存在失败源（下载 {len(stats.download_errors)} / "
+                    f"解析 {len(stats.parse_errors)}）且 behavior.allow_partial=false"
+                )
+                gh_error(
+                    f"存在失败源（下载 {len(stats.download_errors)} / 解析 {len(stats.parse_errors)}），"
+                    "behavior.allow_partial=false 时拒绝发布部分产物"
+                )
+
+        if degraded:
+            info("  本次不发布，保留上一版产物：")
+            for reason in degraded_reasons:
+                info(f"    - {reason}")
+            summary_file = _resolved_rulesets_dir() / "sync-summary.txt"
+            summary_file.write_text(
+                "# 同步摘要\n"
+                f"# 时间: {beijing_timestamp()}\n"
+                f"# 成功: {stats.success} "
+                f"失败: {len(stats.download_errors) + len(stats.parse_errors)}\n"
+                f"# 原因: {'；'.join(degraded_reasons)}\n",
+                encoding="utf-8",
             )
-            gh_error(f"源成功率 {ratio:.1%} 低于门禁 {MIN_SUCCESS_RATIO:.0%}（成功 {stats.success}/{len(groups)}）")
-        partial_failures = bool(stats.download_errors or stats.parse_errors)
-        if partial_failures and not ALLOW_PARTIAL:
-            degraded = True
-            degraded_reasons.append(
-                f"存在失败源（下载 {len(stats.download_errors)} / "
-                f"解析 {len(stats.parse_errors)}）且 behavior.allow_partial=false"
-            )
+            info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
+            generate_summary(stats, degraded_reasons)
             gh_error(
-                f"存在失败源（下载 {len(stats.download_errors)} / 解析 {len(stats.parse_errors)}），"
-                "behavior.allow_partial=false 时拒绝发布部分产物"
+                f"同步未发布（成功 {stats.success}/{len(groups)}）："
+                f"{'；'.join(degraded_reasons)}。请检查 sources.urls 与上游可达性；"
+                "如需接受部分产物请设 behavior.allow_partial=true（或调低 "
+                "behavior.min_source_success_ratio）"
             )
+            sys.exit(1)
 
-    if degraded:
-        info("  本次不发布，保留上一版产物：")
-        for reason in degraded_reasons:
-            info(f"    - {reason}")
-        summary_file = _resolved_rulesets_dir() / "sync-summary.txt"
-        summary_file.write_text(
-            "# 同步摘要\n"
-            f"# 时间: {beijing_timestamp()}\n"
-            f"# 成功: {stats.success} "
-            f"失败: {len(stats.download_errors) + len(stats.parse_errors)}\n"
-            f"# 原因: {'；'.join(degraded_reasons)}\n",
-            encoding="utf-8",
-        )
-        info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
-        generate_summary(stats, degraded_reasons)
-        gh_error(
-            f"同步未发布（成功 {stats.success}/{len(groups)}）："
-            f"{'；'.join(degraded_reasons)}。请检查 sources.urls 与上游可达性；"
-            "如需接受部分产物请设 behavior.allow_partial=true（或调低 "
-            "behavior.min_source_success_ratio）"
-        )
-        sys.exit(1)
-
-    finalize_products(expected_files)
-
-    generate_summary(stats)
+        commit_staged_products(staging, expected_files)
+        finalize_products(expected_files)
+        generate_summary(stats)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
     info(
         f"\n同步完成: {stats.success} 个输出成功, "
