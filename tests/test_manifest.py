@@ -7,6 +7,25 @@ H1 = hashlib.sha256(b"1").hexdigest()
 H2 = hashlib.sha256(b"2").hexdigest()
 
 
+class TestGeneration:
+    def test_ci_generation_includes_run_attempt(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_RUN_ID", "123")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+        first = manifest.current_generation()
+        assert first == manifest.expected_generation()
+
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+        assert manifest.current_generation() == manifest.expected_generation()
+        assert manifest.current_generation() != first
+
+    def test_local_generation_behavior_is_unchanged(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+        monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+        monkeypatch.setattr(manifest, "beijing_timestamp", lambda: "2026-10-31 12:00:00")
+        assert manifest.current_generation().startswith("local-2026-10-31 12:00:00-")
+        assert manifest.expected_generation() is None
+
+
 class TestSaveLoad:
     def test_roundtrip(self, work_dir):
         path = work_dir / "state" / "products.txt"
@@ -62,6 +81,20 @@ class TestSaveLoad:
         path = work_dir / "m.txt"
         path.write_text(f"{manifest.MANIFEST_MAGIC}\n# generation: g\n{H1}  ../a.txt\n", encoding="utf-8")
         with pytest.raises(manifest.ManifestError, match="越界"):
+            manifest.load_manifest(path)
+
+    @pytest.mark.parametrize("rel", ["../a.txt", "C:/a.txt", r"C:\a.txt", "/a.txt", "a//b.txt", "a/b/"])
+    def test_save_rejects_unsafe_relative_paths(self, work_dir, rel):
+        path = work_dir / "m.txt"
+        with pytest.raises(manifest.ManifestError, match="路径"):
+            manifest.save_manifest(path, {rel: H1}, generation="g")
+        assert not path.exists()
+
+    @pytest.mark.parametrize("rel", ["C:/a.txt", r"C:\a.txt", "/a.txt", "a//b.txt", r"a\\b.txt"])
+    def test_load_rejects_unsafe_relative_paths(self, work_dir, rel):
+        path = work_dir / "m.txt"
+        path.write_text(f"{manifest.MANIFEST_MAGIC}\n# generation: g\n{H1}  {rel}\n", encoding="utf-8")
+        with pytest.raises(manifest.ManifestError, match="路径"):
             manifest.load_manifest(path)
 
 
