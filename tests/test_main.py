@@ -1,5 +1,6 @@
 import main
 import pytest
+import utils
 
 
 def write(path, text):
@@ -488,6 +489,16 @@ class TestPlanGroups:
     def test_empty_input(self):
         assert main.plan_groups([]) == []
 
+    def test_casefold_output_collision_is_rejected(self):
+        with pytest.raises(SystemExit) as exc:
+            main.plan_groups(
+                [
+                    self.task("https://github.com/Owner/repo/raw/m/Rules.txt"),
+                    self.task("https://github.com/owner/repo/raw/m/rules.txt"),
+                ]
+            )
+        assert exc.value.code == 1
+
 
 class TestParseSources:
     def load(self, tmp_path, content):
@@ -633,6 +644,44 @@ class TestMixedDomainKind:
         assert writes == []
 
 
+class TestProcessGroupGates:
+    def test_default_routes_do_not_dilute_unexpected_drop_gate(self, monkeypatch):
+        group = {
+            "path": "rulesets/direct/ipcidr/Owner/cn.txt",
+            "policy": "direct",
+            "type": "ipcidr",
+            "members": [(0, {"url": "https://example.com/cn.txt"})],
+        }
+        lines = ["DOMAIN-SUFFIX,ads.example.com"] * 20 + ["0.0.0.0/0"] * 180 + ["1.1.1.0/24"]
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(group, {0: ("\n".join(lines) + "\n").encode()})
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_process_group_writes_the_validated_anchored_path(self, monkeypatch, work_dir):
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "domain_kind": "exact",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+        monkeypatch.chdir(work_dir)
+        expected = main.ensure_within_rulesets(group["path"])
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda path, content: writes.append(path))
+
+        count, errors = main.process_group(group, {0: b"good.example.com\n"})
+
+        assert count == 1
+        assert errors["parse"] == []
+        assert writes == [expected]
+
+
 class TestProcessIpGroup:
     def test_domain_rules_are_counted_as_dropped_types(self):
         result, stats = main._process_ip_group(["DOMAIN-SUFFIX,ads.example.com"])
@@ -645,6 +694,45 @@ class TestProcessIpGroup:
 
         assert result == ["1.0.0.0/24"]
         assert stats["dropped_default_route"] == 1
+
+
+class TestRulesetsRootAnchor:
+    def test_repository_root_is_rejected_as_rulesets_dir(self, work_dir, monkeypatch):
+        repo = work_dir / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(main, "REPO_ROOT", repo)
+        monkeypatch.setattr(utils, "REPO_ROOT", repo)
+        monkeypatch.setattr(main, "RULESETS_DIR", repo)
+
+        with pytest.raises(SystemExit) as exc:
+            main._resolved_rulesets_dir()
+
+        assert exc.value.code == 1
+
+    def test_external_symlink_is_rejected_before_orphan_cleanup(self, work_dir, monkeypatch):
+        repo = work_dir / "repo"
+        repo.mkdir()
+        outside = work_dir / "outside"
+        outside.mkdir()
+        victim = outside / "keep.txt"
+        victim.write_text("keep\n", encoding="utf-8")
+        link = repo / "rulesets"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as e:
+            pytest.skip(f"symlink unavailable: {e}")
+        monkeypatch.setattr(main, "REPO_ROOT", repo)
+        monkeypatch.setattr(utils, "REPO_ROOT", repo)
+        monkeypatch.setattr(main, "RULESETS_DIR", link)
+        removed = []
+        monkeypatch.setattr(main.os, "remove", lambda path: removed.append(path))
+
+        with pytest.raises(SystemExit) as exc:
+            main.clean_orphans([])
+
+        assert exc.value.code == 1
+        assert removed == []
+        assert victim.read_text(encoding="utf-8") == "keep\n"
 
 
 class TestCleanOrphans:

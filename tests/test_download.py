@@ -31,12 +31,13 @@ class FakeResponse:
 
 class FakeSession:
     def __init__(self, response):
-        self._response = response
+        self._responses = list(response) if isinstance(response, (list, tuple)) else [response]
         self.calls = []
 
     def get(self, url, timeout=None, headers=None, **kw):
-        self.calls.append({"url": url, "headers": headers})
-        return self._response
+        self.calls.append({"url": url, "headers": headers, "allow_redirects": kw.get("allow_redirects")})
+        index = min(len(self.calls) - 1, len(self._responses) - 1)
+        return self._responses[index]
 
 
 TASK = {"url": "https://example.com/list.txt", "policy": "block", "type": "domain"}
@@ -60,6 +61,62 @@ class TestHttpsRedirects:
         _task, content, err = asyncio.run(main.download_one(session, TASK))
         assert content is None
         assert "HTTPS" in err
+
+    def test_https_to_http_redirect_never_requests_http(self):
+        session = FakeSession(FakeResponse(302, [], {"Location": "http://mirror.example.com/list.txt"}))
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "HTTPS" in err
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+        assert session.calls[0]["allow_redirects"] is False
+
+    def test_relative_redirect_re_applies_auth_headers(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        target = "https://raw.githubusercontent.com/o/r/main/list.txt"
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": "/o/r/main/list.txt"}),
+                FakeResponse(200, [b"example.com\n"], url=target),
+            ]
+        )
+        task = {**TASK, "url": "https://raw.githubusercontent.com/start/list.txt"}
+
+        _task, content, err = asyncio.run(main.download_one(session, task))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert [call["url"] for call in session.calls] == [task["url"], target]
+        assert all(call["headers"]["Authorization"] == "Bearer tok" for call in session.calls)
+        assert all(call["allow_redirects"] is False for call in session.calls)
+
+    def test_redirect_to_untrusted_host_drops_auth_headers(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": "https://example.com/next.txt"}),
+                FakeResponse(200, [b"example.com\n"], url="https://example.com/next.txt"),
+            ]
+        )
+        task = {**TASK, "url": "https://raw.githubusercontent.com/o/r/main/list.txt"}
+
+        _task, content, err = asyncio.run(main.download_one(session, task))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert session.calls[0]["headers"]["Authorization"] == "Bearer tok"
+        assert "Authorization" not in session.calls[1]["headers"]
+
+    def test_redirect_hops_are_bounded(self):
+        responses = [FakeResponse(302, [], {"Location": f"/hop-{i}.txt"}) for i in range(20)]
+        session = FakeSession(responses)
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "重定向" in err
+        assert len(session.calls) == main.MAX_REDIRECTS + 1
 
 
 def test_request_includes_explicit_user_agent():
@@ -156,8 +213,10 @@ class TestRetryPolicy:
         return session, result, slept
 
     def test_404_not_retried(self):
-        _s, _r, slept = self.retry_with(404)
+        _s, (_task, content, err), slept = self.retry_with(404)
         assert slept == []
+        assert content is None
+        assert err == "HTTP 404"
 
     @pytest.mark.parametrize("status", [408, 425, 429, 503])
     def test_retryable_status_is_retried(self, status):
@@ -267,7 +326,7 @@ class TestProcessGroupIpRouting:
         finally:
             main.atomic_write = original
         assert count == 2
-        assert written["rulesets/direct/ipcidr/Owner/cn.txt"] == [
+        assert written[main.ensure_within_rulesets(group["path"])] == [
             "# Source: https://raw.githubusercontent.com/o/r/cn.txt",
             "1.0.1.0/24",
             "1.0.2.0/23",
@@ -305,6 +364,25 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = self.run_group(raw)
         assert count is None
         assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+
+    def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
+        lines = [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(25)] + ["good.com"]
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
+
+        assert count is None
+        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_small_unexpressible_count_only_warns(self):
+        lines = [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(5)] + ["good.com"]
+
+        count, errors = self.run_group(("\n".join(lines) + "\n").encode())
+
+        assert count == 1
+        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
 
     def test_gate_failure_does_not_write_output(self):
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
@@ -367,7 +445,7 @@ class TestProcessGroupUnrecognizedGate:
         finally:
             main.atomic_write = original
         assert count == 1
-        assert written[group["path"]] == ["# Source: " + alive, "good.com"]
+        assert written[main.ensure_within_rulesets(group["path"])] == ["# Source: " + alive, "good.com"]
         assert errors["download"] == [(dead, "下载失败")]
 
     def test_header_skips_source_with_no_parsed_lines(self):
@@ -388,7 +466,7 @@ class TestProcessGroupUnrecognizedGate:
         finally:
             main.atomic_write = original
         assert count == 1
-        assert written[group["path"]] == ["# Source: " + alive, "good.com"]
+        assert written[main.ensure_within_rulesets(group["path"])] == ["# Source: " + alive, "good.com"]
         assert errors["parse"] == []
 
     def test_download_error_reason_is_preserved(self):
@@ -441,6 +519,25 @@ class TestProcessGroupIpUnrecognizedGate:
         assert count is None
         flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/cn.txt"]
+
+    def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
+        lines = [f"DOMAIN-SUFFIX,ads-{i}.example.com" for i in range(25)] + ["1.0.1.0/24"]
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
+
+        assert count is None
+        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_default_routes_are_not_unexpected_drops(self):
+        lines = ["0.0.0.0/0"] * 25 + ["1.0.1.0/24"]
+
+        count, errors = self.run_group(("\n".join(lines) + "\n").encode())
+
+        assert count == 1
+        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
 
     def test_low_invalid_ratio_not_flagged(self):
         lines = ["garbage row"] + [f"10.{i}.0.0/16" for i in range(0, 100, 2)]

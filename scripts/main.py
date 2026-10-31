@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import aiohttp
 import manifest
@@ -14,6 +14,7 @@ import processor
 from config_loader import ConfigError, get
 from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
+    REPO_ROOT,
     WINDOWS_RESERVED_NAMES,
     anchor_cwd_to_repo_root,
     atomic_write,
@@ -21,6 +22,7 @@ from utils import (
     beijing_timestamp,
     file_sha256,
     get_owner_from_url,
+    is_repo_subdir,
     is_safe_component,
     normalize_policy,
     normalize_type,
@@ -45,8 +47,18 @@ except ConfigError as _cfg_err:
 MANIFEST_FILE = RULESETS_DIR / manifest.MANIFEST_NAME
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
+MAX_REDIRECTS = 5
 
 UNRECOGNIZED_MIN_LINES = 20
+
+_UNEXPECTED_DROP_KEYS = (
+    "dropped_keyword",
+    "dropped_modifier",
+    "dropped_path",
+    "dropped_exception",
+    "ip_in_domain",
+)
 
 AUTH_HOST_SUFFIXES = (
     "githubusercontent.com",
@@ -152,9 +164,28 @@ def clean_path_component(value, fallback):
     return text
 
 
+def _anchored_path(path):
+    target = Path(path)
+    if not target.is_absolute():
+        target = REPO_ROOT / target
+    return target.resolve()
+
+
+def _resolved_rulesets_dir():
+    try:
+        root = _anchored_path(RULESETS_DIR)
+    except (OSError, RuntimeError) as e:
+        gh_error(f"rulesets 根目录解析失败，拒绝写入或清理: {RULESETS_DIR}（{e}）")
+        sys.exit(1)
+    if not is_repo_subdir(root):
+        gh_error(f"rulesets 根目录越界，拒绝写入或清理: {root}（须为 {REPO_ROOT} 内的真子目录）")
+        sys.exit(1)
+    return root
+
+
 def ensure_within_rulesets(abs_path):
-    root = Path(RULESETS_DIR).resolve()
-    target = Path(abs_path).resolve()
+    root = _resolved_rulesets_dir()
+    target = _anchored_path(abs_path)
     if target != root and root not in target.parents:
         gh_error(f"输出路径越界，拒绝写入: {target}（须位于 {root} 内）")
         sys.exit(1)
@@ -293,6 +324,14 @@ def plan_groups(tasks):
         if task.get("domain_kind", "exact") != group["domain_kind"]:
             group["domain_kind"] = "mixed"
 
+    casefolded = {}
+    for key in groups:
+        normalized = Path(key).as_posix().casefold()
+        if normalized in casefolded:
+            gh_error(f"输出路径存在大小写变体碰撞，拒绝写入: {casefolded[normalized]} <-> {key}")
+            sys.exit(1)
+        casefolded[normalized] = key
+
     conflicts = []
     for key, group in groups.items():
         slugs = {source_repo_slug(t["url"]) for _i, t in group["members"]}
@@ -326,24 +365,34 @@ def _process_ip_group(all_lines):
     return result, stats
 
 
-def _gate_unrecognized(unrecognized, total, contributing, errors):
-    """未识别行占比门禁：domain 与 ipcidr 组共用，超阈值记 parse 错误（fail-closed）。"""
+def _unexpected_drop_count(stats):
+    return sum(stats.get(key, 0) for key in _UNEXPECTED_DROP_KEYS) + sum(
+        (stats.get("dropped_rule_type") or {}).values()
+    )
+
+
+def _gate_unrecognized(unrecognized, total, contributing, errors, label="未识别行"):
+    """丢弃行占比门禁：domain 与 ipcidr 组共用，超阈值记 parse 错误（fail-closed）。"""
     if not unrecognized:
         return True
+    if total <= 0:
+        sources_label = contributing[0] if contributing else "未知来源"
+        errors["parse"].append((sources_label, f"{label}存在但有效输入计数为 0，疑似上游格式变更"))
+        return False
     ratio = unrecognized / total
-    warning(f"    未识别/已丢弃行: {unrecognized}/{total} ({ratio:.1%})")
+    warning(f"    {label}: {unrecognized}/{total} ({ratio:.1%})")
     if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
         sources_label = contributing[0] + (f" 等 {len(contributing)} 个源" if len(contributing) > 1 else "")
         errors["parse"].append(
             (
                 sources_label,
-                f"未识别行占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
+                f"{label}占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
                 f"（{unrecognized}/{total}），疑似上游格式变更",
             )
         )
         return False
     if ratio >= UNRECOGNIZED_WARN_RATIO:
-        warning(f"    占比超阈值但未识别行只有 {unrecognized} 行（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
+        warning(f"    占比超阈值但{label}只有 {unrecognized} 行（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
     return True
 
 
@@ -373,7 +422,12 @@ def process_group(group, raw_by_index, err_by_index=None):
 
     if group["type"] == "ipcidr":
         result, _special = _process_ip_group(all_lines)
-        gate_ok = _gate_unrecognized(_special.get("unrecognized", 0), len(all_lines), contributing, errors)
+        gate_total = len(all_lines) - _special.get("dropped_default_route", 0)
+        gate_ok = _gate_unrecognized(_special.get("unrecognized", 0), gate_total, contributing, errors)
+        gate_ok = (
+            _gate_unrecognized(_unexpected_drop_count(_special), gate_total, contributing, errors, label="意外丢弃行")
+            and gate_ok
+        )
     else:
         effective_kind = group.get("domain_kind", "exact")
         if effective_kind == "mixed":
@@ -406,6 +460,12 @@ def process_group(group, raw_by_index, err_by_index=None):
             warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
 
         gate_ok = _gate_unrecognized(special.get("unrecognized", 0), len(all_lines), contributing, errors)
+        gate_ok = (
+            _gate_unrecognized(
+                _unexpected_drop_count(special), len(all_lines), contributing, errors, label="意外丢弃行"
+            )
+            and gate_ok
+        )
 
     if not gate_ok:
         return None, errors
@@ -415,8 +475,8 @@ def process_group(group, raw_by_index, err_by_index=None):
         return None, errors
 
     header = [f"# Source: {url}" for url in contributing]
-    ensure_within_rulesets(group["path"])
-    atomic_write(group["path"], header + result)
+    output_path = ensure_within_rulesets(group["path"])
+    atomic_write(output_path, header + result)
     return len(result), errors
 
 
@@ -530,52 +590,80 @@ def _retry_delay(resp, attempt, backoff_budget):
 
 async def download_one(session, task):
     url = task["url"]
-    headers = dict(auth_headers(url) or {})
-    headers["User-Agent"] = USER_AGENT
     backoff_budget = MAX_RETRY_AFTER * 2
 
     for attempt in range(RETRIES + 1):
+        url = task["url"]
+        redirects = 0
         delay = None
         try:
-            async with session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=TIMEOUT),
-                headers=headers,
-            ) as resp:
-                final_url = getattr(resp, "url", url)
-                history = getattr(resp, "history", ())
-                if not _is_https_url(final_url) or any(not _is_https_url(getattr(item, "url", "")) for item in history):
-                    warning(f"  拒绝非 HTTPS 重定向: {url} -> {final_url}")
+            while True:
+                if not _is_https_url(url):
+                    warning(f"  拒绝非 HTTPS 请求: {url}")
                     return (task, None, "重定向到非 HTTPS 地址")
-                if resp.status == 200:
-                    content = await read_capped(resp.content)
-                    if content is None:
-                        warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {url}")
-                        return (task, None, f"超过 {MAX_SOURCE_BYTES} 字节上限")
-                    if not content:
-                        warning(f"  空响应: {url}")
-                        return (task, None, "空响应")
-                    # 全量 NUL 检查 + 前 64 KB 采样解码；后段无 NUL 的二进制会进入解析并被未识别门禁拦下
-                    if b"\x00" in content or not processor.is_text_data(processor.safe_decode(content[:65536])):
-                        warning(f"  非文本响应: {url}")
-                        return (task, None, "非文本响应")
-                    return (task, content, None)
+                headers = dict(auth_headers(url) or {})
+                headers["User-Agent"] = USER_AGENT
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+                    headers=headers,
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in REDIRECT_STATUS:
+                        location = resp.headers.get("Location")
+                        if not location:
+                            warning(f"  重定向缺少 Location: {url} -> HTTP {resp.status}")
+                            return (task, None, f"HTTP {resp.status}（重定向缺少 Location）")
+                        next_url = urljoin(url, location)
+                        if not _is_https_url(next_url):
+                            warning(f"  拒绝非 HTTPS 重定向: {url} -> {next_url}")
+                            return (task, None, "重定向到非 HTTPS 地址")
+                        if redirects >= MAX_REDIRECTS:
+                            warning(f"  重定向次数超过 {MAX_REDIRECTS} 次: {task['url']}")
+                            return (task, None, f"重定向次数超过 {MAX_REDIRECTS} 次")
+                        url = next_url
+                        redirects += 1
+                        continue
 
-                if 400 <= resp.status < 500 and resp.status not in RETRYABLE_STATUS:
-                    warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
-                    return (task, None, f"HTTP {resp.status}")
+                    final_url = getattr(resp, "url", url)
+                    history = getattr(resp, "history", ())
+                    if not _is_https_url(final_url) or any(
+                        not _is_https_url(getattr(item, "url", "")) for item in history
+                    ):
+                        warning(f"  拒绝非 HTTPS 重定向: {url} -> {final_url}")
+                        return (task, None, "重定向到非 HTTPS 地址")
+                    if resp.status == 200:
+                        content = await read_capped(resp.content)
+                        if content is None:
+                            warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {url}")
+                            return (task, None, f"超过 {MAX_SOURCE_BYTES} 字节上限")
+                        if not content:
+                            warning(f"  空响应: {url}")
+                            return (task, None, "空响应")
+                        # 全量 NUL 检查 + 前 64 KB 采样解码；后段无 NUL 的二进制会进入解析并被未识别门禁拦下
+                        if b"\x00" in content or not processor.is_text_data(processor.safe_decode(content[:65536])):
+                            warning(f"  非文本响应: {url}")
+                            return (task, None, "非文本响应")
+                        return (task, content, None)
 
-                if attempt == RETRIES:
-                    return (task, None, f"HTTP {resp.status}")
+                    if 400 <= resp.status < 500 and resp.status not in RETRYABLE_STATUS:
+                        warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
+                        return (task, None, f"HTTP {resp.status}")
 
-                delay, exceeds_budget = _retry_delay(resp, attempt, backoff_budget)
-                if exceeds_budget:
+                    if attempt == RETRIES:
+                        return (task, None, f"HTTP {resp.status}")
+
+                    delay, exceeds_budget = _retry_delay(resp, attempt, backoff_budget)
+                    if exceeds_budget:
+                        warning(
+                            f"  Retry-After {delay}s 超过退避上限/预算"
+                            f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {url}"
+                        )
+                        return (task, None, f"HTTP {resp.status}（Retry-After {delay}s 超过退避预算）")
                     warning(
-                        f"  Retry-After {delay}s 超过退避上限/预算"
-                        f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {url}"
+                        f"  下载失败，{delay}s 后重试 [{attempt + 1}/{RETRIES + 1}]: {url} -> HTTP {resp.status}"
                     )
-                    return (task, None, f"HTTP {resp.status}（Retry-After {delay}s 超过退避预算）")
-                warning(f"  下载失败，{delay}s 后重试 [{attempt + 1}/{RETRIES + 1}]: {url} -> HTTP {resp.status}")
+                    break
 
             if delay:
                 if delay > backoff_budget:
@@ -616,17 +704,18 @@ async def download_all(tasks):
 
 
 def clean_orphans(expected_files):
+    root = _resolved_rulesets_dir()
     group_start("清理孤儿文件")
-    if not RULESETS_DIR.exists():
+    if not root.exists():
         group_end()
         return
 
     actual_files = {
         str(p)
-        for p in RULESETS_DIR.rglob("*.txt")
-        if p.is_file() and not any(part.startswith(".") for part in p.relative_to(RULESETS_DIR).parts)
+        for p in root.rglob("*.txt")
+        if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts)
     }
-    expected_set = set(str(f) for f in expected_files)
+    expected_set = {str(_anchored_path(f)) for f in expected_files}
 
     removed = 0
     for f in actual_files:
@@ -635,7 +724,7 @@ def clean_orphans(expected_files):
             debug(f"  已删除: {f}")
             removed += 1
 
-    for dirpath, _, _ in os.walk(RULESETS_DIR, topdown=False):
+    for dirpath, _, _ in os.walk(root, topdown=False):
         if not os.listdir(dirpath):
             os.rmdir(dirpath)
 
@@ -644,10 +733,11 @@ def clean_orphans(expected_files):
 
 
 def finalize_products(expected_files):
+    root = _resolved_rulesets_dir()
     clean_orphans(expected_files)
 
-    produced = manifest.collect_files(RULESETS_DIR)
-    expected_rel = {str(Path(p).relative_to(RULESETS_DIR)).replace("\\", "/") for p in expected_files}
+    produced = manifest.collect_files(root)
+    expected_rel = {str(_anchored_path(p).relative_to(root)).replace("\\", "/") for p in expected_files}
     if produced != expected_rel:
         gh_error(
             f"产物清单与磁盘不一致：缺失 {sorted(expected_rel - produced)}，"
@@ -656,9 +746,10 @@ def finalize_products(expected_files):
         )
         sys.exit(1)
 
-    hashes = {rel: file_sha256(str(RULESETS_DIR / rel)) for rel in sorted(produced)}
+    hashes = {rel: file_sha256(str(root / rel)) for rel in sorted(produced)}
     generation = manifest.current_generation()
-    manifest.save_manifest(MANIFEST_FILE, hashes, generation=generation)
+    manifest_path = ensure_within_rulesets(MANIFEST_FILE)
+    manifest.save_manifest(manifest_path, hashes, generation=generation)
     info(f"  产物清单已写入 {MANIFEST_FILE}（{len(produced)} 项，generation={generation}）")
     return produced
 
@@ -721,7 +812,7 @@ def main():
     stats = SyncStats()
 
     group_start("初始化")
-    RULESETS_DIR.mkdir(parents=True, exist_ok=True)
+    _resolved_rulesets_dir().mkdir(parents=True, exist_ok=True)
     info(f"  超时:{TIMEOUT}s | 重试:{RETRIES}次")
     tasks = parse_sources()
     info(f"  加载 {len(tasks)} 个上游源")
@@ -787,7 +878,7 @@ def main():
         info("  本次不发布，保留上一版产物：")
         for reason in degraded_reasons:
             info(f"    - {reason}")
-        summary_file = RULESETS_DIR / "sync-summary.txt"
+        summary_file = _resolved_rulesets_dir() / "sync-summary.txt"
         summary_file.write_text(
             "# 同步摘要\n"
             f"# 时间: {beijing_timestamp()}\n"

@@ -33,7 +33,7 @@ def is_repo_subdir(path):
     """True 仅当 path 解析后是仓库根下、且不属于受保护顶层目录的真子目录。"""
     try:
         target = Path(path).resolve()
-    except OSError:
+    except (OSError, RuntimeError):
         return False
     if REPO_ROOT not in target.parents:
         return False
