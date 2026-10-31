@@ -25,6 +25,75 @@ def test_dependabot_auto_merge_requires_bot_head_actor():
     assert "github.event.workflow_run.actor.login == 'dependabot[bot]'" in job["if"]
 
 
+def test_artifacts_branch_marker_mismatch_triggers_repush():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    script = step["run"]
+    assert step["env"]["ARTIFACTS_HASH_MARKER"] == ".product-sha256"
+    assert 'git show "FETCH_HEAD:${ARTIFACTS_HASH_MARKER}"' in script
+    assert re.search(
+        r'elif \[ "\$ARTIFACTS_HASH" != "\$CURRENT" \]; then\n'
+        r'.*\n\s*echo "changed=true" >> "\$GITHUB_OUTPUT"',
+        script,
+    )
+
+    publish = next(s for s in job["steps"] if s.get("name") == "发布规则产物到 artifacts 分支")
+    assert publish["env"]["CURRENT_HASH"] == "${{ steps.product-state.outputs.current_hash }}"
+    assert 'printf \'%s\\n\' "$CURRENT_HASH" > "${ARTIFACTS_HASH_MARKER}"' in publish["run"]
+    assert '"${ARTIFACTS_HASH_MARKER}"' in publish["run"].split("git add -f", 1)[1]
+
+
+def test_artifacts_branch_marker_match_skips_repush():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    assert re.search(
+        r'elif \[ "\$ARTIFACTS_HASH" != "\$CURRENT" \]; then\n'
+        r'.*\n\s*echo "changed=true" >> "\$GITHUB_OUTPUT"\n'
+        r'\s*else\n\s*echo "changed=false" >> "\$GITHUB_OUTPUT"',
+        step["run"],
+    )
+
+
+def test_artifacts_branch_missing_or_untrusted_marker_triggers_repush():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    script = step["run"]
+    conditions = (
+        'if [ -z "$MARKER_ENTRY" ]; then',
+        'elif [[ "$MARKER_ENTRY" != ',
+        r'if [[ ! "$ARTIFACTS_HASH" =~ ^[0-9a-f]{64}\|[0-9a-f]{64}\|[0-9]+\|[0-9]+$ ]]; then',
+    )
+    for condition in conditions:
+        start = script.index(condition)
+        assert 'echo "changed=true" >> "$GITHUB_OUTPUT"' in script[start:].split("fi", 1)[0]
+
+
+def test_artifacts_marker_validation_matches_combined_product_hash_format():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    match = re.search(r'if \[\[ ! "\$ARTIFACTS_HASH" =~ (.+) \]\]; then', step["run"])
+    assert match
+    pattern = match.group(1)
+    assert re.fullmatch(pattern, f"{'a' * 64}|{'b' * 64}|42|42")
+    assert not re.fullmatch(pattern, "a" * 64)
+    assert not re.fullmatch(pattern, f"{'a' * 64}|{'b' * 64}|x|42")
+
+
+def test_artifacts_branch_marker_read_failures_are_fatal():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    script = step["run"]
+    commands = (
+        'git fetch --no-tags --depth=1 origin "${ARTIFACTS_BRANCH}"',
+        'MARKER_ENTRY=$(git ls-tree FETCH_HEAD -- "${ARTIFACTS_HASH_MARKER}")',
+        'ARTIFACTS_HASH=$(git show "FETCH_HEAD:${ARTIFACTS_HASH_MARKER}")',
+    )
+    for command in commands:
+        guarded = f"if ! {command}; then"
+        start = script.index(guarded)
+        assert "exit 1" in script[start:].split("fi", 1)[0]
+
+
 def test_notify_requires_release_success():
     workflow = load_workflow("pipeline.yml")
     assert workflow["jobs"]["publish"]["outputs"]["release_outcome"] == "${{ steps.release.outcome }}"

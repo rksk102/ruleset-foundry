@@ -146,10 +146,12 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           ARTIFACTS_BRANCH: artifacts
+          ARTIFACTS_HASH_MARKER: .product-sha256
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           CURRENT=$(python scripts/release_handler.py --print-hash)
+          echo "current_hash=$CURRENT" >> "$GITHUB_OUTPUT"
           LAST=$(cat state/release.sha256 2>/dev/null || true)
           DETECT=$(python -c "from config_loader import get; print('true' if get('behavior', 'release_change_detection', default=True) else 'false')")
           if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
@@ -169,7 +171,35 @@ jobs:
               echo "changed=true" >> "$GITHUB_OUTPUT"
               echo "force_release=true" >> "$GITHUB_OUTPUT"
             else
-              echo "changed=false" >> "$GITHUB_OUTPUT"
+              if ! git fetch --no-tags --depth=1 origin "${ARTIFACTS_BRANCH}"; then
+                echo "::error::无法读取 ${ARTIFACTS_BRANCH} 分支，拒绝跳过产物发布"
+                exit 1
+              fi
+              if ! MARKER_ENTRY=$(git ls-tree FETCH_HEAD -- "${ARTIFACTS_HASH_MARKER}"); then
+                echo "::error::无法读取 ${ARTIFACTS_BRANCH} 分支树，拒绝跳过产物发布"
+                exit 1
+              fi
+              if [ -z "$MARKER_ENTRY" ]; then
+                echo "artifacts 分支缺少产品哈希标记，重推"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+              elif [[ "$MARKER_ENTRY" != "100644 blob "*$'\t'"${ARTIFACTS_HASH_MARKER}" ]]; then
+                echo "artifacts 分支产品哈希标记类型不可信，重推"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+              else
+                if ! ARTIFACTS_HASH=$(git show "FETCH_HEAD:${ARTIFACTS_HASH_MARKER}"); then
+                  echo "::error::无法读取 artifacts 产品哈希标记，拒绝跳过产物发布"
+                  exit 1
+                fi
+                if [[ ! "$ARTIFACTS_HASH" =~ ^[0-9a-f]{64}\|[0-9a-f]{64}\|[0-9]+\|[0-9]+$ ]]; then
+                  echo "artifacts 分支产品哈希标记格式不可信，重推"
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+                elif [ "$ARTIFACTS_HASH" != "$CURRENT" ]; then
+                  echo "artifacts 分支产品哈希标记与当前产品不一致，重推"
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+                else
+                  echo "changed=false" >> "$GITHUB_OUTPUT"
+                fi
+              fi
             fi
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -188,6 +218,8 @@ jobs:
         if: steps.product-state.outputs.changed == 'true'
         env:
           ARTIFACTS_BRANCH: artifacts
+          ARTIFACTS_HASH_MARKER: .product-sha256
+          CURRENT_HASH: ${{ steps.product-state.outputs.current_hash }}
         run: |
           set -euo pipefail
           # 独立 worktree：orphan 提交会清空工作区，不能在主工作区执行
@@ -201,7 +233,8 @@ jobs:
             git rm -rf . >/dev/null 2>&1 || true
             cp -r "${GITHUB_WORKSPACE}/merged-rules" "${GITHUB_WORKSPACE}/merged-rules-mrs" .
             printf 'merged-rules/\nmerged-rules-mrs/\n' > .gitignore
-            git add -f merged-rules merged-rules-mrs .gitignore
+            printf '%s\n' "$CURRENT_HASH" > "${ARTIFACTS_HASH_MARKER}"
+            git add -f merged-rules merged-rules-mrs .gitignore "${ARTIFACTS_HASH_MARKER}"
             git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
             git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
