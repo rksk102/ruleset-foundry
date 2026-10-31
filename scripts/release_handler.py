@@ -29,6 +29,7 @@ from logger import (
     warning,
 )
 from utils import (
+    BEIJING_TZ,
     anchor_cwd_to_repo_root,
     atomic_write,
     beijing_now,
@@ -330,6 +331,7 @@ def release_asset_names(release_tag):
 
 
 RULES_TAG_RE = re.compile(r"^rules-(?:[0-9a-f]{12}|\d{8}-\d{4})$")
+RULES_LEGACY_TAG_RE = re.compile(r"^rules-(\d{8})-(\d{4})$")
 
 
 def release_id_for_hash(product_hash):
@@ -372,6 +374,7 @@ def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
         return 0
 
     cleaned = 0
+    skipped = []
     for line in raw.splitlines():
         ref = line.strip()
         if not ref.startswith("refs/tags/"):
@@ -379,19 +382,16 @@ def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
         tag = ref.removeprefix("refs/tags/")
         if not RULES_TAG_RE.fullmatch(tag) or tag == current_tag or tag in release_tags:
             continue
-        created_raw = run_gh(
-            ["api", f"repos/{{owner}}/{{repo}}/commits/{tag}", "--jq", ".commit.committer.date"]
-        )
-        if not created_raw:
-            warning(f"  无法确认孤立 tag 的提交年龄，跳过: {tag}")
+        legacy = RULES_LEGACY_TAG_RE.fullmatch(tag)
+        if legacy is None:
+            skipped.append(tag)
             continue
         try:
-            created_at = datetime.datetime.fromisoformat(created_raw.strip().replace("Z", "+00:00"))
-        except (AttributeError, TypeError, ValueError) as e:
-            warning(f"  孤立 tag 年龄无法解析，跳过: {tag}（{e}）")
-            continue
-        if created_at.tzinfo is None:
-            warning(f"  孤立 tag 年龄缺少时区，跳过: {tag}")
+            created_at = datetime.datetime.strptime(
+                f"{legacy.group(1)}{legacy.group(2)}", "%Y%m%d%H%M"
+            ).replace(tzinfo=BEIJING_TZ)
+        except ValueError as e:
+            warning(f"  孤立 tag 的旧格式时间无法解析，跳过: {tag}（{e}）")
             continue
         if created_at >= cutoff_time:
             continue
@@ -400,6 +400,11 @@ def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
             warning(f"  删除孤立 tag 失败，留待下轮重试: {tag}")
             continue
         cleaned += 1
+    if skipped:
+        warning(
+            f"  跳过 {len(skipped)} 个无法确认创建时间的新格式孤立 tag: "
+            f"{', '.join(skipped[:5])}{' 等' if len(skipped) > 5 else ''}"
+        )
     return cleaned
 
 

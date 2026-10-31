@@ -942,30 +942,22 @@ class TestMainOrchestration:
 class TestOrphanTagCleanup:
     REFS_ENDPOINT = "repos/{owner}/{repo}/git/matching-refs/tags/rules-"
 
-    def test_deletes_only_old_orphan_automatic_tags(self, monkeypatch):
-        old = "2020-01-01T00:00:00Z"
-        recent = "2999-01-01T00:00:00Z"
+    def test_deletes_only_old_legacy_automatic_tags(self, monkeypatch, caplog):
         refs = "\n".join(
             f"refs/tags/{tag}"
             for tag in (
+                "rules-20200101-0000",
+                "rules-29990101-0000",
                 "rules-aaaaaaaaaaaa",
                 "rules-bbbbbbbbbbbb",
                 "rules-cccccccccccc",
                 "rules-dddddddddddd",
-                "rules-eeeeeeeeeeee",
                 "rules-manual",
-                "rules-1999-01-01",
+                "rules-20200230-0000",
                 "v1.0.0",
             )
         )
-        stub = GhStub(
-            responses={
-                ("api", self.REFS_ENDPOINT): refs,
-                ("api", "repos/{owner}/{repo}/commits/rules-aaaaaaaaaaaa"): old,
-                ("api", "repos/{owner}/{repo}/commits/rules-bbbbbbbbbbbb"): recent,
-                ("api", "repos/{owner}/{repo}/commits/rules-eeeeeeeeeeee"): "not-a-date",
-            }
-        )
+        stub = GhStub(responses={("api", self.REFS_ENDPOINT): refs})
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
@@ -976,12 +968,27 @@ class TestOrphanTagCleanup:
         assert cleaned == 1
         deletes = [call for call in stub.calls if call[:3] == ["api", "-X", "DELETE"]]
         assert deletes == [
-            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-aaaaaaaaaaaa"]
+            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-20200101-0000"]
         ]
         flat = " ".join(stub.commands())
-        assert "commits/rules-cccccccccccc" not in flat
-        assert "commits/rules-dddddddddddd" not in flat
-        assert "commits/rules-manual" not in flat
+        assert "commits/" not in flat, "旧格式 tag 不应再查询 commit 日期"
+        assert "rules-bbbbbbbbbbbb" not in flat
+        assert "2 个无法确认创建时间的新格式孤立 tag" in caplog.text
+
+    def test_hash_tag_with_old_commit_is_not_deleted(self, monkeypatch):
+        stub = GhStub(
+            responses={
+                ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
+            }
+        )
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+
+        flat = " ".join(stub.commands())
+        assert "commits/" not in flat
+        assert "git/refs/tags/rules-aaaaaaaaaaaa" not in flat
 
     def test_orphan_delete_is_retried_by_next_reconciliation(self, monkeypatch):
         delete_attempts = []
@@ -994,10 +1001,7 @@ class TestOrphanTagCleanup:
 
         stub = GhStub(
             fail_when=fail_first_delete,
-            responses={
-                ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
-                ("api", "repos/{owner}/{repo}/commits/rules-aaaaaaaaaaaa"): "2020-01-01T00:00:00Z",
-            },
+            responses={("api", self.REFS_ENDPOINT): "refs/tags/rules-20200101-0000"},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
