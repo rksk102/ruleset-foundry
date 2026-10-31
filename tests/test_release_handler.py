@@ -527,6 +527,27 @@ class TestZipTargetFiles:
             release_handler.zip_target_files("2026-10-05")
         assert exc.value.code == 1
 
+    @pytest.mark.parametrize(
+        ("limit_name", "value", "content"),
+        [
+            ("MAX_ZIP_ENTRIES", 1, b"x"),
+            ("MAX_ZIP_ENTRY_SIZE", 1, b"xx"),
+            ("MAX_ZIP_TOTAL_SIZE", 1, b"xx"),
+            ("MAX_ZIP_ASSET_BYTES", 1, b"x"),
+        ],
+    )
+    def test_rejects_oversized_products_before_upload(self, zip_workspace, monkeypatch, limit_name, value, content):
+        (zip_workspace / "merged-rules" / "A").mkdir(parents=True)
+        (zip_workspace / "merged-rules" / "A" / "x.txt").write_bytes(content)
+        (zip_workspace / "merged-rules" / "A" / "y.txt").write_bytes(b"y")
+        monkeypatch.setattr(release_handler, limit_name, value)
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.zip_target_files("2026-10-05")
+
+        assert exc.value.code == 1
+        assert not (zip_workspace / "merged-rules-2026-10-05.zip").exists()
+
 
 class TestPublishRelease:
     def test_existing_release_updates_in_place(self):
@@ -1005,13 +1026,95 @@ class TestRunGhErrorHandling:
             subprocess.run = original
 
     def test_bytes_download_enforces_asset_size_cap(self, monkeypatch):
-        def fake_run(_cmd, **kwargs):
-            assert "capture_output" not in kwargs
-            kwargs["stdout"].write(b"x" * 100)
-            return subprocess.CompletedProcess(_cmd, 0, stderr=b"")
+        class Pipe:
+            def __init__(self):
+                self.chunks = [b"x" * 6, b"x" * 6, b""]
 
-        monkeypatch.setattr(release_handler.subprocess, "run", fake_run)
+            def read(self, _size=-1):
+                return self.chunks.pop(0)
+
+            def close(self):
+                pass
+
+        class Process:
+            def __init__(self):
+                self.stdout = Pipe()
+                self.killed = False
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+
+            def poll(self):
+                return self.returncode
+
+        process = Process()
+        monkeypatch.setattr(release_handler.subprocess, "Popen", lambda *a, **k: process)
         assert release_handler.run_gh_bytes(["release", "download"], max_bytes=10) is None
+        assert process.killed is True
+
+    def test_bytes_download_returns_streamed_content(self, monkeypatch):
+        class Pipe:
+            def __init__(self):
+                self.chunks = [b"hello", b" world", b""]
+
+            def read(self, _size=-1):
+                return self.chunks.pop(0)
+
+            def close(self):
+                pass
+
+        class Process:
+            returncode = 0
+
+            def __init__(self):
+                self.stdout = Pipe()
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                raise AssertionError("不应终止成功进程")
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(release_handler.subprocess, "Popen", lambda *a, **k: Process())
+        assert release_handler.run_gh_bytes(["release", "download"], max_bytes=100) == b"hello world"
+
+    def test_bytes_download_timeout_kills_process(self, monkeypatch):
+        class Pipe:
+            def read(self, _size=-1):
+                return b""
+
+            def close(self):
+                pass
+
+        class Process:
+            def __init__(self):
+                self.stdout = Pipe()
+                self.killed = False
+                self.waits = 0
+
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("gh", timeout)
+                return -9
+
+            def kill(self):
+                self.killed = True
+
+            def poll(self):
+                return -9 if self.killed else None
+
+        process = Process()
+        monkeypatch.setattr(release_handler.subprocess, "Popen", lambda *a, **k: process)
+        assert release_handler.run_gh_bytes(["release", "download"], max_bytes=100) is None
+        assert process.killed is True
 
 
 @pytest.fixture

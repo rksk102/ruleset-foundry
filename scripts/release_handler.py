@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import hashlib
 import io
@@ -9,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 import zlib
@@ -593,34 +595,88 @@ def run_gh(cmd_list, strip=True):
         sys.exit(1)
 
 
-def run_gh_bytes(cmd_list, max_bytes=None):
+def _kill_process(process):
+    with contextlib.suppress(OSError):
+        process.kill()
+
+
+def _read_bounded_stdout(process, output, max_bytes, deadline, state):
+    total = 0
     try:
-        with tempfile.TemporaryFile() as output:
-            subprocess.run(
+        while True:
+            if time.monotonic() >= deadline:
+                state.append("timeout")
+                _kill_process(process)
+                return
+            chunk = process.stdout.read(ZIP_READ_CHUNK)
+            if not chunk:
+                return
+            if max_bytes is not None and total + len(chunk) > max_bytes:
+                state.append("oversize")
+                _kill_process(process)
+                return
+            output.write(chunk)
+            total += len(chunk)
+    except Exception as e:
+        state.append(f"read-error: {e}")
+        _kill_process(process)
+
+
+def run_gh_bytes(cmd_list, max_bytes=None):
+    with tempfile.TemporaryFile() as stderr_file, tempfile.TemporaryFile() as output:
+        process = None
+        try:
+            process = subprocess.Popen(
                 ["gh", *cmd_list],
-                stdout=output,
-                stderr=subprocess.PIPE,
-                check=True,
-                timeout=GH_TIMEOUT,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
             )
-            output.seek(0, os.SEEK_END)
-            size = output.tell()
-            if max_bytes is not None and size > max_bytes:
+            deadline = time.monotonic() + GH_TIMEOUT
+            state = []
+            reader = threading.Thread(
+                target=_read_bounded_stdout,
+                args=(process, output, max_bytes, deadline, state),
+                daemon=True,
+            )
+            reader.start()
+            try:
+                returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                state.append("timeout")
+                _kill_process(process)
+                returncode = process.wait()
+            reader.join(timeout=GH_TIMEOUT)
+            if reader.is_alive():
+                state.append("read-stuck")
+                _kill_process(process)
+                reader.join(timeout=5)
+            if "oversize" in state:
                 warning(f"  资产超过下载上限 {max_bytes} 字节: {' '.join(cmd_list)}")
                 return None
+            if "timeout" in state:
+                warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
+                return None
+            if state:
+                warning(f"  GH CLI 输出读取失败: {'; '.join(state)}")
+                return None
+            if returncode != 0:
+                stderr_file.seek(0)
+                stderr = stderr_file.read().decode("utf-8", errors="replace")
+                warning(f"  GH CLI 警告: {stderr.strip()}")
+                return None
             output.seek(0)
-            return output.read() if max_bytes is None else output.read(max_bytes)
-    except subprocess.TimeoutExpired:
-        warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
-        return None
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
-        warning(f"  GH CLI 警告: {stderr.strip()}")
-        return None
-    except OSError as e:
-        error(f"  无法执行 gh CLI: {e}")
-        gh_error(f"无法执行 gh CLI: {e}")
-        sys.exit(1)
+            return output.read()
+        except OSError as e:
+            error(f"  无法执行 gh CLI: {e}")
+            gh_error(f"无法执行 gh CLI: {e}")
+            sys.exit(1)
+        finally:
+            if process is not None:
+                if process.poll() is None:
+                    _kill_process(process)
+                    process.wait()
+                if process.stdout is not None:
+                    process.stdout.close()
 
 
 def should_publish(current_hash, last_hash, enabled, force=False):
@@ -635,8 +691,37 @@ def should_publish(current_hash, last_hash, enabled, force=False):
     return False, "内容无变化"
 
 
+def validate_zip_inputs():
+    entries = 0
+    total_size = 0
+    for folder, ext in TARGET_CONFIG.items():
+        if not os.path.exists(folder):
+            continue
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for file in files:
+                if file.startswith(".") or not file.endswith(ext):
+                    continue
+                path = os.path.join(root, file)
+                size = os.path.getsize(path)
+                entries += 1
+                total_size += size
+                if size > MAX_ZIP_ENTRY_SIZE:
+                    return f"产物单文件超过 ZIP 条目上限 {MAX_ZIP_ENTRY_SIZE}: {path}（{size} 字节）"
+                if entries > MAX_ZIP_ENTRIES:
+                    return f"产物条目数超过 ZIP 上限 {MAX_ZIP_ENTRIES}"
+                if total_size > MAX_ZIP_TOTAL_SIZE:
+                    return f"产物总大小超过 ZIP 解压上限 {MAX_ZIP_TOTAL_SIZE}"
+    return None
+
+
 def zip_target_files(asset_id):
     zip_name = f"merged-rules-{asset_id}.zip"
+    limit_error = validate_zip_inputs()
+    if limit_error:
+        error(f"  拒绝打包: {limit_error}")
+        gh_error(f"发布产物超过 ZIP 限制: {limit_error}")
+        sys.exit(1)
     info(f"打包文件到 {zip_name}...")
 
     file_manifest = {}
@@ -669,6 +754,15 @@ def zip_target_files(asset_id):
 
     if total_files == 0:
         error("没有找到匹配的文件！")
+        sys.exit(1)
+
+    zip_size = os.path.getsize(zip_name)
+    if zip_size > MAX_ZIP_ASSET_BYTES:
+        os.unlink(zip_name)
+        error(
+            f"  拒绝发布: ZIP 资产 {zip_size} 字节超过上限 {MAX_ZIP_ASSET_BYTES} 字节"
+        )
+        gh_error(f"发布 ZIP 超过大小上限: {zip_size} > {MAX_ZIP_ASSET_BYTES}")
         sys.exit(1)
 
     return zip_name, file_manifest
