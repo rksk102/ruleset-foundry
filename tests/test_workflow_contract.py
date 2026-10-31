@@ -185,3 +185,4 @@ def test_setup_python_env_pins_exact_patch_version():
         if step.get("uses", "").startswith("actions/setup-python@")
     )
     assert re.fullmatch(r"\d+\.\d+\.\d+", setup["with"]["python-version"])
+    assert setup["with"]["python-version"] == "3.14.10"
