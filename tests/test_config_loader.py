@@ -347,7 +347,7 @@ class TestMergeFieldWhitelist:
             "    type: domain\n"
             "    owner: o\n"
             "    filename: a.txt\n"
-            "    inputs: ['x.txt']\n" + extra
+            "    inputs: ['block/domain/o/x.txt']\n" + extra
         )
 
     @pytest.mark.parametrize(
@@ -375,6 +375,59 @@ class TestMergeFieldWhitelist:
         finally:
             reset_config()
 
+    @pytest.mark.parametrize("escaped_newline", [r"\n", r"\r", r"\r\n"])
+    def test_multiline_description_is_rejected(self, work_dir, escaped_newline):
+        extra = f'    description: "第一行{escaped_newline}第二行"\n'
+        use_config(work_dir, self.merge_body(extra))
+        try:
+            with pytest.raises(config_loader.ConfigError, match="换行"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+
+class TestMergeInputType:
+    @pytest.mark.parametrize(("task_type", "input_type"), [("domain", "ipcidr"), ("ipcidr", "domain")])
+    def test_input_type_must_match_task_type(self, work_dir, task_type, input_type):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            f"    type: {task_type}\n"
+            "    owner: o\n"
+            "    filename: a.txt\n"
+            f"    inputs: ['block/{input_type}/o/x.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="输入类型"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
+
+class TestMergeOutputReservedNames:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("strategy", "CON"), ("owner", "NUL.txt"), ("filename", "con.rules.txt")],
+    )
+    def test_windows_reserved_output_stem_is_rejected(self, work_dir, field, value):
+        fields = {"strategy": "block", "type": "domain", "owner": "o", "filename": "a.txt"}
+        fields[field] = value
+        body = (
+            "merges:\n"
+            f"  - strategy: {fields['strategy']}\n"
+            f"    type: {fields['type']}\n"
+            f"    owner: {fields['owner']}\n"
+            f"    filename: {fields['filename']}\n"
+            "    inputs: ['block/domain/o/x.txt']\n"
+        )
+        use_config(work_dir, body)
+        try:
+            with pytest.raises(config_loader.ConfigError, match="保留设备名"):
+                config_loader.load_config()
+        finally:
+            reset_config()
+
 
 class TestMergeOutputUniqueness:
     def test_duplicate_output_is_rejected(self, work_dir):
@@ -384,7 +437,7 @@ class TestMergeOutputUniqueness:
             "    type: domain\n"
             "    owner: o\n"
             "    filename: a.txt\n"
-            "    inputs: ['x.txt']\n"
+            "    inputs: ['block/domain/o/x.txt']\n"
             "  - strategy: block\n"
             "    type: domain\n"
             "    owner: o\n"
@@ -405,7 +458,7 @@ class TestMergeOutputUniqueness:
             "    type: domain\n"
             "    owner: o\n"
             "    filename: a.txt\n"
-            "    inputs: ['x.txt']\n"
+            "    inputs: ['block/domain/o/x.txt']\n"
             "  - strategy: block\n"
             "    type: domain\n"
             "    owner: O\n"
@@ -426,7 +479,7 @@ class TestMergeOutputUniqueness:
             "    type: domain\n"
             "    owner: o\n"
             "    filename: a.txt.\n"
-            "    inputs: ['x.txt']\n"
+            "    inputs: ['block/domain/o/x.txt']\n"
         )
         use_config(work_dir, body)
         try:
@@ -459,9 +512,9 @@ class TestValidationMatrix:
             BASE + "  allow_particals: true\n",
             BASE + "foo: {}\n",
             BASE + "merges:\n  - strategy: '../../outside'\n    type: domain\n"
-            "    owner: o\n    filename: a.txt\n    inputs: ['x.txt']\n",
+            "    owner: o\n    filename: a.txt\n    inputs: ['block/domain/o/x.txt']\n",
             BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-            "    filename: '../PWNED.txt'\n    inputs: ['x.txt']\n",
+            "    filename: '../PWNED.txt'\n    inputs: ['block/domain/o/x.txt']\n",
             BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
             "    filename: a.txt\n    inputs: ['/etc/hosts']\n",
             BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
@@ -469,7 +522,7 @@ class TestValidationMatrix:
             BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
             "    filename: a.txt\n    inputs: [123]\n",
             BASE + "merges:\n  - strategy: block\n    type: classical\n    owner: o\n"
-            "    filename: a.txt\n    inputs: ['x.txt']\n",
+            "    filename: a.txt\n    inputs: ['block/domain/o/x.txt']\n",
             BASE + 'mihomo:\n  kernel_sha256: "00"\n',
             BASE + 'mihomo:\n  kernel_sha256_arm64: "zz"\n',
             BASE + 'mihomo:\n  pinned_version: "../v1"\n',
@@ -489,7 +542,7 @@ class TestValidationMatrix:
             BASE,
             BASE + "merges: []\n",
             BASE + "merges:\n  - strategy: block\n    type: domain\n    owner: o\n"
-            "    filename: a.txt\n    inputs: ['x.txt']\n",
+            "    filename: a.txt\n    inputs: ['block/domain/o/x.txt']\n",
         ],
     )
     def test_supported_config_variants_load(self, work_dir, body):
