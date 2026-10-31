@@ -96,6 +96,13 @@ def _is_https_url(value):
         return False
 
 
+def _same_host(left, right):
+    try:
+        return (urlsplit(str(left)).hostname or "").lower() == (urlsplit(str(right)).hostname or "").lower()
+    except ValueError:
+        return False
+
+
 def parse_retry_after(value, default, max_seconds=MAX_RETRY_AFTER):
     if not value:
         return default
@@ -634,7 +641,7 @@ async def download_one(session, task):
                 if not _is_https_url(url):
                     warning(f"  拒绝非 HTTPS 请求: {url}")
                     return (task, None, "重定向到非 HTTPS 地址")
-                headers = dict(auth_headers(url) or {})
+                headers = dict(auth_headers(url) or {}) if _same_host(url, task["url"]) else {}
                 headers["User-Agent"] = USER_AGENT
                 async with session.get(
                     url,

@@ -91,6 +91,27 @@ class TestHttpsRedirects:
         assert all(call["headers"]["Authorization"] == "Bearer tok" for call in session.calls)
         assert all(call["allow_redirects"] is False for call in session.calls)
 
+    def test_cross_host_redirect_drops_auth_headers(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok")
+        target = "https://release-assets.githubusercontent.com/github-production-release-asset/file"
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": target}),
+                FakeResponse(200, [b"example.com\n"], url=target),
+            ]
+        )
+        task = {
+            **TASK,
+            "url": "https://github.com/o/r/releases/download/tag/list.txt",
+        }
+
+        _task, content, err = asyncio.run(main.download_one(session, task))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert session.calls[0]["headers"]["Authorization"] == "Bearer tok"
+        assert "Authorization" not in session.calls[1]["headers"]
+
     def test_redirect_to_untrusted_host_drops_auth_headers(self, monkeypatch):
         monkeypatch.setenv("GH_TOKEN", "tok")
         session = FakeSession(
