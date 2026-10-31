@@ -1,12 +1,17 @@
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
+import stat
+import struct
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
+import zlib
 from pathlib import Path
 
 import manifest
@@ -52,6 +57,12 @@ GH_TIMEOUT = 120
 ASSET_CONFIRM_ATTEMPTS = 3
 ASSET_CONFIRM_DELAY = 3
 SHA256SUMS_NAME = "SHA256SUMS"
+MAX_ZIP_ENTRIES = 10000
+MAX_ZIP_ENTRY_SIZE = 64 * 1024 * 1024
+MAX_ZIP_TOTAL_SIZE = 512 * 1024 * 1024
+MAX_ZIP_ASSET_BYTES = 128 * 1024 * 1024
+MAX_SUMS_ASSET_BYTES = 16 * 1024 * 1024
+ZIP_READ_CHUNK = 1024 * 1024
 
 
 def expected_assets(asset_id):
@@ -81,8 +92,12 @@ def release_assets(release_tag):
     return assets
 
 
+def release_asset_bytes(release_tag, asset_name, max_bytes=None):
+    return run_gh_bytes(["release", "download", release_tag, "-p", asset_name, "-O", "-"], max_bytes=max_bytes)
+
+
 def release_sha256sums(release_tag):
-    return run_gh(["release", "download", release_tag, "-p", SHA256SUMS_NAME, "-O", "-"], strip=False)
+    return release_asset_bytes(release_tag, SHA256SUMS_NAME, max_bytes=MAX_SUMS_ASSET_BYTES)
 
 
 def parse_sha256sums(text):
@@ -117,6 +132,115 @@ def local_product_hashes():
     return entries
 
 
+def safe_zip_member_name(name):
+    if not name or name.startswith("/") or "\\" in name or re.match(r"^[A-Za-z]:", name):
+        return False
+    return all(part not in ("", ".", "..") for part in name.split("/"))
+
+
+def check_zip_central_directory(zip_bytes):
+    eocd = zip_bytes.rfind(b"PK\x05\x06", max(0, len(zip_bytes) - 65557))
+    if eocd < 0 or eocd + 22 > len(zip_bytes):
+        return "ZIP 中央目录结束记录缺失"
+    try:
+        _sig, disk, cd_disk, entries_disk, entries_total, cd_size, cd_offset, comment_size = struct.unpack_from(
+            "<4s4H2LH", zip_bytes, eocd
+        )
+    except struct.error as e:
+        return f"ZIP 中央目录结束记录不完整: {e}"
+    if eocd + 22 + comment_size != len(zip_bytes):
+        return "ZIP 注释长度与文件长度不一致"
+    if disk != 0 or cd_disk != 0 or entries_disk != entries_total:
+        return "不支持多磁盘 ZIP"
+    if entries_total == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF:
+        return "ZIP64 目录超出本项目复用校验范围"
+    if entries_total > MAX_ZIP_ENTRIES:
+        return f"ZIP 条目数超过限制 {MAX_ZIP_ENTRIES}"
+    cd_end = cd_offset + cd_size
+    if cd_end > eocd or cd_end > len(zip_bytes):
+        return "ZIP 中央目录范围越界"
+
+    pos = cd_offset
+    count = 0
+    while pos < cd_end:
+        count += 1
+        if count > MAX_ZIP_ENTRIES:
+            return f"ZIP 条目数超过限制 {MAX_ZIP_ENTRIES}"
+        if pos + 46 > cd_end or zip_bytes[pos : pos + 4] != b"PK\x01\x02":
+            return "ZIP 中央目录条目损坏"
+        name_size, extra_size, entry_comment_size = struct.unpack_from("<HHH", zip_bytes, pos + 28)
+        pos += 46 + name_size + extra_size + entry_comment_size
+        if pos > cd_end:
+            return "ZIP 中央目录条目长度越界"
+    if pos != cd_end or count != entries_total:
+        return "ZIP 中央目录条目计数不一致"
+    return None
+
+
+def verify_zip_content(zip_bytes, local_hashes):
+    try:
+        directory_error = check_zip_central_directory(zip_bytes)
+        if directory_error:
+            return False, directory_error
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zipf:
+            infos = zipf.infolist()
+            if len(infos) > MAX_ZIP_ENTRIES:
+                return False, f"ZIP 条目数超过限制 {MAX_ZIP_ENTRIES}"
+            seen = set()
+            declared_total = 0
+            for entry in infos:
+                name = entry.filename
+                if not safe_zip_member_name(name):
+                    return False, f"ZIP 条目路径越界或非法: {name!r}"
+                if entry.is_dir():
+                    return False, f"ZIP 含有额外目录条目: {name!r}"
+                unix_mode = entry.external_attr >> 16
+                file_type = stat.S_IFMT(unix_mode)
+                if entry.create_system == 3 and file_type not in (0, stat.S_IFREG):
+                    return False, f"ZIP 含非普通文件条目: {name!r}"
+                if name in seen:
+                    return False, f"ZIP 含重复条目: {name!r}"
+                seen.add(name)
+                if entry.file_size > MAX_ZIP_ENTRY_SIZE:
+                    return False, f"ZIP 单文件解压量超过限制 {MAX_ZIP_ENTRY_SIZE}: {name!r}"
+                declared_total += entry.file_size
+                if declared_total > MAX_ZIP_TOTAL_SIZE:
+                    return False, f"ZIP 总解压量超过限制 {MAX_ZIP_TOTAL_SIZE}"
+            if seen != set(local_hashes):
+                missing = sorted(set(local_hashes) - seen)
+                extra = sorted(seen - set(local_hashes))
+                return False, f"ZIP 条目路径集合与本地不一致（缺失 {missing[:5]}，多出 {extra[:5]}）"
+
+            total_size = 0
+            for entry in infos:
+                digest = hashlib.sha256()
+                entry_size = 0
+                with zipf.open(entry, "r") as source:
+                    while True:
+                        read_size = min(
+                            ZIP_READ_CHUNK,
+                            MAX_ZIP_ENTRY_SIZE - entry_size + 1,
+                            MAX_ZIP_TOTAL_SIZE - total_size + 1,
+                        )
+                        chunk = source.read(read_size)
+                        if not chunk:
+                            break
+                        entry_size += len(chunk)
+                        total_size += len(chunk)
+                        if entry_size > MAX_ZIP_ENTRY_SIZE:
+                            return False, f"ZIP 单文件实际解压量超过限制 {MAX_ZIP_ENTRY_SIZE}"
+                        if total_size > MAX_ZIP_TOTAL_SIZE:
+                            return False, f"ZIP 实际总解压量超过限制 {MAX_ZIP_TOTAL_SIZE}"
+                        digest.update(chunk)
+                if entry_size != entry.file_size:
+                    return False, f"ZIP 条目实际长度与元数据不一致: {entry.filename!r}"
+                if digest.hexdigest() != local_hashes[entry.filename]:
+                    return False, f"ZIP 条目内容与本地哈希不一致: {entry.filename!r}"
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError, EOFError, zlib.error, struct.error) as e:
+        return False, f"ZIP 读取失败: {e}"
+    return True, "ZIP 路径与逐文件内容一致"
+
+
 def verify_release_reusable(release_tag, tag_id):
     assets = release_assets(release_tag)
     if assets is None:
@@ -129,27 +253,47 @@ def verify_release_reusable(release_tag, tag_id):
     zip_name = f"merged-rules-{tag_id}.zip"
     zip_digest = assets.get(zip_name, "").removeprefix("sha256:")
     sums_digest = assets.get(SHA256SUMS_NAME, "").removeprefix("sha256:")
-    if not zip_digest or not sums_digest:
-        return False, "远端资产未提供 sha256 digest"
 
-    sums_text = release_sha256sums(release_tag)
-    if sums_text is None:
+    sums_bytes = release_sha256sums(release_tag)
+    if sums_bytes is None:
         return False, f"无法下载 {SHA256SUMS_NAME}"
-    if hashlib.sha256(sums_text.encode("utf-8")).hexdigest() != sums_digest:
+    if sums_digest and hashlib.sha256(sums_bytes).hexdigest() != sums_digest:
         return False, f"{SHA256SUMS_NAME} 自身 digest 不匹配"
-
+    try:
+        sums_text = sums_bytes.decode("utf-8", errors="strict")
+    except UnicodeError:
+        return False, f"{SHA256SUMS_NAME} 不是有效的 UTF-8"
     try:
         sums_entries = parse_sha256sums(sums_text)
     except ValueError as e:
         return False, str(e)
-    if sums_entries.get(zip_name) != zip_digest:
+
+    lines = sums_text.splitlines()
+    first_parts = lines[0].strip().split(None, 1) if lines else []
+    first_digest = first_parts[0].lower() if len(first_parts) == 2 else ""
+    first_path = first_parts[1].strip().replace("\\", "/") if len(first_parts) == 2 else ""
+    if first_path != zip_name or first_digest != sums_entries.get(zip_name):
+        return False, f"{SHA256SUMS_NAME} 首行必须对应当前 ZIP"
+
+    zip_bytes = release_asset_bytes(release_tag, zip_name, max_bytes=MAX_ZIP_ASSET_BYTES)
+    if zip_bytes is None:
+        return False, f"无法下载 {zip_name}"
+    actual_zip_digest = hashlib.sha256(zip_bytes).hexdigest()
+    if zip_digest and first_digest != zip_digest:
         return False, "zip 的远端 digest 与 SHA256SUMS 首行不一致"
+    if first_digest != actual_zip_digest:
+        return False, "ZIP 原始字节与 SHA256SUMS 首行 digest 不匹配"
+    if zip_digest and zip_digest != actual_zip_digest:
+        return False, "ZIP 原始字节与远端 digest 不匹配"
 
     local_hashes = local_product_hashes()
     if not local_hashes:
         return False, "本地没有可校验产物"
-    if sums_entries != {zip_name: zip_digest, **local_hashes}:
+    if sums_entries != {zip_name: actual_zip_digest, **local_hashes}:
         return False, "SHA256SUMS 的逐文件哈希与本地产物不一致"
+    reusable, why = verify_zip_content(zip_bytes, local_hashes)
+    if not reusable:
+        return False, why
     return True, "资产与当前内容一致"
 
 
@@ -211,6 +355,52 @@ def latest_rules_release_tag():
     return None
 
 
+def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
+    raw = run_gh(
+        [
+            "api",
+            "repos/{owner}/{repo}/git/matching-refs/tags/rules-",
+            "--paginate",
+            "--jq",
+            ".[].ref",
+        ]
+    )
+    if raw is None:
+        warning("  无法读取自动 tag 列表，跳过孤立 tag 对账")
+        return 0
+
+    cleaned = 0
+    for line in raw.splitlines():
+        ref = line.strip()
+        if not ref.startswith("refs/tags/"):
+            continue
+        tag = ref.removeprefix("refs/tags/")
+        if not RULES_TAG_RE.fullmatch(tag) or tag == current_tag or tag in release_tags:
+            continue
+        created_raw = run_gh(
+            ["api", f"repos/{{owner}}/{{repo}}/commits/{tag}", "--jq", ".commit.committer.date"]
+        )
+        if not created_raw:
+            warning(f"  无法确认孤立 tag 的提交年龄，跳过: {tag}")
+            continue
+        try:
+            created_at = datetime.datetime.fromisoformat(created_raw.strip().replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError) as e:
+            warning(f"  孤立 tag 年龄无法解析，跳过: {tag}（{e}）")
+            continue
+        if created_at.tzinfo is None:
+            warning(f"  孤立 tag 年龄缺少时区，跳过: {tag}")
+            continue
+        if created_at >= cutoff_time:
+            continue
+        info(f"  删除孤立自动 tag: {tag}")
+        if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
+            warning(f"  删除孤立 tag 失败，留待下轮重试: {tag}")
+            continue
+        cleaned += 1
+    return cleaned
+
+
 def needs_release_repair(current_hash=None):
     """无内容变化时，latest 必须指向当前内容且资产可校验，否则需要补发。"""
     if current_hash is None:
@@ -224,17 +414,24 @@ def needs_release_repair(current_hash=None):
     return release_repair_reason(current_hash) is not None
 
 
-def confirm_release_assets(release_tag, expected):
+def confirm_release_assets(release_tag, expected, content_check=None):
     last_names = None
+    content_failed = False
     for attempt in range(ASSET_CONFIRM_ATTEMPTS):
         names = release_asset_names(release_tag)
         if names is not None:
             last_names = names
             if expected <= names:
-                return names
+                if content_check is None:
+                    return names
+                reusable, why = content_check()
+                if reusable:
+                    return names
+                content_failed = True
+                warning(f"  Release 资产内容校验未通过: {why}")
         if attempt + 1 < ASSET_CONFIRM_ATTEMPTS:
             time.sleep(ASSET_CONFIRM_DELAY)
-    return last_names
+    return None if content_failed else last_names
 
 
 def product_dirs():
@@ -289,6 +486,21 @@ def check_expected(expected, actual, context):
     return manifest.verify_matches(expected, actual, context)
 
 
+def validate_product_files(txt_dir, mrs_dir):
+    for folder, suffix in ((txt_dir, ".txt"), (mrs_dir, ".mrs")):
+        root = Path(folder)
+        if not root.exists():
+            continue
+        for path in root.rglob(f"*{suffix}"):
+            rel = path.relative_to(root)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise manifest.ManifestError(f"非普通文件产物: {path}")
+            if suffix == ".mrs" and path.stat().st_size == 0:
+                raise manifest.ManifestError(f"零字节 MRS 产物: {path}")
+
+
 def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     default_txt, default_mrs = product_dirs()
     txt_dir = txt_dir or default_txt
@@ -296,6 +508,7 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     if require_baseline is None:
         require_baseline = baseline_required()
 
+    validate_product_files(txt_dir, mrs_dir)
     baseline, expected = load_baseline()
     txt_files = sorted(manifest.collect_files(txt_dir, ".txt"))
     mrs_files = sorted(manifest.collect_files(mrs_dir, ".mrs"))
@@ -373,6 +586,36 @@ def run_gh(cmd_list, strip=True):
         return None
     except subprocess.CalledProcessError as e:
         warning(f"  GH CLI 警告: {e.stderr.strip()}")
+        return None
+    except OSError as e:
+        error(f"  无法执行 gh CLI: {e}")
+        gh_error(f"无法执行 gh CLI: {e}")
+        sys.exit(1)
+
+
+def run_gh_bytes(cmd_list, max_bytes=None):
+    try:
+        with tempfile.TemporaryFile() as output:
+            subprocess.run(
+                ["gh", *cmd_list],
+                stdout=output,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=GH_TIMEOUT,
+            )
+            output.seek(0, os.SEEK_END)
+            size = output.tell()
+            if max_bytes is not None and size > max_bytes:
+                warning(f"  资产超过下载上限 {max_bytes} 字节: {' '.join(cmd_list)}")
+                return None
+            output.seek(0)
+            return output.read() if max_bytes is None else output.read(max_bytes)
+    except subprocess.TimeoutExpired:
+        warning(f"  GH CLI 超时（>{GH_TIMEOUT}s）: {' '.join(cmd_list)}")
+        return None
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
+        warning(f"  GH CLI 警告: {stderr.strip()}")
         return None
     except OSError as e:
         error(f"  无法执行 gh CLI: {e}")
@@ -611,7 +854,11 @@ def main():
                     os.unlink(artifact)
             sys.exit(1)
 
-        asset_names = confirm_release_assets(release_tag, expected)
+        asset_names = confirm_release_assets(
+            release_tag,
+            expected,
+            content_check=lambda: verify_release_reusable(release_tag, tag_id),
+        )
         if asset_names is None:
             error(f"  Release {release_tag} 的资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认，判定失败")
             gh_error(f"Release {release_tag} 资产连续 {ASSET_CONFIRM_ATTEMPTS} 次无法确认")
@@ -637,14 +884,30 @@ def main():
     releases_json = run_gh(["release", "list", "--limit", "200", "--json", "tagName,createdAt"])
 
     if releases_json:
+        listing_valid = True
         try:
             releases = json.loads(releases_json)
         except (TypeError, ValueError) as e:
             # 发布与哈希保存已完成，清理失败只告警不标红（下轮运行自愈）
             warning(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}），本轮跳过清理")
             releases = []
+            listing_valid = False
+        if not isinstance(releases, list):
+            warning("  旧 Release 清理失败: gh 返回的不是列表，本轮跳过清理")
+            releases = []
+            listing_valid = False
 
         cutoff_time = utc_now - datetime.timedelta(days=KEEP_DAYS)
+        release_tags = {
+            rel.get("tagName")
+            for rel in releases
+            if isinstance(rel, dict) and isinstance(rel.get("tagName"), str)
+        }
+        can_reconcile_orphans = (
+            listing_valid
+            and len(releases) < 200
+            and all(isinstance(rel, dict) and isinstance(rel.get("tagName"), str) for rel in releases)
+        )
 
         cleaned = 0
         for rel in releases:
@@ -654,17 +917,22 @@ def main():
             except (KeyError, AttributeError, TypeError, ValueError) as e:
                 warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")
                 continue
-            if not tag.startswith("rules-"):
+            if not isinstance(tag, str) or not RULES_TAG_RE.fullmatch(tag):
                 continue
             if created_at < cutoff_time and tag != release_tag:
                 info(f"  删除旧 Release: {tag}")
                 if run_gh(["release", "delete", tag, "--yes"]) is None:
                     warning(f"  删除 Release 失败，跳过: {tag}")
                     continue
+                release_tags.discard(tag)
                 if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
                     warning(f"  删除 tag 失败，跳过计数（Release 已删，tag 残留）: {tag}")
                     continue
                 cleaned += 1
+        if can_reconcile_orphans:
+            cleaned += cleanup_orphan_rules_tags(release_tags, release_tag, cutoff_time)
+        elif listing_valid:
+            warning("  Release 列表可能不完整，跳过孤立 tag 对账")
         if cleaned == 0:
             info("  无需清理")
 
