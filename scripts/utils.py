@@ -299,27 +299,67 @@ class DomainTrie:
     def __init__(self):
         self._root = {}
         self._wildcards = []
+        self._wildcard_fixed = {}
+        self._wildcard_suffix = {}
 
     def add(self, domain, kind=None):
         if domain.startswith("*.") and domain not in self._wildcards:
+            labels = domain.split(".")
+            stars = 0
+            while stars < len(labels) and labels[stars] == "*":
+                stars += 1
+            fixed = tuple(labels[stars:])
+            depth = stars + len(fixed)
+            record = (len(self._wildcards), stars, fixed, domain)
             self._wildcards.append(domain)
+            self._wildcard_fixed.setdefault(fixed, {}).setdefault(depth, []).append(record)
+            for start in range(len(fixed) + 1):
+                suffix = fixed[start:]
+                self._wildcard_suffix.setdefault(suffix, {}).setdefault(depth, []).append(record)
         node = self._root
         for part in reversed(domain.split(".")):
             node = node.setdefault(part, {})
         node[kind or self.EXACT] = True
 
+    def _wildcard_candidates(self, entry):
+        if entry.startswith("+."):
+            kind, fixed = "suffix", entry[2:].split(".")
+        elif entry.startswith("."):
+            kind, fixed = "subdomain", entry[1:].split(".")
+        else:
+            kind, fixed = "exact", entry.split(".")
+        depth = len(fixed)
+        if kind == "exact":
+            for start in range(depth + 1):
+                suffix = tuple(fixed[start:])
+                yield from self._wildcard_fixed.get(suffix, {}).get(depth, ())
+            return
+
+        min_depth = depth + 1 if kind == "subdomain" else depth
+        for candidate_depth, records in self._wildcard_suffix.get(tuple(fixed), {}).items():
+            if candidate_depth >= min_depth:
+                yield from records
+        for start in range(depth + 1):
+            suffix = tuple(fixed[start:])
+            for candidate_depth, records in self._wildcard_fixed.get(suffix, {}).items():
+                if candidate_depth >= min_depth:
+                    yield from records
+
     def covering_wildcard(self, entry):
         """返回覆盖该具体条目的通配模式（`*.d` 单级语义），无则 None。"""
         if entry.startswith("*."):
             return None
-        for pattern in self._wildcards:
-            labels = pattern.split(".")
-            stars = 0
-            while stars < len(labels) and labels[stars] == "*":
-                stars += 1
-            if _wildcard_covers(stars, labels[stars:], entry):
-                return pattern
-        return None
+        best = None
+        best_order = len(self._wildcards)
+        seen = set()
+        for order, stars, fixed, pattern in self._wildcard_candidates(entry):
+            if order in seen or order >= best_order:
+                continue
+            seen.add(order)
+            if _wildcard_covers(stars, list(fixed), entry):
+                best = pattern
+                best_order = order
+        return best
 
     def _walk(self, domain):
         node = self._root

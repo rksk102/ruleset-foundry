@@ -550,9 +550,9 @@ class TestDedupDomainSuffix:
         assert removed == 2
 
     def test_order_independent(self):
-        a, _ = utils.dedup_domain_suffix({"+.google.com", "+.ads.google.com"})
-        b, _ = utils.dedup_domain_suffix({"+.ads.google.com", "+.google.com"})
-        assert a == b
+        a, _ = utils.dedup_domain_suffix(["+.google.com", "+.ads.google.com"])
+        b, _ = utils.dedup_domain_suffix(["+.ads.google.com", "+.google.com"])
+        assert a == b == ["+.google.com"]
 
     def test_list_duplicates_are_removed(self):
         kept, removed = utils.dedup_domain_suffix(["example.com", "example.com"])
@@ -669,6 +669,63 @@ class TestDomainTrie:
         trie.add("ads.google.com")
         assert trie.has_marked_ancestor("google.com") is False
         assert trie.covering_parent("google.com") is None
+
+    def test_covering_wildcard_keeps_first_match_semantics(self):
+        patterns = [
+            "*.example.com",
+            "*.*.example.com",
+            "*.a.example.com",
+            "*.*.a.example.com",
+            "*.com",
+            "*.*.com",
+        ]
+        entries = [
+            "example.com",
+            "www.example.com",
+            "a.b.example.com",
+            "+.example.com",
+            "+.www.example.com",
+            "+.a.b.example.com",
+            ".example.com",
+            ".www.example.com",
+            ".a.b.example.com",
+            "*.example.com",
+        ]
+        trie = utils.DomainTrie()
+        for pattern in patterns:
+            trie.add(pattern)
+
+        for entry in entries:
+            expected = None
+            for pattern in patterns:
+                labels = pattern.split(".")
+                stars = 0
+                while stars < len(labels) and labels[stars] == "*":
+                    stars += 1
+                if utils._wildcard_covers(stars, labels[stars:], entry):
+                    expected = pattern
+                    break
+            assert trie.covering_wildcard(entry) == expected, entry
+
+    def test_nonmatching_wildcards_do_not_scan_every_pattern(self, monkeypatch):
+        size = 1000
+        patterns = [f"*.w{i}.example.com" for i in range(size)]
+        entries = [f"x{i}.other.example.net" for i in range(size)]
+        trie = utils.DomainTrie()
+        for pattern in patterns:
+            trie.add(pattern)
+        checked = 0
+        original = utils._wildcard_covers
+
+        def counted(*args):
+            nonlocal checked
+            checked += 1
+            return original(*args)
+
+        monkeypatch.setattr(utils, "_wildcard_covers", counted)
+
+        assert all(trie.covering_wildcard(entry) is None for entry in entries)
+        assert checked <= size
 
 
 class TestFlattenIpDefaultRoute:
