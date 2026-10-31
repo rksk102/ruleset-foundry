@@ -1,3 +1,4 @@
+import hashlib
 import os
 import subprocess
 import sys
@@ -86,7 +87,7 @@ class TestReleaseApiHttps:
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
+            def read(self, _size=-1):
                 return b"{}"
 
         monkeypatch.setattr(convert_mrs, "_open_url", lambda req, timeout=None: FakeResp())
@@ -228,7 +229,15 @@ class TestDownloadKernelDigest:
         return buf.getvalue()
 
     def _run(
-        self, work_dir, expected_digest, payload=None, *, request_url="https://example.com/k.gz", response_url=None
+        self,
+        work_dir,
+        expected_digest,
+        payload=None,
+        *,
+        request_url="https://example.com/k.gz",
+        response_url=None,
+        existing=None,
+        on_read=None,
     ):
         import io as _io
 
@@ -236,6 +245,8 @@ class TestDownloadKernelDigest:
         kernel_dir = work_dir / "k"
         kernel_dir.mkdir(parents=True, exist_ok=True)
         target = kernel_dir / "kernel"
+        if existing is not None:
+            target.write_bytes(existing)
 
         class FakeResp(_io.BytesIO):
             def __enter__(self):
@@ -243,6 +254,11 @@ class TestDownloadKernelDigest:
 
             def __exit__(self, *a):
                 return False
+
+            def read(self, *args):
+                if on_read is not None:
+                    on_read()
+                return super().read(*args)
 
         if response_url is not None:
             FakeResp.url = response_url
@@ -299,8 +315,22 @@ class TestDownloadKernelDigest:
         kernel = work_dir / "k" / "kernel"
         assert not kernel.exists(), f"校验失败不得落盘，但 {kernel} 存在"
 
+    def test_failure_preserves_concurrently_replaced_target(self, work_dir):
+        kernel = work_dir / "k" / "kernel"
+        concurrent = b"valid-kernel-from-another-process"
+        ok, err = self._run(
+            work_dir,
+            "sha256:" + "0" * 64,
+            existing=b"old-kernel",
+            on_read=lambda: kernel.write_bytes(concurrent),
+        )
+        assert ok is False
+        assert "摘要不匹配" in str(err)
+        assert kernel.read_bytes() == concurrent
+        assert list(kernel.parent.iterdir()) == [kernel]
+
     @pytest.mark.parametrize("variant", ("uppercase-algo", "no-prefix", "padded"))
-    def test_digest_format_variants_accepted(self, work_dir, variant):
+    def test_digest_format_variants_rejected(self, work_dir, variant):
         import hashlib
 
         payload = self._payload()
@@ -310,8 +340,9 @@ class TestDownloadKernelDigest:
             "no-prefix": hexdigest,
             "padded": "sha256:" + hexdigest + " ",
         }[variant]
-        ok, _ = self._run(work_dir, expected)
-        assert ok is True
+        ok, err = self._run(work_dir, expected)
+        assert ok is False
+        assert "digest" in str(err)
 
     def test_other_algorithm_fails_closed(self, work_dir):
         ok, _err = self._run(work_dir, "sha512:" + "0" * 128)
@@ -323,16 +354,127 @@ class TestDownloadKernelDigest:
         assert "digest" in str(err)
 
     def test_compressed_stream_size_capped(self, work_dir):
+        import hashlib
         import os as _os
 
+        payload = self._payload(_os.urandom(4096))
         original = convert_mrs.MAX_KERNEL_BYTES
         convert_mrs.MAX_KERNEL_BYTES = 64
         try:
-            ok, err = self._run(work_dir, "", payload=self._payload(_os.urandom(4096)))
+            ok, err = self._run(work_dir, "sha256:" + hashlib.sha256(payload).hexdigest(), payload=payload)
         finally:
             convert_mrs.MAX_KERNEL_BYTES = original
         assert ok is False
         assert "压缩包超过上限" in str(err)
+
+
+class TestNetworkTotalDeadline:
+    def test_release_read_is_bounded_by_total_deadline(self, monkeypatch):
+        clock = [0.0]
+
+        class SlowResp:
+            url = API_LATEST
+
+            def __init__(self):
+                self.sent = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, _size=-1):
+                if self.sent:
+                    return b""
+                self.sent = True
+                clock[0] += 1000
+                return b"{}"
+
+        monkeypatch.setattr(convert_mrs.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(convert_mrs, "_open_url", lambda req, timeout=None: SlowResp())
+        with pytest.raises(TimeoutError, match="总时限"):
+            convert_mrs._fetch_latest_release_info(max_retries=1)
+
+    def test_each_network_read_uses_remaining_socket_timeout(self, monkeypatch):
+        clock = [0.0]
+
+        class Socket:
+            def __init__(self):
+                self.timeouts = []
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+        class Raw:
+            def __init__(self, sock):
+                self._sock = sock
+
+        class Fp:
+            def __init__(self, sock):
+                self.raw = Raw(sock)
+
+        class SlowResp:
+            url = API_LATEST
+
+            def __init__(self):
+                self.sock = Socket()
+                self.fp = Fp(self.sock)
+                self.reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, _size=-1):
+                self.reads += 1
+                clock[0] += 40 if self.reads == 1 else 1000
+                return b"{}" if self.reads == 1 else b""
+
+        response = SlowResp()
+        monkeypatch.setattr(convert_mrs.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(convert_mrs, "_open_url", lambda req, timeout=None: response)
+        with pytest.raises(TimeoutError, match="总时限"):
+            convert_mrs._fetch_latest_release_info(max_retries=1)
+        assert response.sock.timeouts == [90, 50]
+
+    def test_download_read_is_bounded_and_preserves_existing_target(self, monkeypatch, work_dir):
+        clock = [0.0]
+        target = work_dir / "kernel"
+        target.write_bytes(b"old-kernel")
+
+        class SlowResp:
+            url = "https://example.com/k.gz"
+
+            def __init__(self):
+                self.sent = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, _size=-1):
+                if self.sent:
+                    return b""
+                self.sent = True
+                clock[0] += 1000
+                return b"slow-chunk"
+
+        monkeypatch.setattr(convert_mrs.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(convert_mrs, "_open_url", lambda req, timeout=None: SlowResp())
+        with pytest.raises(TimeoutError, match="总时限"):
+            convert_mrs._download_kernel(
+                "https://example.com/k.gz",
+                expected_digest="sha256:" + "0" * 64,
+                max_retries=1,
+                output_path=target,
+            )
+        assert target.read_bytes() == b"old-kernel"
+        assert list(work_dir.iterdir()) == [target]
 
 
 class TestVerifyKernelRequireSha:
@@ -446,17 +588,16 @@ class TestHasValidContent:
 
 
 class TestBumpConfig:
-    def run_with(self, work_dir, tag, assets, config_text, fake_fetch=True):
+    def run_with(self, work_dir, tag, assets, config_text):
         cfg = work_dir / "config.yaml"
         cfg.write_text(config_text, encoding="utf-8")
         original_fetch = convert_mrs._fetch_latest_release_info
         original_cwd = os.getcwd()
         try:
-            if fake_fetch:
-                convert_mrs._fetch_latest_release_info = lambda max_retries=3, pinned=None: {
-                    "tag_name": tag,
-                    "assets": assets,
-                }
+            convert_mrs._fetch_latest_release_info = lambda max_retries=3, pinned=None: {
+                "tag_name": tag,
+                "assets": assets,
+            }
             os.chdir(work_dir)
             convert_mrs.bump_config()
         finally:
@@ -655,20 +796,53 @@ class TestBumpQueriesLatest:
 class TestGetLatestMihomo:
     def setup_kernel(self, monkeypatch, work_dir, *, cached_version=None):
         cache = work_dir / "kernel"
-        bin_path = cache / "mihomo"
-        version_file = cache / "version.txt"
+        bin_path = cache / "amd64" / "mihomo"
+        version_file = cache / "amd64" / "version.txt"
         monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", cache)
         monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(bin_path))
         monkeypatch.setattr(convert_mrs, "VERSION_FILE", version_file)
         monkeypatch.setattr(convert_mrs, "EXPECTED_SHA", "a" * 64)
         monkeypatch.setattr(convert_mrs, "PINNED_VERSION", "v1.2.3")
+        monkeypatch.setattr(convert_mrs, "current_kernel_arch", lambda: "amd64")
         for name in ("info", "warning", "error", "group_start", "group_end"):
             monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
-        cache.mkdir(parents=True, exist_ok=True)
+        bin_path.parent.mkdir(parents=True, exist_ok=True)
         if cached_version is not None:
             version_file.write_text(cached_version, encoding="utf-8")
             bin_path.write_bytes(b"\x7fELF")
         return bin_path, version_file
+
+    def test_cache_paths_are_isolated_by_architecture(self, monkeypatch, work_dir):
+        monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", work_dir / "kernel")
+        amd64_bin, amd64_version = convert_mrs._kernel_cache_paths("amd64")
+        arm64_bin, arm64_version = convert_mrs._kernel_cache_paths("arm64")
+        assert amd64_bin == work_dir / "kernel" / "amd64" / "mihomo"
+        assert arm64_bin == work_dir / "kernel" / "arm64" / "mihomo"
+        assert amd64_version == work_dir / "kernel" / "amd64" / "version.txt"
+        assert arm64_version == work_dir / "kernel" / "arm64" / "version.txt"
+
+    def test_legacy_cache_is_migrated_and_reused_without_download(self, monkeypatch, work_dir):
+        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir)
+        cache = work_dir / "kernel"
+        legacy_bin = cache / "mihomo"
+        legacy_version = cache / "version.txt"
+        payload = elf_binary(0x3E)
+        legacy_bin.write_bytes(payload)
+        legacy_bin.chmod(0o755)
+        legacy_version.write_text("v1.2.3", encoding="utf-8")
+        monkeypatch.setattr(convert_mrs, "EXPECTED_SHA", hashlib.sha256(payload).hexdigest())
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
+
+        def unexpected_fetch(*_a, **_k):
+            raise AssertionError("有效旧缓存迁移后不应访问网络")
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", unexpected_fetch)
+        convert_mrs.get_latest_mihomo()
+
+        assert bin_path.read_bytes() == payload
+        assert version_file.read_text(encoding="utf-8") == "v1.2.3"
+        assert legacy_bin.read_bytes() == payload
+        assert bin_path.stat().st_mode == legacy_bin.stat().st_mode
 
     def release(self, tag="v1.2.3"):
         return {"tag_name": tag, "assets": [asset("mihomo-linux-amd64-v1.2.3.gz")]}
@@ -684,8 +858,23 @@ class TestGetLatestMihomo:
             },
         )
         monkeypatch.setattr(
-            convert_mrs, "_download_kernel", lambda url, expected_digest=None: bin_path.write_bytes(b"\x7fELF")
+            convert_mrs,
+            "_download_kernel",
+            lambda url, expected_digest=None, output_path=None: Path(output_path or bin_path).write_bytes(b"\x7fELF"),
         )
+
+    def test_cache_version_change_during_validation_is_not_executed(self, monkeypatch, work_dir):
+        _bin_path, version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+
+        def change_version(*_a, **_k):
+            version_file.write_text("v9.9.9", encoding="utf-8")
+            return "a" * 64
+
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", change_version)
+        executions = []
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: executions.append(True) or "Mihomo")
+        assert convert_mrs._cached_kernel_usable("v1.2.3", "a" * 64, "amd64") is None
+        assert executions == []
 
     def test_cache_hit_reuses_kernel_without_download(self, monkeypatch, work_dir):
         _bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
@@ -694,7 +883,7 @@ class TestGetLatestMihomo:
             convert_mrs, "_fetch_latest_release_info", lambda *a, **k: fetch_calls.append(True) or self.release()
         )
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
         downloads = []
         monkeypatch.setattr(convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(True))
 
@@ -713,7 +902,7 @@ class TestGetLatestMihomo:
             return "a" * 64
 
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
         downloads = []
         monkeypatch.setattr(convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(True))
 
@@ -736,7 +925,7 @@ class TestGetLatestMihomo:
             return "a" * 64
 
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", fake_verify)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
 
         convert_mrs.get_latest_mihomo()
 
@@ -748,7 +937,7 @@ class TestGetLatestMihomo:
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", lambda *a, **k: self.release())
         self.downloaded(monkeypatch, bin_path)
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
 
         convert_mrs.get_latest_mihomo()
 
@@ -768,6 +957,54 @@ class TestGetLatestMihomo:
             convert_mrs.get_latest_mihomo()
 
         assert exc.value.code == 1
+        assert not bin_path.exists()
+
+    def test_failed_candidate_cannot_become_fallback_cache(self, monkeypatch, work_dir):
+        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", lambda *a, **k: self.release())
+        self.downloaded(monkeypatch, bin_path)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        calls = []
+
+        def fake_verify_kernel(kernel_bin=None):
+            calls.append(Path(kernel_bin or convert_mrs.KERNEL_BIN))
+            return "unknown" if len(calls) == 1 else "Mihomo cached"
+
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", fake_verify_kernel)
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+        assert len(calls) == 1
+        assert calls[0] != bin_path
+        assert not bin_path.exists()
+        assert not version_file.exists()
+
+    def test_failed_candidate_preserves_previous_cache_for_fallback(self, monkeypatch, work_dir):
+        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.2")
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", lambda *a, **k: self.release())
+        monkeypatch.setattr(
+            convert_mrs,
+            "_download_kernel",
+            lambda url, expected_digest=None, output_path=None: Path(output_path or bin_path).write_bytes(
+                b"new-candidate"
+            ),
+        )
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        calls = []
+
+        def fake_verify_kernel(kernel_bin=None):
+            calls.append(Path(kernel_bin or convert_mrs.KERNEL_BIN))
+            return "unknown" if len(calls) == 1 else "Mihomo cached"
+
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", fake_verify_kernel)
+        convert_mrs.get_latest_mihomo()
+
+        assert len(calls) == 2
+        assert calls[0] != bin_path
+        assert calls[1] == bin_path
+        assert bin_path.read_bytes() == b"\x7fELF"
+        assert version_file.read_text(encoding="utf-8") == "v1.2.2"
 
     def test_fetch_failure_degrades_to_verified_cache(self, monkeypatch, work_dir):
         self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
@@ -777,9 +1014,23 @@ class TestGetLatestMihomo:
 
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
 
         convert_mrs.get_latest_mihomo()
+
+    def test_fallback_rejects_version_output_without_mihomo(self, monkeypatch, work_dir):
+        self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+
+        def fake_fetch(*_a, **_k):
+            raise RuntimeError("网络不可用")
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a, **k: "unknown")
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
 
     def test_fetch_failure_without_usable_cache_exits(self, monkeypatch, work_dir):
         self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
@@ -835,6 +1086,52 @@ class TestGetLatestMihomo:
         assert "f" * 64 in capsys.readouterr().out
 
 
+class TestConvertOutput:
+    def run_conversion(self, monkeypatch, work_dir, output):
+        src = work_dir / "src"
+        dst = work_dir / "dst"
+        src.mkdir()
+        dst.mkdir()
+        (src / "rules.txt").write_text("example.com\n", encoding="utf-8")
+        monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(src))
+        monkeypatch.setattr(convert_mrs, "DST_ROOT", str(dst))
+        monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_products_anchored", lambda: None)
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo", lambda: None)
+        monkeypatch.setattr(convert_mrs, "get_rule_type", lambda _parts: "domain")
+        monkeypatch.setattr(convert_mrs, "write_summary", lambda *a, **k: None)
+        monkeypatch.setattr(convert_mrs.subprocess, "run", lambda cmd, **k: Path(cmd[-1]).write_bytes(output))
+        monkeypatch.setattr(sys, "argv", ["convert_mrs.py"])
+        for name in ("info", "warning", "error", "success", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+
+    def test_zero_exit_with_empty_output_is_failure(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, b"")
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+        assert exc.value.code == 1
+
+    def test_zero_exit_with_nonempty_file_succeeds(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, b"valid-mrs")
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+        assert exc.value.code == 0
+
+    def test_stale_output_is_not_credit_for_current_conversion(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, b"ignored")
+        stale = work_dir / "dst" / "rules.mrs"
+        stale.write_bytes(b"stale-mrs")
+        monkeypatch.setattr(convert_mrs, "clean_directory", lambda _path: [(str(stale), "locked")])
+        monkeypatch.setattr(convert_mrs.subprocess, "run", lambda *_a, **_k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+
+        assert exc.value.code == 1
+        assert stale.read_bytes() == b"stale-mrs"
+
+
 class TestSmokeConvert:
     def prepare(self, monkeypatch, work_dir):
         monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", work_dir)
@@ -870,6 +1167,16 @@ class TestSmokeConvert:
 
     def test_missing_output_exits(self, monkeypatch, work_dir):
         self.prepare(monkeypatch, work_dir)
+        monkeypatch.setattr(convert_mrs.subprocess, "run", lambda cmd, **k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs._smoke_convert()
+
+        assert exc.value.code == 1
+
+    def test_stale_output_does_not_pass_smoke(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+        (work_dir / "smoke-output.mrs").write_bytes(b"stale")
         monkeypatch.setattr(convert_mrs.subprocess, "run", lambda cmd, **k: None)
 
         with pytest.raises(SystemExit) as exc:

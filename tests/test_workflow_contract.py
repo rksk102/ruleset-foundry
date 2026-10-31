@@ -81,6 +81,27 @@ def test_ci_kernel_smoke_reuses_pipeline_kernel_cache():
     assert not [step for step in job["steps"] if step.get("uses", "").startswith("actions/cache/save@")]
 
 
+def test_ci_kernel_smoke_uses_arch_path_and_versioned_cache_layout():
+    ci = load_workflow("ci.yml")
+    pipeline = load_workflow("pipeline.yml")
+    smoke = next(
+        step for step in ci["jobs"]["kernel-smoke"]["steps"] if step.get("name") == "用缓存内核转换最小 ipcidr 输入"
+    )
+    assert smoke["env"]["KERNEL"] == "${{ steps.kernel-key.outputs.path }}/${{ steps.kernel-key.outputs.arch }}/mihomo"
+    key_step = next(step for step in ci["jobs"]["kernel-smoke"]["steps"] if step.get("id") == "kernel-key")
+    assert 'print("arch=" + current_kernel_arch())' in key_step["run"]
+
+    for workflow, job_name in ((ci, "kernel-smoke"), (pipeline, "build")):
+        cache_steps = [step for step in workflow["jobs"][job_name]["steps"] if "actions/cache/" in step.get("uses", "")]
+        for step in cache_steps:
+            if "key" in step["with"]:
+                assert step["with"]["key"].startswith("mihomo-v2-")
+            if "restore-keys" in step["with"]:
+                assert "mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}" in step[
+                    "with"
+                ]["restore-keys"]
+
+
 def test_setup_python_env_pins_exact_patch_version():
     action_path = REPO / ".github" / "actions" / "setup-python-env" / "action.yml"
     action = yaml.safe_load(action_path.read_text(encoding="utf-8"))

@@ -93,6 +93,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import hashlib
           from config_loader import get
+          from convert_mrs import current_kernel_arch
 
           raw = "|".join(
               str(get("mihomo", key, default=""))
@@ -100,23 +101,25 @@ jobs:
           )
           print("key=" + hashlib.sha256(raw.encode("utf-8")).hexdigest())
           print("path=" + get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"))
+          print("arch=" + current_kernel_arch())
           PY
       - name: 恢复 Mihomo 内核缓存
         id: kernel-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ steps.kernel-key.outputs.path }}
-          key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+          key: mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
           restore-keys: |
-            mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
-            mihomo-${{ runner.os }}-${{ runner.arch }}-
+            mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
+            mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+            mihomo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: 校验当前内核可运行
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/convert_mrs.py --verify-current-kernel
       - name: 用缓存内核转换最小 ipcidr 输入
         env:
-          KERNEL: ${{ steps.kernel-key.outputs.path }}/mihomo
+          KERNEL: ${{ steps.kernel-key.outputs.path }}/${{ steps.kernel-key.outputs.arch }}/mihomo
         run: |
           set -euo pipefail
           TMP_DIR="${RUNNER_TEMP}/kernel-smoke"
