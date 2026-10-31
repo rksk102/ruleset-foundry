@@ -176,6 +176,47 @@ def test_ci_kernel_smoke_uses_arch_path_and_versioned_cache_layout():
                 ]["restore-keys"]
 
 
+def test_pipeline_uses_configured_output_dirs_for_artifacts():
+    workflow = load_workflow("pipeline.yml")
+    build = workflow["jobs"]["build"]
+    publish = workflow["jobs"]["publish"]
+
+    for job in (build, publish):
+        path_step = next(step for step in job["steps"] if step.get("id") == "product-paths")
+        assert "merged_output_dir" in path_step["run"]
+        assert "mrs_output_dir" in path_step["run"]
+
+    build_uploads = {
+        step["name"]: step["with"]["path"]
+        for step in build["steps"]
+        if step.get("name", "").startswith("上传 merged-rules")
+    }
+    assert build_uploads["上传 merged-rules 产物"] == "${{ steps.product-paths.outputs.txt }}/"
+    assert build_uploads["上传 merged-rules-mrs 产物"] == "${{ steps.product-paths.outputs.mrs }}/"
+
+    clean = next(step for step in publish["steps"] if step.get("name") == "清空旧产物")
+    assert clean["run"] == 'rm -rf "$TXT_DIR" "$MRS_DIR"'
+
+    downloads = {
+        step["name"]: step["with"]["path"]
+        for step in publish["steps"]
+        if step.get("name", "").startswith("下载 merged-rules")
+    }
+    assert downloads["下载 merged-rules 产物"] == "${{ steps.product-paths.outputs.txt }}/"
+    assert downloads["下载 merged-rules-mrs 产物"] == "${{ steps.product-paths.outputs.mrs }}/"
+
+    artifacts = next(
+        step for step in publish["steps"] if step.get("name") == "发布规则产物到 artifacts 分支"
+    )
+    assert artifacts["env"]["TXT_DIR"] == "${{ steps.product-paths.outputs.txt }}"
+    assert artifacts["env"]["MRS_DIR"] == "${{ steps.product-paths.outputs.mrs }}"
+    assert 'mkdir -p "$(dirname "$TXT_DIR")" "$(dirname "$MRS_DIR")"' in artifacts["run"]
+    assert 'cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"' in artifacts["run"]
+    assert 'cp -r "${GITHUB_WORKSPACE}/${MRS_DIR}" "$MRS_DIR"' in artifacts["run"]
+    assert 'printf \'%s/\\n%s/\\n\' "$TXT_DIR" "$MRS_DIR" > .gitignore' in artifacts["run"]
+    assert 'git add -f "$TXT_DIR" "$MRS_DIR" .gitignore' in artifacts["run"]
+
+
 def test_setup_python_env_pins_exact_patch_version():
     action_path = REPO / ".github" / "actions" / "setup-python-env" / "action.yml"
     action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
