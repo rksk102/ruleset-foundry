@@ -41,14 +41,12 @@ def build_products(
     manifest_entries=None,
     manifest_file=True,
     rulesets_dir=True,
-    merged_manifest=True,
 ):
     for rel in txt_entries:
         write(root / "merged-rules" / rel, "rule.example\n")
     for rel in mrs_of(txt_entries) if mrs_entries is None else mrs_entries:
         write(root / "merged-rules-mrs" / rel, "MRS")
-    if merged_manifest:
-        write_v2_manifest(root / "merged-rules")
+    write_v2_manifest(root / "merged-rules")
     if not rulesets_dir:
         return
     os.makedirs(root / "rulesets", exist_ok=True)
@@ -107,6 +105,27 @@ class ReleaseRun:
         self.root = root
         self.stub = GhStub(release_exists=False)
 
+    def _run_gh(self, cmd, strip=True):
+        result = self.stub(cmd, strip=strip)
+        if result is not None and cmd[0] == "release" and len(cmd) > 1 and cmd[1] in ("create", "upload"):
+            zip_name = next((part for part in cmd if part.endswith(".zip")), None)
+            sums = self.root / "SHA256SUMS"
+            if zip_name and (self.root / zip_name).is_file() and sums.is_file():
+                self.stub.asset_digests = {
+                    zip_name: "sha256:" + release_handler.file_sha256(self.root / zip_name),
+                    "SHA256SUMS": "sha256:" + release_handler.file_sha256(sums),
+                }
+        return result
+
+    def _run_gh_bytes(self, cmd, max_bytes=None):
+        self.stub.calls.append(list(cmd))
+        if cmd[:2] == ["release", "download"] and "-p" in cmd:
+            asset = self.root / cmd[cmd.index("-p") + 1]
+            if not asset.is_file() or (max_bytes is not None and asset.stat().st_size > max_bytes):
+                return None
+            return asset.read_bytes()
+        return None
+
     def __enter__(self):
         self._cwd = os.getcwd()
         self._saved = (
@@ -115,6 +134,7 @@ class ReleaseRun:
             release_handler.CHANGE_DETECTION,
             release_handler.KEEP_DAYS,
             release_handler.run_gh,
+            release_handler.run_gh_bytes,
             release_handler.load_last_hash,
             release_handler.save_last_hash,
         )
@@ -122,7 +142,8 @@ class ReleaseRun:
         release_handler.TARGET_CONFIG = {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"}
         release_handler.CHANGE_DETECTION = True
         release_handler.KEEP_DAYS = 3
-        release_handler.run_gh = self.stub
+        release_handler.run_gh = self._run_gh
+        release_handler.run_gh_bytes = self._run_gh_bytes
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda _hash: None
         os.chdir(self.root)
@@ -135,6 +156,7 @@ class ReleaseRun:
             release_handler.CHANGE_DETECTION,
             release_handler.KEEP_DAYS,
             release_handler.run_gh,
+            release_handler.run_gh_bytes,
             release_handler.load_last_hash,
             release_handler.save_last_hash,
         ) = self._saved

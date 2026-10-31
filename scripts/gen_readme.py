@@ -116,20 +116,24 @@ def collect_stats(files):
     return len(files), sum(os.path.getsize(path) for path in files)
 
 
+def _repo_relative_path(path):
+    return Path(path).resolve().relative_to(Path(REPO_ROOT).resolve()).as_posix()
+
+
 def write_table_rows(f, files, root_dir):
+    repo_rel = _repo_relative_path(root_dir)
     for filepath in files:
         filename = os.path.basename(filepath)
         size_bytes = os.path.getsize(filepath)
         filesize = format_size(size_bytes)
         rel_path = os.path.relpath(filepath, root_dir).replace(os.sep, "/")
-        root_name = os.path.basename(root_dir)
         category = os.path.dirname(rel_path)
         name_col = (
             f"<sub>{html.escape(category) if category else 'Root'}</sub>"
             f"<br><b>{html.escape(filename)}</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
         )
         # URL path 编码：& 等会破坏链接；保留 "/" 与现有合法字符（如 category-ai-!cn.txt 的 !）
-        full_rel = urllib.parse.quote(f"{root_name}/{rel_path}", safe="/!~-._")
+        full_rel = urllib.parse.quote(f"{repo_rel}/{rel_path}", safe="/!~-._")
         alt_name = html.escape(filename, quote=True)
         if size_bytes <= JSDELIVR_MAX_BYTES:
             download = (
@@ -189,6 +193,7 @@ def make_page_header(badge_time=None):
 def make_intro(repo_name=None, branch=None):
     repo_name = repo_name or os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
     branch = branch or os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
+    mrs_url_root = urllib.parse.quote(_repo_relative_path(DIR_MRS), safe="/!~-._")
     return f"""## 快速开始
 
 推荐使用 `.mrs` 二进制规则集（加载快、内存占用低）；`.txt` 文本规则集同样提供，见下方产物清单。
@@ -203,21 +208,21 @@ rule-providers:
     type: http
     behavior: domain
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/block/domain/rksk102/all-adblock.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/block/domain/rksk102/all-adblock.mrs"
     path: ./ruleset/block.mrs
     interval: 86400
   direct:
     type: http
     behavior: ipcidr
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/direct/ipcidr/rksk102/all-cnip.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/direct/ipcidr/rksk102/all-cnip.mrs"
     path: ./ruleset/direct.mrs
     interval: 86400
   policy:
     type: http
     behavior: domain
     format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/merged-rules-mrs/policy/domain/rksk102/all-proxy.mrs"
+    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/policy/domain/rksk102/all-proxy.mrs"
     path: ./ruleset/policy.mrs
     interval: 86400
 
@@ -239,6 +244,8 @@ rules:
 
 def make_inventory(files_std, files_mrs):
     _refresh_env()
+    rules_rel = _repo_relative_path(DIR_RULES)
+    mrs_rel = _repo_relative_path(DIR_MRS)
     count_std, size_std = collect_stats(files_std)
     count_mrs, size_mrs = collect_stats(files_mrs)
     buf = StringIO()
@@ -252,9 +259,9 @@ def make_inventory(files_std, files_mrs):
     )
     buf.write("| 产物 | `behavior` | `format` |\n")
     buf.write("| :--- | :--- | :--- |\n")
-    buf.write("| `merged-rules/<策略>/domain/**/*.txt` | `domain` | `text` |\n")
-    buf.write("| `merged-rules/<策略>/ipcidr/**/*.txt` | `ipcidr` | `text` |\n")
-    buf.write("| `merged-rules-mrs/**/*.mrs` | 与同名 `.txt` 相同 | `mrs` |\n\n")
+    buf.write(f"| `{rules_rel}/<策略>/domain/**/*.txt` | `domain` | `text` |\n")
+    buf.write(f"| `{rules_rel}/<策略>/ipcidr/**/*.txt` | `ipcidr` | `text` |\n")
+    buf.write(f"| `{mrs_rel}/**/*.mrs` | 与同名 `.txt` 相同 | `mrs` |\n\n")
     make_section(buf, "基础规则集合（.txt）", "mihomo 文本规则集", files_std, DIR_RULES)
     make_section(buf, "Mihomo 专用集合（.mrs）", "mihomo 二进制规则集", files_mrs, DIR_MRS)
     return buf.getvalue()

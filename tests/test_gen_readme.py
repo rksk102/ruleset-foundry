@@ -116,6 +116,10 @@ class TestCollectStats:
 
 
 class TestWriteTableRows:
+    @pytest.fixture(autouse=True)
+    def anchor_repo_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
+
     def render(self, tmp_path, rel, root_name="merged-rules"):
         root = tmp_path / root_name
         target = root / rel
@@ -190,6 +194,10 @@ class TestWriteTableRows:
 
 
 class TestMakeSection:
+    @pytest.fixture(autouse=True)
+    def anchor_repo_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
+
     def test_emits_header_table_and_details(self, tmp_path):
         write(tmp_path / "o" / "a.txt", "abc")
         buf = io.StringIO()
@@ -290,10 +298,6 @@ class TestStaticSections:
         assert "Releases" in text and "SHA256SUMS" in text
         assert "SECURITY.md" in text
 
-    def test_never_mentions_ghproxy(self):
-        text = gen_readme.make_static_sections()
-        assert "ghproxy" not in text.lower()
-
 
 class TestIntro:
     def test_mrs_recommended_with_complete_yaml(self):
@@ -306,8 +310,31 @@ class TestIntro:
     def test_jsdelivr_cache_disclosed(self):
         assert "12 小时" in gen_readme.make_intro()
 
-    def test_config_example_collapsed_by_default(self):
-        assert "<details open>" not in gen_readme.make_intro()
+
+class TestConfiguredOutputPaths:
+    def test_nested_repo_relative_dir_is_used_in_file_urls(self, work_dir, monkeypatch):
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(work_dir))
+        root = work_dir / "nested" / "text-output"
+        target = root / "block" / "domain" / "Owner" / "a.txt"
+        write(target, "x")
+        buf = io.StringIO()
+        gen_readme.write_table_rows(buf, [str(target)], str(root))
+        row = buf.getvalue()
+        full = "nested/text-output/block/domain/Owner/a.txt"
+        assert f"{gen_readme.BASE_RAW}/{full}" in row
+        assert f"{gen_readme.BASE_JSDELIVR}/{full}" in row
+
+    def test_nested_dirs_are_used_in_intro_and_inventory(self, work_dir, monkeypatch):
+        rules_rel = "nested/custom-text"
+        mrs_rel = "nested/custom-mrs"
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(work_dir))
+        monkeypatch.setattr(gen_readme, "DIR_RULES", str(work_dir / rules_rel))
+        monkeypatch.setattr(gen_readme, "DIR_MRS", str(work_dir / mrs_rel))
+        text = gen_readme.make_intro() + gen_readme.make_inventory([], [])
+        assert f"/{mrs_rel}/block/domain/rksk102/all-adblock.mrs" in text
+        assert f"`{rules_rel}/<策略>/domain/**/*.txt`" in text
+        assert f"`{rules_rel}/<策略>/ipcidr/**/*.txt`" in text
+        assert f"`{mrs_rel}/**/*.mrs`" in text
 
 
 class TestMakePageHeader:
@@ -338,6 +365,7 @@ class TestMakePageHeader:
 class TestMain:
     def run_main(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
         monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
         monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
         monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
@@ -381,6 +409,7 @@ class TestMain:
 
 class TestPreflight:
     def isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
         monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
         monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
         monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))

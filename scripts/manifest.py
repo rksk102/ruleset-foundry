@@ -16,6 +16,21 @@ class ManifestError(Exception):
     pass
 
 
+def _validate_entry_path(rel):
+    if not isinstance(rel, str):
+        raise ManifestError(f"产物清单路径必须是字符串: {rel!r}")
+    normalized = rel.replace("\\", "/")
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or (len(normalized) > 1 and normalized[1] == ":")
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise ManifestError(f"产物清单路径非法或越界: {rel!r}")
+    return normalized
+
+
 @dataclass(frozen=True)
 class Manifest:
     generation: str
@@ -26,16 +41,20 @@ class Manifest:
         return tuple(sorted(self.entries))
 
 
-def current_generation():
+def _github_generation():
     run_id = (os.getenv("GITHUB_RUN_ID") or "").strip()
-    if run_id:
-        return f"github-{run_id}"
-    return f"local-{beijing_timestamp()}-{uuid.uuid4().hex[:8]}"
+    if not run_id:
+        return None
+    attempt = (os.getenv("GITHUB_RUN_ATTEMPT") or "").strip()
+    return f"github-{run_id}-attempt-{attempt}" if attempt else f"github-{run_id}"
+
+
+def current_generation():
+    return _github_generation() or f"local-{beijing_timestamp()}-{uuid.uuid4().hex[:8]}"
 
 
 def expected_generation():
-    run_id = (os.getenv("GITHUB_RUN_ID") or "").strip()
-    return f"github-{run_id}" if run_id else None
+    return _github_generation()
 
 
 def load_manifest(path):
@@ -60,9 +79,10 @@ def load_manifest(path):
         match = _MANIFEST_LINE_RE.fullmatch(s)
         if not match:
             raise ManifestError(f"产物清单条目非法: {s!r}（{p}）")
-        rel = match.group("path").replace("\\", "/")
-        if rel.startswith("/") or ".." in rel.split("/"):
-            raise ManifestError(f"产物清单路径越界: {rel!r}（{p}）")
+        try:
+            rel = _validate_entry_path(match.group("path"))
+        except ManifestError as e:
+            raise ManifestError(f"{e}（{p}）") from e
         if rel in entries:
             raise ManifestError(f"产物清单重复条目: {rel!r}（{p}）")
         entries[rel] = match.group("sha")
@@ -77,12 +97,17 @@ def save_manifest(path, entries, generation=None):
     p = Path(path)
     if not isinstance(entries, dict):
         raise ManifestError("save_manifest 需要 path -> sha256 的映射")
+    normalized_entries = {}
     for rel, digest in entries.items():
+        rel = _validate_entry_path(rel)
         if not _MANIFEST_LINE_RE.fullmatch(f"{digest}  {rel}"):
             raise ManifestError(f"产物清单条目非法: {rel!r} -> {digest!r}")
+        if rel in normalized_entries:
+            raise ManifestError(f"产物清单重复条目: {rel!r}")
+        normalized_entries[rel] = digest
     p.parent.mkdir(parents=True, exist_ok=True)
     lines = [MANIFEST_MAGIC, f"{_GENERATION_PREFIX}{generation or current_generation()}"]
-    lines.extend(f"{entries[rel]}  {rel}" for rel in sorted(entries))
+    lines.extend(f"{normalized_entries[rel]}  {rel}" for rel in sorted(normalized_entries))
     atomic_write(str(p), lines)
     return p
 

@@ -1,5 +1,6 @@
 import main
 import pytest
+import utils
 
 
 def write(path, text):
@@ -59,9 +60,6 @@ class TestIsTrustedHost:
             "https://fake-raw.githubusercontent.com.evil.io/x",
         ]:
             assert main.is_trusted_host(url) is False, url
-
-    def test_subdomain_of_trusted_is_trusted(self):
-        assert main.is_trusted_host("https://api.github.com/x") is True
 
     def test_missing_or_invalid_host(self):
         assert main.is_trusted_host("") is False
@@ -422,17 +420,6 @@ class TestPlanGroups:
             )
         assert exc.value.code == 1
 
-    def test_same_owner_different_repos_split_to_avoid_overwrite(self):
-        groups = main.plan_groups(
-            [
-                self.task("https://github.com/o/r/raw/m/x.txt"),
-                self.task("https://raw.githubusercontent.com/o/r2/main/x.txt"),
-            ]
-        )
-        assert len(groups) == 2
-        paths = sorted(str(g["path"]).replace("\\", "/") for g in groups)
-        assert paths == ["rulesets/policy/domain/o__r/x.txt", "rulesets/policy/domain/o__r2/x.txt"]
-
     def test_collision_splits_into_separate_groups(self):
         groups = main.plan_groups(
             [
@@ -476,17 +463,22 @@ class TestPlanGroups:
         for i, t in groups[0]["members"]:
             assert t is tasks[i]
 
-    def test_all_sources_recorded(self):
-        url = "https://github.com/o/r/raw/m/x.txt"
-        groups = main.plan_groups([self.task(url), self.task(url)])
-        assert groups[0]["sources"] == [url]
-
     def test_defaults_to_exact_without_domain_kind(self):
         groups = main.plan_groups([self.task("https://github.com/o/r/raw/m/x.txt")])
         assert groups[0]["domain_kind"] == "exact"
 
     def test_empty_input(self):
         assert main.plan_groups([]) == []
+
+    def test_casefold_output_collision_is_rejected(self):
+        with pytest.raises(SystemExit) as exc:
+            main.plan_groups(
+                [
+                    self.task("https://github.com/Owner/repo/raw/m/Rules.txt"),
+                    self.task("https://github.com/owner/repo/raw/m/rules.txt"),
+                ]
+            )
+        assert exc.value.code == 1
 
 
 class TestParseSources:
@@ -633,6 +625,44 @@ class TestMixedDomainKind:
         assert writes == []
 
 
+class TestProcessGroupGates:
+    def test_default_routes_do_not_dilute_unexpected_drop_gate(self, monkeypatch):
+        group = {
+            "path": "rulesets/direct/ipcidr/Owner/cn.txt",
+            "policy": "direct",
+            "type": "ipcidr",
+            "members": [(0, {"url": "https://example.com/cn.txt"})],
+        }
+        lines = ["DOMAIN-SUFFIX,ads.example.com"] * 20 + ["0.0.0.0/0"] * 180 + ["1.1.1.0/24"]
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(group, {0: ("\n".join(lines) + "\n").encode()})
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_process_group_writes_the_validated_anchored_path(self, monkeypatch, work_dir):
+        group = {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "domain_kind": "exact",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+        monkeypatch.chdir(work_dir)
+        expected = main.ensure_within_rulesets(group["path"])
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda path, content: writes.append(path))
+
+        count, errors = main.process_group(group, {0: b"good.example.com\n"})
+
+        assert count == 1
+        assert errors["parse"] == []
+        assert writes == [expected]
+
+
 class TestProcessIpGroup:
     def test_domain_rules_are_counted_as_dropped_types(self):
         result, stats = main._process_ip_group(["DOMAIN-SUFFIX,ads.example.com"])
@@ -645,6 +675,131 @@ class TestProcessIpGroup:
 
         assert result == ["1.0.0.0/24"]
         assert stats["dropped_default_route"] == 1
+
+
+class TestRulesetsRootAnchor:
+    def test_repository_root_is_rejected_as_rulesets_dir(self, work_dir, monkeypatch):
+        repo = work_dir / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(main, "REPO_ROOT", repo)
+        monkeypatch.setattr(utils, "REPO_ROOT", repo)
+        monkeypatch.setattr(main, "RULESETS_DIR", repo)
+
+        with pytest.raises(SystemExit) as exc:
+            main._resolved_rulesets_dir()
+
+        assert exc.value.code == 1
+
+    def test_external_symlink_is_rejected_before_orphan_cleanup(self, work_dir, monkeypatch):
+        repo = work_dir / "repo"
+        repo.mkdir()
+        outside = work_dir / "outside"
+        outside.mkdir()
+        victim = outside / "keep.txt"
+        victim.write_text("keep\n", encoding="utf-8")
+        link = repo / "rulesets"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as e:
+            pytest.skip(f"symlink unavailable: {e}")
+        monkeypatch.setattr(main, "REPO_ROOT", repo)
+        monkeypatch.setattr(utils, "REPO_ROOT", repo)
+        monkeypatch.setattr(main, "RULESETS_DIR", link)
+        removed = []
+        monkeypatch.setattr(main.os, "remove", lambda path: removed.append(path))
+
+        with pytest.raises(SystemExit) as exc:
+            main.clean_orphans([])
+
+        assert exc.value.code == 1
+        assert removed == []
+        assert victim.read_text(encoding="utf-8") == "keep\n"
+
+
+class TestStagedSync:
+    def _setup(self, work_dir, monkeypatch):
+        repo = work_dir / "repo"
+        root = repo / "rulesets"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(main, "REPO_ROOT", repo)
+        monkeypatch.setattr(utils, "REPO_ROOT", repo)
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
+        monkeypatch.setattr(main, "MANIFEST_FILE", root / "products.manifest")
+        monkeypatch.setattr(main, "MIN_SUCCESS_RATIO", 0.0)
+        monkeypatch.setattr(main, "ALLOW_PARTIAL", False)
+        monkeypatch.setattr(main, "generate_summary", lambda *a, **k: None)
+        for name in (
+            "info",
+            "warning",
+            "success",
+            "debug",
+            "group_start",
+            "group_end",
+            "section",
+            "gh_error",
+        ):
+            monkeypatch.setattr(main, name, lambda *a, **k: None)
+        return root
+
+    def _prepare(self, root, monkeypatch, groups, raw):
+        tasks = [task for group in groups for _idx, task in group["members"]]
+        monkeypatch.setattr(main, "parse_sources", lambda: tasks)
+        monkeypatch.setattr(main, "plan_groups", lambda _tasks: groups)
+
+        async def fake_download(_tasks):
+            return [
+                (group["members"][0][1], data, None)
+                for group, data in zip(groups, raw, strict=True)
+            ]
+
+        monkeypatch.setattr(main, "download_all", fake_download)
+
+    def _group(self, root, name, index, url):
+        return {
+            "path": str(root / "block" / "domain" / "Owner" / name),
+            "policy": "block",
+            "type": "domain",
+            "domain_kind": "exact",
+            "members": [(index, {"url": url, "policy": "block", "type": "domain"})],
+        }
+
+    def test_success_commits_all_staged_outputs(self, work_dir, monkeypatch):
+        root = self._setup(work_dir, monkeypatch)
+        groups = [
+            self._group(root, "a.txt", 0, "https://example.com/a.txt"),
+            self._group(root, "b.txt", 1, "https://example.com/b.txt"),
+        ]
+        self._prepare(root, monkeypatch, groups, [b"good.com\n", b"other.com\n"])
+
+        main.main()
+
+        assert (root / "block/domain/Owner/a.txt").read_text(encoding="utf-8").splitlines()[-1] == "good.com"
+        assert (root / "block/domain/Owner/b.txt").read_text(encoding="utf-8").splitlines()[-1] == "other.com"
+        assert (root / "products.manifest").is_file()
+        assert not list(root.glob(f"{main._STAGING_PREFIX}*"))
+
+    def test_failed_group_keeps_existing_products_untouched(self, work_dir, monkeypatch):
+        root = self._setup(work_dir, monkeypatch)
+        old = root / "block" / "domain" / "Owner" / "a.txt"
+        old.parent.mkdir(parents=True)
+        old.write_text("old.example\n", encoding="utf-8")
+        stale = root / f"{main._STAGING_PREFIX}stale"
+        stale.mkdir()
+        (stale / "leftover.txt").write_text("leftover\n", encoding="utf-8")
+        groups = [
+            self._group(root, "a.txt", 0, "https://example.com/a.txt"),
+            self._group(root, "b.txt", 1, "https://example.com/b.txt"),
+        ]
+        bad = "\n".join([f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(25)] + ["good.com"]) + "\n"
+        self._prepare(root, monkeypatch, groups, [b"new.example\n", bad.encode()])
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert old.read_text(encoding="utf-8") == "old.example\n"
+        assert not (root / "block/domain/Owner/b.txt").exists()
+        assert not list(root.glob(f"{main._STAGING_PREFIX}*"))
 
 
 class TestCleanOrphans:

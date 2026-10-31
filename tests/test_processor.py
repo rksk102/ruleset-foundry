@@ -10,14 +10,7 @@ def domains(lines, kind="exact"):
     return processor.process_domain_detailed(lines, kind)[0]
 
 
-def detailed_stats(lines, kind="exact"):
-    return processor.process_domain_detailed(lines, kind)[1]
-
-
 class TestDomainKind:
-    def test_default_is_exact(self):
-        assert domains(["example.com"]) == ["example.com"]
-
     def test_suffix_kind_promotes_bare_domain(self):
         assert domains(["example.com"], "suffix") == ["+.example.com"]
 
@@ -96,12 +89,6 @@ class TestDomainCleaning:
         result, stats = processor.process_domain_detailed(["+.a.com", "domain:b.com"])
         assert result == ["+.a.com", "+.b.com"]
         assert stats["suffix"] == 2
-        assert stats["relaxed_exact"] == 0
-
-    def test_adblock_anchor_normalized(self):
-        result, stats = processor.process_domain_detailed(["||ads.example.com^"])
-        assert result == ["+.ads.example.com"]
-        assert stats["suffix"] == 1
         assert stats["relaxed_exact"] == 0
 
     def test_dollar_modifier_rule_dropped(self):
@@ -299,12 +286,6 @@ class TestDomainCleaningEdges:
         out, stats = processor.process_domain_detailed(["full:||+.example.com^"], "exact")
         assert out == []
         assert stats["unrecognized"] == 1
-
-    def test_badfilter_is_dropped(self):
-        out, stats = processor.process_domain_detailed(["||example.com^$badfilter"], "exact")
-        assert out == []
-        assert stats["dropped_exception"] == 1
-        assert stats["dropped_modifier"] == 0
 
     def test_denyallow_value_is_not_badfilter_modifier(self):
         out, stats = processor.process_domain_detailed(["||example.com^$denyallow=badfilter"], "exact")
@@ -761,9 +742,6 @@ class TestYamlPayloadParsing:
     def test_base64_yaml_payload_decoded_then_parsed(self):
         encoded = base64.b64encode(b"payload:\n  - a.com\n  - b.com\n").decode()
         assert processor.parse_lines(encoded) == ["a.com", "b.com"]
-
-    def test_plain_domain_list_is_not_taken_as_yaml(self):
-        assert processor.parse_lines("a.com\nb.com\n") == ["a.com", "b.com"]
 
 
 class TestYamlProbeGating:

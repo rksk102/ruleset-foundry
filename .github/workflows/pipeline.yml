@@ -30,6 +30,16 @@ jobs:
       - name: 安装 Python 环境
         # 暂不使用 $/ 自仓库语法：CI 钉扎的 actionlint 1.7.12 尚不支持
         uses: ./.github/actions/setup-python-env
+      - name: 解析产物目录
+        id: product-paths
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from config_loader import get
+          print("txt=" + get("paths", "merged_output_dir", default="merged-rules"))
+          print("mrs=" + get("paths", "mrs_output_dir", default="merged-rules-mrs"))
+          PY
       - name: 运行同步
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
@@ -50,7 +60,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: merged-rules
-          path: merged-rules/
+          path: ${{ steps.product-paths.outputs.txt }}/
           retention-days: 1
           if-no-files-found: error
       - name: 计算内核缓存键
@@ -75,10 +85,11 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ steps.kernel-key.outputs.path }}
-          key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+          key: mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
           restore-keys: |
-            mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
-            mihomo-${{ runner.os }}-${{ runner.arch }}-
+            mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}-
+            mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+            mihomo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: 转换规则集
         id: convert
         env:
@@ -89,12 +100,12 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ steps.kernel-key.outputs.path }}
-          key: mihomo-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
+          key: mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
       - name: 上传 merged-rules-mrs 产物
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: merged-rules-mrs
-          path: merged-rules-mrs/
+          path: ${{ steps.product-paths.outputs.mrs }}/
           retention-days: 1
           if-no-files-found: error
       - name: 上传运行日志
@@ -120,8 +131,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 README/state
       - name: 安装 Python 环境
         uses: ./.github/actions/setup-python-env
+      - name: 解析产物目录
+        id: product-paths
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from config_loader import get
+          print("txt=" + get("paths", "merged_output_dir", default="merged-rules"))
+          print("mrs=" + get("paths", "mrs_output_dir", default="merged-rules-mrs"))
+          PY
       - name: 清空旧产物
-        run: rm -rf merged-rules merged-rules-mrs
+        env:
+          TXT_DIR: ${{ steps.product-paths.outputs.txt }}
+          MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
+        run: rm -rf "$TXT_DIR" "$MRS_DIR"
       - name: 下载 rulesets 产物（提供产物清单基线）
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
@@ -132,23 +156,25 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: merged-rules
-          path: merged-rules/
+          path: ${{ steps.product-paths.outputs.txt }}/
           digest-mismatch: error
       - name: 下载 merged-rules-mrs 产物
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: merged-rules-mrs
-          path: merged-rules-mrs/
+          path: ${{ steps.product-paths.outputs.mrs }}/
           digest-mismatch: error
       - name: 检查产物变化
         id: product-state
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
           ARTIFACTS_BRANCH: artifacts
+          ARTIFACTS_HASH_MARKER: .product-sha256
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           CURRENT=$(python scripts/release_handler.py --print-hash)
+          echo "current_hash=$CURRENT" >> "$GITHUB_OUTPUT"
           LAST=$(cat state/release.sha256 2>/dev/null || true)
           DETECT=$(python -c "from config_loader import get; print('true' if get('behavior', 'release_change_detection', default=True) else 'false')")
           if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
@@ -168,7 +194,35 @@ jobs:
               echo "changed=true" >> "$GITHUB_OUTPUT"
               echo "force_release=true" >> "$GITHUB_OUTPUT"
             else
-              echo "changed=false" >> "$GITHUB_OUTPUT"
+              if ! git fetch --no-tags --depth=1 origin "${ARTIFACTS_BRANCH}"; then
+                echo "::error::无法读取 ${ARTIFACTS_BRANCH} 分支，拒绝跳过产物发布"
+                exit 1
+              fi
+              if ! MARKER_ENTRY=$(git ls-tree FETCH_HEAD -- "${ARTIFACTS_HASH_MARKER}"); then
+                echo "::error::无法读取 ${ARTIFACTS_BRANCH} 分支树，拒绝跳过产物发布"
+                exit 1
+              fi
+              if [ -z "$MARKER_ENTRY" ]; then
+                echo "artifacts 分支缺少产品哈希标记，重推"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+              elif [[ "$MARKER_ENTRY" != "100644 blob "*$'\t'"${ARTIFACTS_HASH_MARKER}" ]]; then
+                echo "artifacts 分支产品哈希标记类型不可信，重推"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+              else
+                if ! ARTIFACTS_HASH=$(git show "FETCH_HEAD:${ARTIFACTS_HASH_MARKER}"); then
+                  echo "::error::无法读取 artifacts 产品哈希标记，拒绝跳过产物发布"
+                  exit 1
+                fi
+                if [[ ! "$ARTIFACTS_HASH" =~ ^[0-9a-f]{64}\|[0-9a-f]{64}\|[0-9]+\|[0-9]+$ ]]; then
+                  echo "artifacts 分支产品哈希标记格式不可信，重推"
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+                elif [ "$ARTIFACTS_HASH" != "$CURRENT" ]; then
+                  echo "artifacts 分支产品哈希标记与当前产品不一致，重推"
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+                else
+                  echo "changed=false" >> "$GITHUB_OUTPUT"
+                fi
+              fi
             fi
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -187,6 +241,10 @@ jobs:
         if: steps.product-state.outputs.changed == 'true'
         env:
           ARTIFACTS_BRANCH: artifacts
+          ARTIFACTS_HASH_MARKER: .product-sha256
+          CURRENT_HASH: ${{ steps.product-state.outputs.current_hash }}
+          TXT_DIR: ${{ steps.product-paths.outputs.txt }}
+          MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
         run: |
           set -euo pipefail
           # 独立 worktree：orphan 提交会清空工作区，不能在主工作区执行
@@ -198,9 +256,12 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git checkout --orphan "${ARTIFACTS_BRANCH}"
             git rm -rf . >/dev/null 2>&1 || true
-            cp -r "${GITHUB_WORKSPACE}/merged-rules" "${GITHUB_WORKSPACE}/merged-rules-mrs" .
-            printf 'merged-rules/\nmerged-rules-mrs/\n' > .gitignore
-            git add -f merged-rules merged-rules-mrs .gitignore
+            mkdir -p "$(dirname "$TXT_DIR")" "$(dirname "$MRS_DIR")"
+            cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"
+            cp -r "${GITHUB_WORKSPACE}/${MRS_DIR}" "$MRS_DIR"
+            printf '%s/\n%s/\n' "$TXT_DIR" "$MRS_DIR" > .gitignore
+            printf '%s\n' "$CURRENT_HASH" > "${ARTIFACTS_HASH_MARKER}"
+            git add -f "$TXT_DIR" "$MRS_DIR" .gitignore "${ARTIFACTS_HASH_MARKER}"
             git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
             git push --force origin "HEAD:${ARTIFACTS_BRANCH}"

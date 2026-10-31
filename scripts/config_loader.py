@@ -264,6 +264,10 @@ def _validate_merges(merges):
                 f"merges[{idx}].description 期望 str，实际 {type(task['description']).__name__}"
                 f"（{task['description']!r}）"
             )
+        if isinstance(task.get("description"), str) and any(
+            char in task["description"] for char in ("\r", "\n")
+        ):
+            raise ConfigError(f"merges[{idx}].description 不能包含 CR/LF 换行")
         missing = [k for k in _MERGE_REQUIRED if k not in task]
         if missing:
             raise ConfigError(f"merges[{idx}] 缺少必需字段: {', '.join(missing)}")
@@ -279,6 +283,10 @@ def _validate_merges(merges):
                 raise ConfigError(
                     f"merges[{idx}].{field} 不能以点结尾（Windows 会截断文件名）: {task[field]!r}"
                 )
+            if task[field].split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+                raise ConfigError(
+                    f"merges[{idx}].{field} 不能使用 Windows 保留设备名: {task[field]!r}"
+                )
         output = tuple(task[field].strip().casefold() for field in ("strategy", "type", "owner", "filename"))
         if output in seen_outputs:
             raise ConfigError(f"merges[{idx}] 与其他任务输出同一路径: {'/'.join(output)}")
@@ -289,6 +297,12 @@ def _validate_merges(merges):
             if not isinstance(rel, str) or not rel.strip():
                 raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")
             task["inputs"][pos] = _validate_path_value(f"merges[{idx}].inputs[{pos}]", rel)
+            input_parts = task["inputs"][pos].replace("\\", "/").split("/")
+            if len(input_parts) < 2 or input_parts[1] != task["type"]:
+                raise ConfigError(
+                    f"merges[{idx}].inputs[{pos}] 输入类型与任务 type={task['type']!r} 不一致"
+                    f"（按固定路径第二段核对）: {rel!r}"
+                )
 
 
 def load_config():
