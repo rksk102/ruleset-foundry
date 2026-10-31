@@ -14,8 +14,9 @@ import logger
 
 @pytest.fixture(autouse=True)
 def _isolate_github_env(monkeypatch):
-    """CI 会设置 GITHUB_RUN_ID；测试用固定 generation 清单，需保持环境无关。"""
+    """CI 会设置运行标识；测试用固定 generation 清单，需保持环境无关。"""
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
 
 
 @pytest.fixture(autouse=True)
