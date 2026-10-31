@@ -20,6 +20,11 @@ def test_product_state_step_has_github_token():
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
 
 
+def test_dependabot_auto_merge_requires_bot_head_actor():
+    job = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]
+    assert "github.event.workflow_run.actor.login == 'dependabot[bot]'" in job["if"]
+
+
 def test_notify_requires_release_success():
     workflow = load_workflow("pipeline.yml")
     assert workflow["jobs"]["publish"]["outputs"]["release_outcome"] == "${{ steps.release.outcome }}"
