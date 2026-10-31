@@ -78,6 +78,8 @@ jobs:
         contents: write  # 需要推送更新后的 config.yaml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 config.yaml
+      - name: 安装 Python 环境
+        uses: ./.github/actions/setup-python-env
       - name: 在干净检出中重建待提交配置
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts

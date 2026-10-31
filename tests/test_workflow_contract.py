@@ -117,6 +117,18 @@ def test_kernel_write_and_notify_gate_on_default_branch():
     assert workflow["jobs"]["notify-on-failure"]["if"] == f"always() && {DEFAULT_BRANCH_GATE}"
 
 
+def test_kernel_bump_commit_prepares_python_environment():
+    job = load_workflow("kernel-bump.yml")["jobs"]["commit"]
+    steps = job["steps"]
+    setup_index = next(
+        index for index, step in enumerate(steps) if step.get("uses") == "./.github/actions/setup-python-env"
+    )
+    apply_index = next(
+        index for index, step in enumerate(steps) if "kernel_pin.py --apply" in step.get("run", "")
+    )
+    assert setup_index < apply_index
+
+
 def test_ci_push_only_on_main():
     workflow = load_workflow("ci.yml")
     trigger = workflow.get("on") or workflow.get(True)
