@@ -594,6 +594,10 @@ def run_gh(cmd_list, strip=True):
     except subprocess.CalledProcessError as e:
         warning(f"  GH CLI 警告: {e.stderr.strip()}")
         return None
+    except UnicodeError as e:
+        # text=True 的解码在 subprocess.run 内完成，非 UTF-8 输出会以 UnicodeDecodeError 逃逸
+        warning(f"  GH CLI 输出解码失败（非 UTF-8），按失败处理: {' '.join(cmd_list)}（{e}）")
+        return None
     except OSError as e:
         error(f"  无法执行 gh CLI: {e}")
         gh_error(f"无法执行 gh CLI: {e}")
