@@ -196,6 +196,26 @@ def _yaml_payload_lines(content):
 
 _YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
 
+_HOSTS_LOCAL_PREFIXES = ("127.0.0.1", "0.0.0.0", "::1")
+
+
+def _expand_hosts_entries(lines):
+    """hosts 行（本地地址 + 多个 hostname）展开为逐 hostname 候选。
+
+    保持“每个输入 hostname 都归入输出或显式丢弃”的守恒；非法 hostname 交给后续清洗计入丢弃。
+    无 hosts 行时原样返回，不额外复制。
+    """
+    expanded = None
+    for index, line in enumerate(lines):
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in _HOSTS_LOCAL_PREFIXES:
+            if expanded is None:
+                expanded = list(lines[:index])
+            expanded.extend(parts[1:])
+        elif expanded is not None:
+            expanded.append(line)
+    return lines if expanded is None else expanded
+
 
 def parse_lines(raw_content):
     content = explicit_base64_decode(raw_content)
@@ -212,7 +232,7 @@ def parse_lines(raw_content):
     if any(_YAML_HEAD_RE.match(l) for l in probe):
         yaml_lines = _yaml_payload_lines(content)
         if yaml_lines is not None:
-            return yaml_lines
+            return _expand_hosts_entries(yaml_lines)
 
     lines = []
     in_payload = False
@@ -251,7 +271,7 @@ def parse_lines(raw_content):
         else:
             lines.append(line.strip("'\" "))
 
-    return lines
+    return _expand_hosts_entries(lines)
 
 
 def _analyze_and_process_domain(lines, domain_kind="exact"):
@@ -266,7 +286,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         ("host:", "exact"),
     )
 
-    for item in lines:
+    for item in _expand_hosts_entries(lines):
         s = item.strip()
         if not s:
             continue
@@ -331,7 +351,10 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 s = s[1:]
 
         parts = s.split()
-        if len(parts) >= 2 and parts[0] in ("127.0.0.1", "0.0.0.0", "::1"):
+        if len(parts) >= 2 and parts[0] in _HOSTS_LOCAL_PREFIXES:
+            # 带语义前缀的 hosts 行：多余 hostname 显式计入丢弃，不再静默忽略
+            if len(parts) > 2:
+                stats["unrecognized"] += len(parts) - 2
             s = parts[1]
 
         adblock_anchor = s.startswith("||")
@@ -439,7 +462,7 @@ def process_ip_detailed(lines):
     candidates = []
     stats = new_stats()
     dropped_default_routes = []
-    for line in lines:
+    for line in _expand_hosts_entries(lines):
         kind, payload, type_name = classify_rule_line(line)
         if kind is None:
             candidates.append(line)
@@ -452,9 +475,11 @@ def process_ip_detailed(lines):
             continue
         stats["dropped_rule_type"][type_name] = stats["dropped_rule_type"].get(type_name, 0) + 1
 
-    result, errors = utils.flatten_ip_cidr(candidates, extract=True, dropped_default_routes=dropped_default_routes)
+    result, cidr_errors = utils.flatten_ip_cidr(
+        candidates, extract=True, dropped_default_routes=dropped_default_routes
+    )
     stats["dropped_default_route"] = len(dropped_default_routes)
-    return result, errors, stats
+    return result, cidr_errors, stats
 
 
 def main():
@@ -481,8 +506,10 @@ def main():
             print(f"# 丢弃 {type_name} 规则 {count} 行: {ipcidr_drop_reason(type_name)}", file=sys.stderr)
         if stats.get("unrecognized"):
             print(f"# 丢弃空载荷规则: {stats['unrecognized']} 行", file=sys.stderr)
-        for bad, why in errors:
+        for bad, why in errors.samples:
             print(f"# 丢弃无效 CIDR: {bad} -> {why}", file=sys.stderr)
+        if errors.count > len(errors.samples):
+            print(f"# 另有 {errors.count - len(errors.samples)} 条无效 CIDR 未逐条列出", file=sys.stderr)
     else:
         result, stats = process_domain_detailed(lines)
         if stats.get("unrecognized"):

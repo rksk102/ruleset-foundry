@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import main
 import pytest
 import utils
@@ -720,6 +722,90 @@ class TestProcessGroupGates:
         assert count == 1
         assert errors["parse"] == []
         assert writes == [expected]
+
+
+class TestCombinedDropGate:
+    """ISS-03：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
+
+    DOMAIN_GROUP: ClassVar[dict] = {
+        "path": "rulesets/block/domain/Owner/ads.txt",
+        "policy": "block",
+        "type": "domain",
+        "domain_kind": "exact",
+        "members": [(0, {"url": "https://example.com/ads.txt"})],
+    }
+    IP_GROUP: ClassVar[dict] = {
+        "path": "rulesets/direct/ipcidr/Owner/cn.txt",
+        "policy": "direct",
+        "type": "ipcidr",
+        "members": [(0, {"url": "https://example.com/cn.txt"})],
+    }
+
+    def run_group(self, group, lines, monkeypatch):
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+        raw = ("\n".join(lines) + "\n").encode()
+        count, errors = main.process_group(group, {0: raw})
+        return count, errors, writes
+
+    @staticmethod
+    def domain_lines(unrecognized, unexpressible, valid):
+        return (
+            [f"bad line {i}" for i in range(unrecognized)]
+            + [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(unexpressible)]
+            + [f"good{i}.example" for i in range(valid)]
+        )
+
+    @staticmethod
+    def ip_lines(unrecognized, unexpressible, valid):
+        return (
+            [f"garbage row {i}" for i in range(unrecognized)]
+            + [f"DOMAIN-SUFFIX,ads-{i}.example.com" for i in range(unexpressible)]
+            + [f"1.{i}.0.0/24" for i in range(valid)]
+        )
+
+    def test_domain_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
+        count, errors, writes = self.run_group(
+            self.DOMAIN_GROUP, self.domain_lines(19, 19, 62), monkeypatch
+        )
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_ipcidr_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
+        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(19, 19, 62), monkeypatch)
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_domain_small_mixed_noise_passes(self, monkeypatch):
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(4, 4, 92), monkeypatch)
+
+        assert count == 92
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_ipcidr_small_mixed_noise_passes(self, monkeypatch):
+        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(4, 4, 92), monkeypatch)
+
+        assert count == 92
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_below_absolute_floor_only_warns(self, monkeypatch):
+        count, errors, _writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(10, 9, 81), monkeypatch)
+
+        assert count == 81
+        assert errors["parse"] == []
+
+    def test_at_absolute_floor_fails(self, monkeypatch):
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(10, 10, 80), monkeypatch)
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
 
 
 class TestProcessIpGroup:

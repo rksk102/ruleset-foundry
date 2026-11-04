@@ -447,6 +447,59 @@ class TestParseLines:
     def test_plain_text_not_treated_as_base64(self):
         assert processor.parse_lines("just-a-normal-rule.com") == ["just-a-normal-rule.com"]
 
+    def test_hosts_line_expanded_per_hostname(self):
+        assert processor.parse_lines("0.0.0.0 a.example b.example c.example\n") == [
+            "a.example",
+            "b.example",
+            "c.example",
+        ]
+
+    def test_single_hostname_hosts_line_unchanged(self):
+        assert processor.parse_lines("0.0.0.0 a.example\n") == ["a.example"]
+        assert processor.parse_lines("127.0.0.1 a.example\n") == ["a.example"]
+        assert processor.parse_lines("::1 a.example\n") == ["a.example"]
+
+    def test_bare_local_ip_line_is_not_expanded(self):
+        assert processor.parse_lines("127.0.0.1\n") == ["127.0.0.1"]
+        assert processor.parse_lines("0.0.0.0\n") == ["0.0.0.0"]
+
+
+class TestHostsHostnameConservation:
+    """ISS-04：hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
+
+    def test_all_hostnames_kept_for_multi_hosts_line(self):
+        result, stats = processor.process_domain_detailed(["0.0.0.0 a.example b.example c.example"], "exact")
+
+        assert result == ["a.example", "b.example", "c.example"]
+        assert stats["unrecognized"] == 0
+
+    def test_invalid_trailing_hostname_is_explicitly_dropped(self):
+        result, stats = processor.process_domain_detailed(["0.0.0.0 ok.example ..bad.example"], "exact")
+
+        assert result == ["ok.example"]
+        assert stats["unrecognized"] == 1
+
+    def test_hostname_count_is_conserved(self):
+        hostnames = ["a.example", "b.example", "..bad", "*.wild.example"]
+        result, stats = processor.process_domain_detailed([" ".join(["0.0.0.0", *hostnames])], "exact")
+
+        drop_keys = (
+            "dropped_exception",
+            "dropped_keyword",
+            "dropped_modifier",
+            "dropped_path",
+            "ip_in_domain",
+        )
+        dropped = sum(stats.get(key, 0) for key in drop_keys)
+        dropped += sum((stats.get("dropped_rule_type") or {}).values())
+        assert len(result) + stats["unrecognized"] + dropped == len(hostnames)
+
+    def test_ipcidr_group_reports_each_hostname(self):
+        result, errors, _stats = processor.process_ip_detailed(["0.0.0.0 a.example b.example"])
+
+        assert result == []
+        assert errors.count == 2
+
 
 class TestProcessIp:
     def test_v4_collapsed(self):
@@ -472,13 +525,13 @@ class TestProcessIp:
     def test_version_like_text_is_not_extracted(self):
         result, errors, _stats = processor.process_ip_detailed(["v1.2.3.4", "host_1.2.3.4_backup"])
         assert result == []
-        assert len(errors) == 2
+        assert errors.count == 2
 
     def test_errors_are_returned_not_discarded(self):
         result, errors, _stats = processor.process_ip_detailed(["1.0.0.0/24", "garbage"])
         assert result == ["1.0.0.0/24"]
-        assert len(errors) == 1
-        assert errors[0][0] == "garbage"
+        assert errors.count == 1
+        assert errors.samples[0][0] == "garbage"
 
 
 class TestDecodeHelpers:
@@ -568,31 +621,31 @@ class TestNoSilentRewriteInIpMode:
     def test_ip_suffix_is_not_rewritten_to_cidr(self):
         result, errors, stats = processor.process_ip_detailed(["IP-SUFFIX,8.8.8.8/24"])
         assert result == []
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"]["IP-SUFFIX"] == 1
 
     def test_ip_asn_is_reported_as_type_not_as_invalid_cidr(self):
         result, errors, stats = processor.process_ip_detailed(["IP-ASN,13335"])
         assert result == []
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"]["IP-ASN"] == 1
 
     def test_src_ip_asn_and_src_ip_suffix_dropped(self):
         result, errors, stats = processor.process_ip_detailed(["SRC-IP-ASN,9808", "SRC-IP-SUFFIX,192.168.1.1/8"])
         assert result == []
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"] == {"SRC-IP-ASN": 1, "SRC-IP-SUFFIX": 1}
 
     def test_unsupported_types_dropped_without_cidr_error(self):
         result, errors, stats = processor.process_ip_detailed(["DST-IP-CIDR,1.2.3.0/24", "SCRIPT,code"])
         assert result == []
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"] == {"DST-IP-CIDR": 1, "SCRIPT": 1}
 
     def test_domain_rules_in_ip_source_are_dropped_and_counted(self):
         result, errors, stats = processor.process_ip_detailed(["DOMAIN-SUFFIX,ads.example.com"])
         assert result == []
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"]["DOMAIN-SUFFIX"] == 1
 
     def test_drop_reasons_all_mention_ipcidr(self):
@@ -617,7 +670,7 @@ class TestClassicalRuleLinesInIpMode:
                 "IP-CIDR6,2001:db8::/32",
             ]
         )
-        assert errors == []
+        assert errors.count == 0
         assert result == ["1.2.3.0/24", "2001:db8::/32"]
 
     def test_src_ip_cidr_is_dropped_with_reason(self):
@@ -633,18 +686,18 @@ class TestClassicalRuleLinesInIpMode:
     def test_classic_line_is_not_read_as_hex_fragment(self):
         result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,x"])
         assert result == []
-        assert len(errors) == 1
-        assert errors[0][0] == "x"
+        assert errors.count == 1
+        assert errors.samples[0][0] == "x"
 
     def test_no_resolve_modifier_stripped(self):
         result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.2.3.0/24,no-resolve"])
         assert result == ["1.2.3.0/24"]
-        assert errors == []
+        assert errors.count == 0
 
     def test_rule_target_after_payload_is_ignored(self):
         result, errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.2.3.0/24,DIRECT"])
         assert result == ["1.2.3.0/24"]
-        assert errors == []
+        assert errors.count == 0
 
     def test_ip_cidr_src_modifier_is_dropped_as_source_rule(self):
         result, errors, stats = processor.process_ip_detailed(
@@ -654,18 +707,18 @@ class TestClassicalRuleLinesInIpMode:
             ]
         )
         assert result == ["192.0.2.0/24"]
-        assert errors == []
+        assert errors.count == 0
         assert stats["dropped_rule_type"]["SRC-IP-CIDR"] == 1
 
     def test_empty_payload_counted(self):
         _result, errors, stats = processor.process_ip_detailed(["IP-CIDR,"])
-        assert errors == []
+        assert errors.count == 0
         assert stats["unrecognized"] == 1
 
     def test_unclassified_lines_still_use_extract(self):
         result, errors, _stats = processor.process_ip_detailed(["  1.2.3.0/24 # note", "10.0.0.0/8"])
         assert result == ["1.2.3.0/24", "10.0.0.0/8"]
-        assert errors == []
+        assert errors.count == 0
 
     def test_classified_and_unclassified_lines_collapse_together(self):
         result, _errors, _stats = processor.process_ip_detailed(["IP-CIDR,1.0.0.0/24", "  1.0.1.0/24 # note"])

@@ -160,9 +160,10 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow
         final_list, cidr_errors = flatten_ip_cidr(combined_rules, dropped_default_routes=dropped_default_routes)
         if dropped_default_routes:
             warning(f"    默认路由(/0) 已按设计丢弃: {len(dropped_default_routes)} 条")
-        if cidr_errors:
-            for bad_cidr, err_msg in cidr_errors[:5]:
-                warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")
+        for bad_cidr, err_msg in cidr_errors.samples:
+            warning(f"    无效 CIDR: {bad_cidr} -> {err_msg}")
+        if cidr_errors.count > len(cidr_errors.samples):
+            warning(f"    ... 及其他 {cidr_errors.count - len(cidr_errors.samples)} 条无效 CIDR")
         dedup_removed = 0
     else:
         final_list, dedup_removed = dedup_domain_suffix(combined_rules)
