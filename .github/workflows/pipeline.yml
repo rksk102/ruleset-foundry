@@ -172,6 +172,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
           ARTIFACTS_BRANCH: artifacts
           ARTIFACTS_HASH_MARKER: .product-sha256
+          TXT_DIR: ${{ steps.product-paths.outputs.txt }}
+          MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -222,7 +224,21 @@ jobs:
                   echo "artifacts 分支产品哈希标记与当前产品不一致，重推"
                   echo "changed=true" >> "$GITHUB_OUTPUT"
                 else
-                  echo "changed=false" >> "$GITHUB_OUTPUT"
+                  # 标记一致也必须与分支实际内容对账：标记只是声明，不能当作内容证明
+                  set +e
+                  python scripts/artifact_tree.py --ref FETCH_HEAD \
+                    --txt-dir "$TXT_DIR" --mrs-dir "$MRS_DIR" --marker "$ARTIFACTS_HASH_MARKER"
+                  TREE_RC=$?
+                  set -e
+                  if [ "$TREE_RC" -eq 0 ]; then
+                    echo "changed=false" >> "$GITHUB_OUTPUT"
+                  elif [ "$TREE_RC" -eq 10 ]; then
+                    echo "artifacts 分支实际产物与本地不一致，重推"
+                    echo "changed=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "::error::artifacts 分支 tree 对账失败（退出码 $TREE_RC），拒绝跳过产物发布"
+                    exit 1
+                  fi
                 fi
               fi
             fi
@@ -261,6 +277,9 @@ jobs:
             mkdir -p "$(dirname "$TXT_DIR")" "$(dirname "$MRS_DIR")"
             cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"
             cp -r "${GITHUB_WORKSPACE}/${MRS_DIR}" "$MRS_DIR"
+            # 公开分支只发布规则产物：TXT 根目录的 products.manifest 仅用于发布校验，
+            # 只从暂存副本移除，工作区源文件保留给 --verify-only 与 Release ZIP。
+            rm -f "${TXT_DIR}/products.manifest"
             printf '%s/\n%s/\n' "$TXT_DIR" "$MRS_DIR" > .gitignore
             printf '%s\n' "$CURRENT_HASH" > "${ARTIFACTS_HASH_MARKER}"
             git add -f "$TXT_DIR" "$MRS_DIR" .gitignore "${ARTIFACTS_HASH_MARKER}"

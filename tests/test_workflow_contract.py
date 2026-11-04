@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import manifest
 import pytest
 import yaml
 
@@ -47,15 +48,32 @@ def test_artifacts_branch_marker_mismatch_triggers_repush():
     assert '"${ARTIFACTS_HASH_MARKER}"' in publish["run"].split("git add -f", 1)[1]
 
 
-def test_artifacts_branch_marker_match_skips_repush():
+def test_artifacts_branch_marker_match_reconciles_actual_tree():
     job = load_workflow("pipeline.yml")["jobs"]["publish"]
     step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    script = step["run"]
+    assert step["env"]["TXT_DIR"] == "${{ steps.product-paths.outputs.txt }}"
+    assert step["env"]["MRS_DIR"] == "${{ steps.product-paths.outputs.mrs }}"
+
+    marker_equal = script.split('elif [ "$ARTIFACTS_HASH" != "$CURRENT" ]; then', 1)[1].split("fi", 1)[0]
+    assert 'echo "changed=true" >> "$GITHUB_OUTPUT"' in marker_equal
+    reconcile = marker_equal.split("else", 1)[1]
     assert re.search(
-        r'elif \[ "\$ARTIFACTS_HASH" != "\$CURRENT" \]; then\n'
-        r'.*\n\s*echo "changed=true" >> "\$GITHUB_OUTPUT"\n'
-        r'\s*else\n\s*echo "changed=false" >> "\$GITHUB_OUTPUT"',
-        step["run"],
+        r'python scripts/artifact_tree\.py --ref FETCH_HEAD \\\n'
+        r'\s*--txt-dir "\$TXT_DIR" --mrs-dir "\$MRS_DIR" --marker "\$ARTIFACTS_HASH_MARKER"',
+        reconcile,
     )
+    assert 'if [ "$TREE_RC" -eq 0 ]; then' in reconcile
+    assert 'echo "changed=false" >> "$GITHUB_OUTPUT"' in reconcile.split('if [ "$TREE_RC" -eq 0 ]; then', 1)[1]
+    mismatch = reconcile.split('elif [ "$TREE_RC" -eq 10 ]; then', 1)[1]
+    assert 'echo "changed=true" >> "$GITHUB_OUTPUT"' in mismatch.split("else", 1)[0]
+    assert "exit 1" in mismatch.split("else", 1)[1]
+
+
+def test_publish_verify_only_requires_baseline():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("name") == "产物一致性预检")
+    assert step["run"].strip() == "python scripts/release_handler.py --verify-only --require-baseline"
 
 
 def test_artifacts_branch_missing_or_untrusted_marker_triggers_repush():
@@ -426,7 +444,68 @@ def test_rulesets_artifact_upload_and_download_use_configured_path():
         assert "rulesets/" not in step["with"]["path"]
 
 
-def test_publish_verify_only_requires_baseline():
-    job = load_workflow("pipeline.yml")["jobs"]["publish"]
-    step = next(s for s in job["steps"] if s.get("name") == "产物一致性预检")
-    assert step["run"].strip() == "python scripts/release_handler.py --verify-only --require-baseline"
+def test_public_artifacts_branch_stages_without_product_manifest():
+    workflow = load_workflow("pipeline.yml")
+    script = _step(workflow["jobs"]["publish"], "发布规则产物到 artifacts 分支")["run"]
+    removal = f'rm -f "${{TXT_DIR}}/{manifest.MANIFEST_NAME}"'
+    assert removal in script
+    # 只删除 worktree 暂存副本：主工作区源文件必须保留给发布校验与 Release ZIP
+    assert f"${{GITHUB_WORKSPACE}}/${{TXT_DIR}}/{manifest.MANIFEST_NAME}" not in script
+    assert script.index('cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"') < script.index(removal)
+    assert script.index(removal) < script.index('git add -f')
+    assert script.index('cd "$WT"') < script.index(removal) < script.index('git worktree remove')
+
+
+def test_kernel_bump_amd64_validation_rechecks_live_latest():
+    job = load_workflow("kernel-bump.yml")["jobs"]["validate_amd64"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["needs"] == "prepare"
+    assert job["if"] == "needs.prepare.outputs.changed == 'true'"
+
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "kernel_pin.py --apply" in runs
+    assert '--tag "$TAG"' in runs
+    assert '--kernel-sha256 "$KERNEL_SHA256"' in runs
+    assert '--kernel-sha256-arm64 "$KERNEL_SHA256_ARM64"' in runs
+    assert "convert_mrs.py --verify-current-kernel" in runs
+
+    steps = job["steps"]
+    names = [step.get("name", "") for step in steps]
+    assert names.index("记录当前钉扎版本") < names.index("在干净检出中重建配置")
+    assert names.index("在干净检出中重建配置") < names.index("独立复核实时 latest 与版本单调性")
+
+    current = steps[names.index("记录当前钉扎版本")]
+    assert "read_metadata" in current["run"]
+    assert 'print("tag=" + read_metadata()["pinned_version"])' in current["run"]
+
+    recheck = steps[names.index("独立复核实时 latest 与版本单调性")]
+    assert recheck["env"]["CANDIDATE_TAG"] == "${{ needs.prepare.outputs.tag }}"
+    assert recheck["env"]["CURRENT_TAG"] == "${{ steps.current.outputs.tag }}"
+    script = recheck["run"]
+    assert '"repo_api"' in script
+    assert "fetch_release(None)" in script
+    assert '"published_at"' in script
+    assert 'if latest.get("tag_name") != candidate:' in script
+    assert "if candidate_published < current_published:" in script
+    assert "::error::" in script
+    assert "sys.exit(1)" in script
+
+
+def test_kernel_bump_commit_requires_both_architecture_validations():
+    workflow = load_workflow("kernel-bump.yml")
+    commit = workflow["jobs"]["commit"]
+    assert commit["needs"] == ["prepare", "validate_arm64", "validate_amd64"]
+    assert "needs.validate_arm64.result == 'success'" in commit["if"]
+    assert "needs.validate_amd64.result == 'success'" in commit["if"]
+    assert commit["if"].endswith(DEFAULT_BRANCH_GATE)
+
+
+def test_kernel_bump_notify_tracks_amd64_result():
+    workflow = load_workflow("kernel-bump.yml")
+    notify = workflow["jobs"]["notify-on-failure"]
+    assert notify["needs"] == ["prepare", "validate_arm64", "validate_amd64", "commit"]
+    step = notify["steps"][0]
+    assert step["env"]["R_VALIDATE_AMD64"] == "${{ needs.validate_amd64.result }}"
+    failed_gate, rest = step["run"].split("FAILED=1", 1)
+    assert "$R_VALIDATE_AMD64" in failed_gate
+    assert '[ "$R_VALIDATE_AMD64" != "success" ]' in rest
