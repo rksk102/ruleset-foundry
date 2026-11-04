@@ -4,6 +4,7 @@ import re
 
 import gen_readme
 import pytest
+from config_loader import ConfigError
 
 
 def write(path, text):
@@ -311,6 +312,112 @@ class TestIntro:
         assert "12 小时" in gen_readme.make_intro()
 
 
+DEFAULT_MERGES = (
+    {
+        "strategy": "block",
+        "type": "domain",
+        "owner": "rksk102",
+        "filename": "all-adblock.txt",
+        "inputs": ["block/x.txt"],
+    },
+    {
+        "strategy": "direct",
+        "type": "ipcidr",
+        "owner": "rksk102",
+        "filename": "all-cnip.txt",
+        "inputs": ["direct/x.txt"],
+    },
+    {
+        "strategy": "policy",
+        "type": "domain",
+        "owner": "rksk102",
+        "filename": "all-proxy.txt",
+        "inputs": ["policy/x.txt"],
+    },
+)
+
+
+def provider_block(text, strategy):
+    """取出快速开始 YAML 中某个 rule-provider 的字段块。"""
+    match = re.search(rf"^  {strategy}:\n((?:    .*\n)+)", text, re.MULTILINE)
+    assert match, f"快速开始缺少 rule-provider: {strategy}"
+    return match.group(1)
+
+
+class TestIntroMergeDerivedUrls:
+    def use_merges(self, monkeypatch, merges):
+        def fake_get(*keys, default=None):
+            return merges if keys[:1] == ("merges",) else default
+
+        monkeypatch.setattr(gen_readme, "get", fake_get)
+
+    def test_default_merges_keep_documented_urls(self, monkeypatch):
+        self.use_merges(monkeypatch, DEFAULT_MERGES)
+        text = gen_readme.make_intro("owner/repo", "artifacts")
+        expected = {
+            "block": "merged-rules-mrs/block/domain/rksk102/all-adblock.mrs",
+            "direct": "merged-rules-mrs/direct/ipcidr/rksk102/all-cnip.mrs",
+            "policy": "merged-rules-mrs/policy/domain/rksk102/all-proxy.mrs",
+        }
+        for strategy, rel in expected.items():
+            assert (
+                f'url: "https://cdn.jsdelivr.net/gh/owner/repo@artifacts/{rel}"' in provider_block(text, strategy)
+            ), strategy
+        assert text.count("format: mrs") == 3
+
+    def test_behavior_follows_configured_type(self, monkeypatch):
+        merges = (
+            {"strategy": "block", "type": "ipcidr", "owner": "Acme", "filename": "ads-2027.txt", "inputs": ["x"]},
+            {"strategy": "direct", "type": "domain", "owner": "Acme", "filename": "cn-direct.txt", "inputs": ["x"]},
+            {"strategy": "policy", "type": "domain", "owner": "Acme", "filename": "proxy.txt", "inputs": ["x"]},
+        )
+        self.use_merges(monkeypatch, merges)
+        text = gen_readme.make_intro("owner/repo", "artifacts")
+        assert "behavior: ipcidr" in provider_block(text, "block")
+        assert "/block/ipcidr/Acme/ads-2027.mrs" in provider_block(text, "block")
+        assert "path: ./ruleset/block.mrs" in provider_block(text, "block")
+        assert "behavior: domain" in provider_block(text, "direct")
+        assert "/direct/domain/Acme/cn-direct.mrs" in provider_block(text, "direct")
+
+    def test_renamed_merges_drop_stale_urls(self, monkeypatch):
+        merges = tuple(
+            {**task, "owner": "Renamed", "filename": task["filename"].replace("all-", "set-")}
+            for task in DEFAULT_MERGES
+        )
+        self.use_merges(monkeypatch, merges)
+        text = gen_readme.make_intro("owner/repo", "artifacts")
+        for stale in ("all-adblock", "all-cnip", "all-proxy", "rksk102"):
+            assert stale not in text
+        for fresh in ("set-adblock.mrs", "set-cnip.mrs", "set-proxy.mrs"):
+            assert f"/Renamed/{fresh}" in text
+
+    def test_unrelated_strategy_is_not_advertised(self, monkeypatch):
+        merges = (
+            *DEFAULT_MERGES,
+            {"strategy": "media", "type": "domain", "owner": "Acme", "filename": "media.txt", "inputs": ["x"]},
+        )
+        self.use_merges(monkeypatch, merges)
+        text = gen_readme.make_intro("owner/repo", "artifacts")
+        assert "media.mrs" not in text
+        assert text.count("format: mrs") == 3
+
+    def test_missing_strategy_fails_closed(self, monkeypatch):
+        self.use_merges(monkeypatch, DEFAULT_MERGES[:2])
+        with pytest.raises(ConfigError) as exc:
+            gen_readme.make_intro()
+        assert "policy" in str(exc.value)
+
+    def test_duplicate_strategy_fails_closed(self, monkeypatch):
+        merges = (
+            *DEFAULT_MERGES,
+            {"strategy": "block", "type": "ipcidr", "owner": "Other", "filename": "extra.txt", "inputs": ["x"]},
+        )
+        self.use_merges(monkeypatch, merges)
+        with pytest.raises(ConfigError) as exc:
+            gen_readme.make_intro()
+        assert "block" in str(exc.value)
+
+
 class TestConfiguredOutputPaths:
     def test_nested_repo_relative_dir_is_used_in_file_urls(self, work_dir, monkeypatch):
         monkeypatch.setattr(gen_readme, "REPO_ROOT", str(work_dir))
@@ -464,3 +571,20 @@ class TestPreflight:
         text = readme.read_text(encoding="utf-8")
         assert gen_readme.REPO_NAME in text, "预览应包含占位/当前仓库链接"
         assert "0 个文件" in text, "空产物预览应渲染 0 文件清单"
+
+    def test_missing_quickstart_merge_refuses_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        self.isolate(tmp_path, monkeypatch)
+        write(tmp_path / "merged-rules" / "a.txt", "a.com\n")
+        write(tmp_path / "merged-rules-mrs" / "a.mrs", "MRS!")
+
+        def fake_get(*keys, default=None):
+            if keys[:1] == ("merges",):
+                return DEFAULT_MERGES[:2]
+            return default
+
+        monkeypatch.setattr(gen_readme, "get", fake_get)
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main([])
+        assert exc.value.code != 0
+        assert not (tmp_path / "README.md").exists()
