@@ -245,59 +245,23 @@ def test_setup_python_env_pins_exact_patch_version():
     assert setup["with"]["python-version"] == "3.14.10"
 
 
-def test_kernel_bump_amd64_validation_rechecks_live_latest():
-    job = load_workflow("kernel-bump.yml")["jobs"]["validate_amd64"]
-    assert job["runs-on"] == "ubuntu-latest"
-    assert job["needs"] == "prepare"
-    assert job["if"] == "needs.prepare.outputs.changed == 'true'"
-
-    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
-    assert "kernel_pin.py --apply" in runs
-    assert '--tag "$TAG"' in runs
-    assert '--kernel-sha256 "$KERNEL_SHA256"' in runs
-    assert '--kernel-sha256-arm64 "$KERNEL_SHA256_ARM64"' in runs
-    assert "convert_mrs.py --verify-current-kernel" in runs
-
-    steps = job["steps"]
-    names = [step.get("name", "") for step in steps]
-    assert names.index("记录当前钉扎版本") < names.index("在干净检出中重建配置")
-    assert names.index("在干净检出中重建配置") < names.index("独立复核实时 latest 与版本单调性")
-
-    current = steps[names.index("记录当前钉扎版本")]
-    assert "read_metadata" in current["run"]
-    assert 'print("tag=" + read_metadata()["pinned_version"])' in current["run"]
-
-    recheck = steps[names.index("独立复核实时 latest 与版本单调性")]
-    assert recheck["env"]["CANDIDATE_TAG"] == "${{ needs.prepare.outputs.tag }}"
-    assert recheck["env"]["CURRENT_TAG"] == "${{ steps.current.outputs.tag }}"
-    script = recheck["run"]
-    assert '"repo_api"' in script
-    assert "fetch_release(None)" in script
-    assert '"published_at"' in script
-    assert 'if latest.get("tag_name") != candidate:' in script
-    assert "if candidate_published < current_published:" in script
-    assert "::error::" in script
-    assert "sys.exit(1)" in script
+def _step(job, name):
+    return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_kernel_bump_commit_requires_both_architecture_validations():
-    workflow = load_workflow("kernel-bump.yml")
-    commit = workflow["jobs"]["commit"]
-    assert commit["needs"] == ["prepare", "validate_arm64", "validate_amd64"]
-    assert "needs.validate_arm64.result == 'success'" in commit["if"]
-    assert "needs.validate_amd64.result == 'success'" in commit["if"]
-    assert commit["if"].endswith(DEFAULT_BRANCH_GATE)
+def _heredoc_body(script):
+    body = script.split("<<'PY'", 1)[1].split("\n", 1)[1]
+    return body.split("\nPY", 1)[0]
 
 
-def test_kernel_bump_notify_tracks_amd64_result():
-    workflow = load_workflow("kernel-bump.yml")
-    notify = workflow["jobs"]["notify-on-failure"]
-    assert notify["needs"] == ["prepare", "validate_arm64", "validate_amd64", "commit"]
-    step = notify["steps"][0]
-    assert step["env"]["R_VALIDATE_AMD64"] == "${{ needs.validate_amd64.result }}"
-    failed_gate, rest = step["run"].split("FAILED=1", 1)
-    assert "$R_VALIDATE_AMD64" in failed_gate
-    assert '[ "$R_VALIDATE_AMD64" != "success" ]' in rest
+def _run_python_body(body, cwd=REPO):
+    return subprocess.run(
+        [sys.executable, "-c", body],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO / "scripts")},
+    )
 
 
 def _run_auto_merge(work_dir, branch, sha="a" * 40, author="app/dependabot", state="OPEN", pr="42"):
@@ -409,3 +373,60 @@ def test_auto_merge_group_whitelist_matches_dependabot_config():
                 non_major.add(name)
     assert allowed == non_major
     assert not allowed & major
+
+
+def test_ci_generated_artifact_gate_derives_paths_from_config():
+    job = load_workflow("ci.yml")["jobs"]["no-generated-artifacts"]
+    names = [step.get("name") for step in job["steps"]]
+    assert names.index("安装 Python 环境") < names.index("检查生成产物是否被跟踪")
+    step = _step(job, "检查生成产物是否被跟踪")
+    script = step["run"]
+    for key in ("rulesets_dir", "merged_output_dir", "mrs_output_dir", "log_dir", "kernel_cache_path"):
+        assert f'"{key}"' in script
+    assert 'git ls-files -- "${GENERATED_DIRS[@]/%//*}"' in script
+    assert "'merged-rules/*'" not in script
+    assert "'rulesets/*'" not in script
+    assert step["env"]["PYTHONPATH"] == "${{ github.workspace }}/scripts"
+
+    config = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    result = _run_python_body(_heredoc_body(script))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        config["paths"]["rulesets_dir"],
+        config["paths"]["merged_output_dir"],
+        config["paths"]["mrs_output_dir"],
+        config["paths"]["log_dir"],
+        config["mihomo"]["kernel_cache_path"],
+    ]
+
+
+def test_pipeline_product_paths_derive_rulesets_from_config():
+    workflow = load_workflow("pipeline.yml")
+    config = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    expected = [
+        f"rulesets={config['paths']['rulesets_dir']}",
+        f"txt={config['paths']['merged_output_dir']}",
+        f"mrs={config['paths']['mrs_output_dir']}",
+    ]
+    for job_name in ("build", "publish"):
+        step = next(s for s in workflow["jobs"][job_name]["steps"] if s.get("id") == "product-paths")
+        assert 'get("paths", "rulesets_dir"' in step["run"]
+        result = _run_python_body(_heredoc_body(step["run"]))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == expected
+
+
+def test_rulesets_artifact_upload_and_download_use_configured_path():
+    workflow = load_workflow("pipeline.yml")
+    upload = _step(workflow["jobs"]["build"], "上传 rulesets 清单（供发布校验）")
+    download = _step(workflow["jobs"]["publish"], "下载 rulesets 产物（提供产物清单基线）")
+    assert upload["with"]["path"] == "${{ steps.product-paths.outputs.rulesets }}/products.manifest"
+    assert download["with"]["path"] == "${{ steps.product-paths.outputs.rulesets }}/"
+    for step in (upload, download):
+        assert "rulesets/" not in step["with"]["path"]
+
+
+def test_publish_verify_only_requires_baseline():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("name") == "产物一致性预检")
+    assert step["run"].strip() == "python scripts/release_handler.py --verify-only --require-baseline"

@@ -37,6 +37,7 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           from config_loader import get
+          print("rulesets=" + get("paths", "rulesets_dir", default="rulesets"))
           print("txt=" + get("paths", "merged_output_dir", default="merged-rules"))
           print("mrs=" + get("paths", "mrs_output_dir", default="merged-rules-mrs"))
           PY
@@ -49,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: rulesets
-          path: rulesets/products.manifest
+          path: ${{ steps.product-paths.outputs.rulesets }}/products.manifest
           retention-days: 1
           if-no-files-found: error
       - name: 运行合并
@@ -138,6 +139,7 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           from config_loader import get
+          print("rulesets=" + get("paths", "rulesets_dir", default="rulesets"))
           print("txt=" + get("paths", "merged_output_dir", default="merged-rules"))
           print("mrs=" + get("paths", "mrs_output_dir", default="merged-rules-mrs"))
           PY
@@ -150,7 +152,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: rulesets
-          path: rulesets/
+          path: ${{ steps.product-paths.outputs.rulesets }}/
           digest-mismatch: error
       - name: 下载 merged-rules 产物
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -236,7 +238,7 @@ jobs:
       - name: 产物一致性预检
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python scripts/release_handler.py --verify-only
+        run: python scripts/release_handler.py --verify-only --require-baseline
       - name: 发布规则产物到 artifacts 分支
         if: steps.product-state.outputs.changed == 'true'
         env:

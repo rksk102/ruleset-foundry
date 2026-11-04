@@ -621,9 +621,9 @@ def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     return len(expected) if baseline is not None else None
 
 
-def enforce_products(txt_dir=None, mrs_dir=None):
+def enforce_products(txt_dir=None, mrs_dir=None, require_baseline=None):
     try:
-        verified = verify_products(txt_dir, mrs_dir)
+        verified = verify_products(txt_dir, mrs_dir, require_baseline)
     except manifest.ManifestError as e:
         error(f"  {e}")
         gh_error(f"产物校验失败: {e}")
@@ -634,9 +634,10 @@ def enforce_products(txt_dir=None, mrs_dir=None):
     return verified
 
 
-def verify_only():
+def verify_only(require_baseline=False):
+    """发布前预检；--require-baseline 时缺少清单基线目录或文件一律硬失败。"""
     group_start("产物校验（发布前预检）")
-    enforce_products()
+    enforce_products(require_baseline=True if require_baseline else None)
     group_end()
 
 
@@ -987,8 +988,9 @@ def cleanup_old_releases(current_tag, now_utc=None):
 
 
 def main():
-    if "--verify-only" in sys.argv[1:]:
-        verify_only()
+    args = sys.argv[1:]
+    if "--verify-only" in args:
+        verify_only(require_baseline="--require-baseline" in args)
         return
 
     if "--print-hash" in sys.argv[1:]:
