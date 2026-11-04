@@ -332,6 +332,68 @@ def release_asset_names(release_tag):
 
 RULES_TAG_RE = re.compile(r"^rules-(?:[0-9a-f]{12}|\d{8}-\d{4})$")
 RULES_LEGACY_TAG_RE = re.compile(r"^rules-(\d{8})-(\d{4})$")
+TAG_DEREF_LIMIT = 3
+TAG_OBJECT_JQ = '[.object.type, .object.sha] | @tsv'
+GIT_SHA_RE = re.compile(r"[0-9a-f]{40,64}")
+
+
+def _parse_tag_object(raw):
+    """解析 git ref/tag 对象的 type 与 sha；格式不符返回 None。"""
+    if not raw:
+        return None
+    parts = raw.split("\t")
+    if len(parts) != 2:
+        return None
+    obj_type, obj_sha = (part.strip().lower() for part in parts)
+    if obj_type not in ("commit", "tag", "tree", "blob") or not GIT_SHA_RE.fullmatch(obj_sha):
+        return None
+    return obj_type, obj_sha
+
+
+def tag_commit_sha(tag):
+    """tag 最终指向的提交 SHA；annotated tag 逐层解引用，无法确认时返回 None。"""
+    target = _parse_tag_object(
+        run_gh(["api", f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}", "--jq", TAG_OBJECT_JQ])
+    )
+    for _ in range(TAG_DEREF_LIMIT):
+        if target is None:
+            return None
+        obj_type, obj_sha = target
+        if obj_type == "commit":
+            return obj_sha
+        if obj_type != "tag":
+            return None
+        target = _parse_tag_object(
+            run_gh(["api", f"repos/{{owner}}/{{repo}}/git/tags/{obj_sha}", "--jq", TAG_OBJECT_JQ])
+        )
+    return None
+
+
+def commit_time(sha):
+    """提交的 committer 时间；缺失或无法解析时返回 None。"""
+    raw = run_gh(["api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.committer.date"])
+    if not raw:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=datetime.UTC)
+
+
+def orphan_tag_created_at(tag):
+    """孤立自动 tag 的创建时间；无法确认时返回 None，调用方必须保留该 tag。"""
+    legacy = RULES_LEGACY_TAG_RE.fullmatch(tag)
+    if legacy is not None:
+        try:
+            return datetime.datetime.strptime(
+                f"{legacy.group(1)}{legacy.group(2)}", "%Y%m%d%H%M"
+            ).replace(tzinfo=BEIJING_TZ)
+        except ValueError as e:
+            warning(f"  孤立 tag 的旧格式时间无法解析，保留: {tag}（{e}）")
+            return None
+    sha = tag_commit_sha(tag)
+    return commit_time(sha) if sha else None
 
 
 def release_id_for_hash(product_hash):
@@ -382,16 +444,10 @@ def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
         tag = ref.removeprefix("refs/tags/")
         if not RULES_TAG_RE.fullmatch(tag) or tag == current_tag or tag in release_tags:
             continue
-        legacy = RULES_LEGACY_TAG_RE.fullmatch(tag)
-        if legacy is None:
+        created_at = orphan_tag_created_at(tag)
+        if created_at is None:
+            # 新格式按目标提交时间判断年龄；时间/对象不明一律 fail-safe 保留
             skipped.append(tag)
-            continue
-        try:
-            created_at = datetime.datetime.strptime(
-                f"{legacy.group(1)}{legacy.group(2)}", "%Y%m%d%H%M"
-            ).replace(tzinfo=BEIJING_TZ)
-        except ValueError as e:
-            warning(f"  孤立 tag 的旧格式时间无法解析，跳过: {tag}（{e}）")
             continue
         if created_at >= cutoff_time:
             continue
@@ -402,7 +458,7 @@ def cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time):
         cleaned += 1
     if skipped:
         warning(
-            f"  跳过 {len(skipped)} 个无法确认创建时间的新格式孤立 tag: "
+            f"  跳过 {len(skipped)} 个无法确认创建时间的孤立 tag: "
             f"{', '.join(skipped[:5])}{' 等' if len(skipped) > 5 else ''}"
         )
     return cleaned
@@ -869,6 +925,67 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
     )
 
 
+def cleanup_old_releases(current_tag, now_utc=None):
+    """清理超过 KEEP_DAYS 的自动 Release 与孤立 tag；失败只告警，不影响已完成的发布。"""
+    info(f"清理 {KEEP_DAYS} 天前的旧 Release...")
+    releases_json = run_gh(["release", "list", "--limit", "200", "--json", "tagName,createdAt"])
+    if not releases_json:
+        return 0
+
+    listing_valid = True
+    try:
+        releases = json.loads(releases_json)
+    except (TypeError, ValueError) as e:
+        # 清理失败只告警不标红（下轮运行自愈）
+        warning(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}），本轮跳过清理")
+        releases = []
+        listing_valid = False
+    if not isinstance(releases, list):
+        warning("  旧 Release 清理失败: gh 返回的不是列表，本轮跳过清理")
+        releases = []
+        listing_valid = False
+
+    cutoff_time = (now_utc or datetime.datetime.now(datetime.UTC)) - datetime.timedelta(days=KEEP_DAYS)
+    release_tags = {
+        rel.get("tagName")
+        for rel in releases
+        if isinstance(rel, dict) and isinstance(rel.get("tagName"), str)
+    }
+    can_reconcile_orphans = (
+        listing_valid
+        and len(releases) < 200
+        and all(isinstance(rel, dict) and isinstance(rel.get("tagName"), str) for rel in releases)
+    )
+
+    cleaned = 0
+    for rel in releases:
+        try:
+            created_at = datetime.datetime.fromisoformat(rel["createdAt"].replace("Z", "+00:00"))
+            tag = rel["tagName"]
+        except (KeyError, AttributeError, TypeError, ValueError) as e:
+            warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")
+            continue
+        if not isinstance(tag, str) or not RULES_TAG_RE.fullmatch(tag):
+            continue
+        if created_at < cutoff_time and tag != current_tag:
+            info(f"  删除旧 Release: {tag}")
+            if run_gh(["release", "delete", tag, "--yes"]) is None:
+                warning(f"  删除 Release 失败，跳过: {tag}")
+                continue
+            release_tags.discard(tag)
+            if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
+                warning(f"  删除 tag 失败，跳过计数（Release 已删，tag 残留）: {tag}")
+                continue
+            cleaned += 1
+    if can_reconcile_orphans:
+        cleaned += cleanup_orphan_rules_tags(release_tags, current_tag, cutoff_time)
+    elif listing_valid:
+        warning("  Release 列表可能不完整，跳过孤立 tag 对账")
+    if cleaned == 0:
+        info("  无需清理")
+    return cleaned
+
+
 def main():
     if "--verify-only" in sys.argv[1:]:
         verify_only()
@@ -919,6 +1036,8 @@ def main():
             publish, why = True, "最近一次 Release 资产不全或不存在，补发"
             info(f"  {why}")
         if not publish:
+            # 内容不变时不发布，但仍须执行保留期清理（上轮清理失败不得永久跳过）
+            cleanup_old_releases(release_tag, utc_now)
             group_end()
             return
     else:
@@ -983,61 +1102,7 @@ def main():
         save_last_hash(combined_hash)
         info("  已保存当前内容哈希")
 
-    info(f"清理 {KEEP_DAYS} 天前的旧 Release...")
-    releases_json = run_gh(["release", "list", "--limit", "200", "--json", "tagName,createdAt"])
-
-    if releases_json:
-        listing_valid = True
-        try:
-            releases = json.loads(releases_json)
-        except (TypeError, ValueError) as e:
-            # 发布与哈希保存已完成，清理失败只告警不标红（下轮运行自愈）
-            warning(f"  旧 Release 清理失败: gh 返回的列表无法解析（{e}），本轮跳过清理")
-            releases = []
-            listing_valid = False
-        if not isinstance(releases, list):
-            warning("  旧 Release 清理失败: gh 返回的不是列表，本轮跳过清理")
-            releases = []
-            listing_valid = False
-
-        cutoff_time = utc_now - datetime.timedelta(days=KEEP_DAYS)
-        release_tags = {
-            rel.get("tagName")
-            for rel in releases
-            if isinstance(rel, dict) and isinstance(rel.get("tagName"), str)
-        }
-        can_reconcile_orphans = (
-            listing_valid
-            and len(releases) < 200
-            and all(isinstance(rel, dict) and isinstance(rel.get("tagName"), str) for rel in releases)
-        )
-
-        cleaned = 0
-        for rel in releases:
-            try:
-                created_at = datetime.datetime.fromisoformat(rel["createdAt"].replace("Z", "+00:00"))
-                tag = rel["tagName"]
-            except (KeyError, AttributeError, TypeError, ValueError) as e:
-                warning(f"  跳过无法解析的 Release 记录: {rel!r}（{e}）")
-                continue
-            if not isinstance(tag, str) or not RULES_TAG_RE.fullmatch(tag):
-                continue
-            if created_at < cutoff_time and tag != release_tag:
-                info(f"  删除旧 Release: {tag}")
-                if run_gh(["release", "delete", tag, "--yes"]) is None:
-                    warning(f"  删除 Release 失败，跳过: {tag}")
-                    continue
-                release_tags.discard(tag)
-                if run_gh(["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{tag}"]) is None:
-                    warning(f"  删除 tag 失败，跳过计数（Release 已删，tag 残留）: {tag}")
-                    continue
-                cleaned += 1
-        if can_reconcile_orphans:
-            cleaned += cleanup_orphan_rules_tags(release_tags, release_tag, cutoff_time)
-        elif listing_valid:
-            warning("  Release 列表可能不完整，跳过孤立 tag 对账")
-        if cleaned == 0:
-            info("  无需清理")
+    cleanup_old_releases(release_tag, utc_now)
 
     if zip_file and os.path.exists(zip_file):
         os.unlink(zip_file)
