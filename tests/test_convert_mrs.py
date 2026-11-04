@@ -1187,6 +1187,53 @@ class TestConvertOutput:
         assert exc.value.code == 1
         assert stale.read_bytes() == b"stale-mrs"
 
+    def test_undecodable_kernel_output_fails_single_file(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, b"ignored")
+        summaries = []
+        monkeypatch.setattr(convert_mrs, "write_summary", lambda stats, _t: summaries.append(dict(stats)))
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"partial-mrs")
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+
+        assert exc.value.code == 1
+        assert summaries == [{"success": 0, "failed": 1, "skipped": 0, "total": 1}]
+        assert not (work_dir / "dst" / "rules.mrs").exists()
+        assert not list((work_dir / "dst").glob(".convert-*")), "失败后必须清理临时文件"
+
+
+class TestMissingSourceKeepsPreviousOutput:
+    def test_missing_source_aborts_before_cleanup(self, monkeypatch, work_dir):
+        dst = work_dir / "dst"
+        dst.mkdir()
+        stale = dst / "rules.mrs"
+        stale.write_bytes(b"old-mrs")
+        monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(work_dir / "missing-src"))
+        monkeypatch.setattr(convert_mrs, "DST_ROOT", str(dst))
+        monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_products_anchored", lambda: None)
+        kernel_prep = []
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo", lambda *a, **k: kernel_prep.append(True))
+        cleaned = []
+        monkeypatch.setattr(convert_mrs, "clean_directory", lambda path: cleaned.append(path) or [])
+        monkeypatch.setattr(sys, "argv", ["convert_mrs.py"])
+        for name in ("info", "warning", "error", "success", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+
+        assert exc.value.code == 1
+        assert cleaned == [], "缺失源目录时不得清理输出目录"
+        assert kernel_prep == []
+        assert stale.read_bytes() == b"old-mrs"
+
 
 class TestSmokeConvert:
     def prepare(self, monkeypatch, work_dir):
@@ -1239,6 +1286,22 @@ class TestSmokeConvert:
             convert_mrs._smoke_convert()
 
         assert exc.value.code == 1
+
+    def test_undecodable_output_exits_and_cleans_up(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"partial")
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs._smoke_convert()
+
+        assert exc.value.code == 1
+        assert not (work_dir / "smoke-input.txt").exists()
+        assert not (work_dir / "smoke-output.mrs").exists()
 
 
 class TestBumpConfigSuccess:

@@ -544,6 +544,9 @@ def _smoke_convert(kernel_bin=None):
     except subprocess.CalledProcessError as e:
         error(f"  内核冒烟转换失败: {(e.stderr or '').strip()}")
         sys.exit(1)
+    except UnicodeError as e:
+        error(f"  内核冒烟转换输出解码失败（非 UTF-8）: {e}")
+        sys.exit(1)
     finally:
         for path in (src, dst):
             if path.exists():
@@ -667,16 +670,18 @@ def main():
 
     start_time = time.time()
     ensure_products_anchored()
+
+    # 源目录缺失时必须在清理输出目录之前失败，旧 MRS 逐字节保留（ISS-10）。
+    if not os.path.exists(SRC_ROOT):
+        error(f"源目录 {SRC_ROOT} 不存在！")
+        sys.exit(1)
+
     get_latest_mihomo()
 
     group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
     for stale, why in clean_directory(DST_ROOT):
         warning(f"  清理失败（可能残留陈旧 .mrs）: {stale} -> {why}")
-
-    if not os.path.exists(SRC_ROOT):
-        error(f"源目录 {SRC_ROOT} 不存在！")
-        sys.exit(1)
 
     files_map = []
     for root, dirs, files in os.walk(SRC_ROOT):
@@ -742,6 +747,10 @@ def main():
             err_msg = e.stderr.strip() if e.stderr else "未知错误"
             error(f"  {prefix} {rel_path}")
             error(f"      L {err_msg}")
+            stats["failed"] += 1
+        except UnicodeError as e:
+            error(f"  {prefix} {rel_path}")
+            error(f"      L 转换输出解码失败（非 UTF-8）: {e}")
             stats["failed"] += 1
         except OSError as e:
             error(f"  {prefix} {rel_path}")
