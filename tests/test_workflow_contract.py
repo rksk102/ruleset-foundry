@@ -1,6 +1,10 @@
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
@@ -294,3 +298,114 @@ def test_kernel_bump_notify_tracks_amd64_result():
     failed_gate, rest = step["run"].split("FAILED=1", 1)
     assert "$R_VALIDATE_AMD64" in failed_gate
     assert '[ "$R_VALIDATE_AMD64" != "success" ]' in rest
+
+
+def _run_auto_merge(work_dir, branch, sha="a" * 40, author="app/dependabot", state="OPEN", pr="42"):
+    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
+    bin_dir = work_dir / "bin"
+    bin_dir.mkdir()
+    log = work_dir / "gh.log"
+    stub = bin_dir / "gh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$GH_LOG"\n'
+        'case "$1 $2" in\n'
+        '  "pr list") printf "%s\\n" "${GH_PR:-42}" ;;\n'
+        '  "pr view") printf "%s\\n" "${GH_AUTHOR:-app/dependabot} ${GH_STATE:-OPEN}" ;;\n'
+        "  *) : ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(log),
+            "GH_TOKEN": "token",
+            "PR_NUMBER": pr,
+            "HEAD_BRANCH": branch,
+            "HEAD_SHA": sha,
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GH_AUTHOR": author,
+            "GH_STATE": state,
+        },
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, calls
+
+
+def _merge_calls(calls):
+    return [call for call in calls if call.startswith("pr merge")]
+
+
+SKIPPED_AUTO_MERGE_BRANCHES = (
+    "dependabot/uv/requests-2.32.0",  # 安全更新：不进入任何 version-update 分组
+    "dependabot/uv/django",  # 未分组/无法识别的更新级别
+    "dependabot/uv/python-dependencies-major",
+    "dependabot/github_actions/github-actions-major",
+    "dependabot/uv/python-dependencies-1a2b3c4d5e-extra",
+    "feature/manual-pr",
+)
+
+
+@pytest.mark.parametrize("branch", SKIPPED_AUTO_MERGE_BRANCHES)
+def test_auto_merge_skips_branches_outside_non_major_group_whitelist(work_dir, branch):
+    result, calls = _run_auto_merge(work_dir, branch)
+    assert result.returncode == 0, result.stderr
+    assert not _merge_calls(calls)
+
+
+@pytest.mark.parametrize(
+    "branch",
+    (
+        "dependabot/uv/python-dependencies",
+        "dependabot/github_actions/github-actions",
+        "dependabot/uv/python-dependencies-1a2b3c4d5e",
+    ),
+)
+def test_auto_merge_merges_whitelisted_non_major_group(work_dir, branch):
+    result, calls = _run_auto_merge(work_dir, branch)
+    assert result.returncode == 0, result.stderr
+    merges = _merge_calls(calls)
+    assert len(merges) == 1
+    assert "--match-head-commit" in merges[0]
+    assert "--auto" in merges[0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "returncode"),
+    (
+        ({"author": "octocat"}, 0),
+        ({"state": "MERGED"}, 0),
+        ({"sha": ""}, 1),
+    ),
+)
+def test_auto_merge_keeps_author_state_and_sha_gates(work_dir, kwargs, returncode):
+    result, calls = _run_auto_merge(work_dir, "dependabot/uv/python-dependencies", **kwargs)
+    assert result.returncode == returncode
+    assert not _merge_calls(calls)
+
+
+def test_auto_merge_group_whitelist_matches_dependabot_config():
+    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
+    match = re.search(r'^ALLOWED_GROUPS="([^"]*)"$', script, re.M)
+    assert match, "工作流必须显式声明自动合并分组白名单"
+    allowed = set(match.group(1).split())
+
+    config = yaml.safe_load((REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    non_major = set()
+    major = set()
+    for entry in config["updates"]:
+        for name, group in (entry.get("groups") or {}).items():
+            types = set(group.get("update-types") or [])
+            assert types, f"分组 {name} 必须显式声明 update-types"
+            if "major" in types:
+                major.add(name)
+            else:
+                non_major.add(name)
+    assert allowed == non_major
+    assert not allowed & major

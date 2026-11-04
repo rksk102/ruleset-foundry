@@ -33,10 +33,16 @@ jobs:
             exit 1
           fi
 
-          case "$HEAD_BRANCH" in
-            dependabot/*) ;;
-            *) echo "非 Dependabot 分支（$HEAD_BRANCH），跳过"; exit 0 ;;
-          esac
+          # 仅自动合并既有非 major version-update 分组的分支；分组名必须与
+          # .github/dependabot.yml 中 update-types 不含 major 的分组保持一致。
+          # 安全更新不会进入这些 version-update 分组，未分组/无法识别的分支
+          # 名也一律转人工审核（不依赖分支名里的 major 字样做判断）。
+          ALLOWED_GROUPS="python-dependencies github-actions"
+
+          if [[ ! "$HEAD_BRANCH" =~ ^dependabot/[^/]+/[^/]+$ ]]; then
+            echo "非 Dependabot 分组分支（$HEAD_BRANCH），转人工审核"
+            exit 0
+          fi
 
           case "$HEAD_BRANCH" in
             *-major*)
@@ -44,6 +50,25 @@ jobs:
               exit 0
               ;;
           esac
+
+          LEAF="${HEAD_BRANCH##*/}"
+          GROUP_OK=0
+          for group in $ALLOWED_GROUPS; do
+            if [ "$LEAF" = "$group" ]; then
+              GROUP_OK=1
+              break
+            fi
+            # 分组分支可能带依赖 Dependabot 的十六进制去重后缀；
+            # major 分组名（*-major）不会命中该后缀形态。
+            if [[ "$LEAF" =~ ^${group}-[0-9a-f]{4,40}$ ]]; then
+              GROUP_OK=1
+              break
+            fi
+          done
+          if [ "$GROUP_OK" -ne 1 ]; then
+            echo "分支（$HEAD_BRANCH）不属于明确的非 major version-update 分组，转人工审核"
+            exit 0
+          fi
 
           pr="$PR_NUMBER"
           if [ -z "$pr" ] || [ "$pr" = "null" ]; then
