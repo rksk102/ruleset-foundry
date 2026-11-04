@@ -68,12 +68,119 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python3 scripts/convert_mrs.py --verify-current-kernel
 
+  validate_amd64:
+    name: "AMD64 内核实机验证与独立复核"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 安装 Python 环境
+        uses: ./.github/actions/setup-python-env
+      - name: 记录当前钉扎版本
+        id: current
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from kernel_pin import read_metadata
+          print("tag=" + read_metadata()["pinned_version"])
+          PY
+      - name: 在干净检出中重建配置
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+          TAG: ${{ needs.prepare.outputs.tag }}
+          KERNEL_SHA256: ${{ needs.prepare.outputs.kernel_sha256 }}
+          KERNEL_SHA256_ARM64: ${{ needs.prepare.outputs.kernel_sha256_arm64 }}
+        run: >-
+          python3 scripts/kernel_pin.py --apply
+          --tag "$TAG"
+          --kernel-sha256 "$KERNEL_SHA256"
+          --kernel-sha256-arm64 "$KERNEL_SHA256_ARM64"
+      - name: 独立复核实时 latest 与版本单调性
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+          CANDIDATE_TAG: ${{ needs.prepare.outputs.tag }}
+          CURRENT_TAG: ${{ steps.current.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+          from datetime import datetime
+
+          from config_loader import get
+          from kernel_pin import read_metadata
+
+          REPO_API = str(
+              get("mihomo", "repo_api", default="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest")
+          ).rstrip("/")
+          API_ROOT = REPO_API[: -len("/latest")] if REPO_API.endswith("/latest") else REPO_API
+
+
+          def fetch_release(tag):
+              url = f"{API_ROOT}/latest" if tag is None else f"{API_ROOT}/tags/{tag}"
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "ruleset-foundry-kernel-bump",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+
+          def published_at(release):
+              raw = release.get("published_at") or ""
+              try:
+                  return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+              except ValueError as exc:
+                  raise ValueError(f"published_at 不可解析: {raw!r}") from exc
+
+
+          try:
+              candidate = (os.environ.get("CANDIDATE_TAG") or "").strip()
+              current = (os.environ.get("CURRENT_TAG") or "").strip()
+              if not candidate or not current:
+                  raise ValueError("缺少候选/当前内核 tag")
+              applied = read_metadata()["pinned_version"]
+              if applied != candidate:
+                  raise ValueError(f"干净检出重建后的钉扎版本 {applied} 与候选 {candidate} 不一致")
+              latest = fetch_release(None)
+              if latest.get("tag_name") != candidate:
+                  raise ValueError(f"候选 {candidate} 不是实时 latest {latest.get('tag_name')!r}")
+              candidate_published = published_at(fetch_release(candidate))
+              current_published = published_at(fetch_release(current))
+              if candidate_published < current_published:
+                  raise ValueError(
+                      f"内核版本倒退: {candidate}（{candidate_published.isoformat()}）"
+                      f"早于当前 {current}（{current_published.isoformat()}）"
+                  )
+          except (urllib.error.URLError, OSError, ValueError) as exc:
+              print(f"::error::独立复核失败: {exc}")
+              sys.exit(1)
+
+          print(f"独立复核通过: candidate={candidate} 当前={current} latest={latest.get('tag_name')}")
+          PY
+      - name: 校验 AMD64 内核
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: python3 scripts/convert_mrs.py --verify-current-kernel
+
   commit:
     name: "提交内核钉扎"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [prepare, validate_arm64]
-    if: needs.prepare.outputs.changed == 'true' && needs.validate_arm64.result == 'success' && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    needs: [prepare, validate_arm64, validate_amd64]
+    if: needs.prepare.outputs.changed == 'true' && needs.validate_arm64.result == 'success' && needs.validate_amd64.result == 'success' && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     permissions:
         contents: write  # 需要推送更新后的 config.yaml
     steps:
@@ -112,7 +219,7 @@ jobs:
     name: "失败告警"
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    needs: [prepare, validate_arm64, commit]
+    needs: [prepare, validate_arm64, validate_amd64, commit]
     if: always() && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     permissions:
       issues: write
@@ -124,6 +231,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           R_PREPARE: ${{ needs.prepare.result }}
           R_VALIDATE: ${{ needs.validate_arm64.result }}
+          R_VALIDATE_AMD64: ${{ needs.validate_amd64.result }}
           R_COMMIT: ${{ needs.commit.result }}
           CHANGED: ${{ needs.prepare.outputs.changed }}
           EVENT_NAME: ${{ github.event_name }}
@@ -132,7 +240,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          RESULTS="prepare=$R_PREPARE validate_arm64=$R_VALIDATE commit=$R_COMMIT changed=$CHANGED"
+          RESULTS="prepare=$R_PREPARE validate_arm64=$R_VALIDATE validate_amd64=$R_VALIDATE_AMD64 commit=$R_COMMIT changed=$CHANGED"
           FAILED_STEPS=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
             --jq '[.jobs[] | select(.conclusion == "failure") | .name + ": " + ([.steps[] | select(.conclusion == "failure") | .name] | join(", "))] | join("\n")' \
             2>/dev/null || true)
@@ -144,10 +252,10 @@ jobs:
           NUMBER=$(gh issue list --state open --limit 1000 --json number,title \
             --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
           FAILED=0
-          if echo "$R_PREPARE $R_VALIDATE $R_COMMIT" | grep -qE "failure|cancelled"; then
+          if echo "$R_PREPARE $R_VALIDATE $R_VALIDATE_AMD64 $R_COMMIT" | grep -qE "failure|cancelled"; then
             FAILED=1
           fi
-          if [ "$CHANGED" = "true" ] && { [ "$R_VALIDATE" != "success" ] || [ "$R_COMMIT" != "success" ]; }; then
+          if [ "$CHANGED" = "true" ] && { [ "$R_VALIDATE" != "success" ] || [ "$R_VALIDATE_AMD64" != "success" ] || [ "$R_COMMIT" != "success" ]; }; then
             FAILED=1
           fi
           if [ "$FAILED" -eq 0 ]; then
