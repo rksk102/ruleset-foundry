@@ -190,10 +190,63 @@ def make_page_header(badge_time=None):
 """
 
 
+QUICKSTART_MERGE_STRATEGIES = ("block", "direct", "policy")
+
+
+def quickstart_merge_tasks(merges=None):
+    """快速开始展示的三条 merge 任务；缺失或同一策略重复均视为配置缺陷。"""
+    if merges is None:
+        merges = get("merges", default=None) or []
+    by_strategy = {}
+    for idx, task in enumerate(merges):
+        if not isinstance(task, dict):
+            raise ConfigError(f"merges[{idx}] 期望 dict，实际 {type(task).__name__}")
+        strategy = task.get("strategy")
+        if strategy not in QUICKSTART_MERGE_STRATEGIES:
+            continue
+        if strategy in by_strategy:
+            raise ConfigError(f"merges 中策略 {strategy!r} 出现多次，无法确定快速开始应引用的产物")
+        by_strategy[strategy] = task
+    missing = [s for s in QUICKSTART_MERGE_STRATEGIES if s not in by_strategy]
+    if missing:
+        raise ConfigError("merges 缺少快速开始所需策略: " + ", ".join(missing))
+    tasks = []
+    for strategy in QUICKSTART_MERGE_STRATEGIES:
+        task = by_strategy[strategy]
+        for field in ("type", "owner", "filename"):
+            value = task.get(field)
+            if not isinstance(value, str) or not value:
+                raise ConfigError(f"merges 中策略 {strategy!r} 的 {field} 缺失或非法: {value!r}")
+        tasks.append(task)
+    return tasks
+
+
+def quickstart_mrs_relpath(task):
+    """MRS 产物相对路径：<配置目录>/<策略>/<类型>/<owner>/<filename stem>.mrs。"""
+    stem = os.path.splitext(task["filename"])[0]
+    return "/".join((_repo_relative_path(DIR_MRS), task["strategy"], task["type"], task["owner"], f"{stem}.mrs"))
+
+
+def _quickstart_provider_yaml(task, repo_name, branch):
+    strategy = task["strategy"]
+    url_path = urllib.parse.quote(quickstart_mrs_relpath(task), safe="/!~-._")
+    return (
+        f"  {strategy}:\n"
+        "    type: http\n"
+        f"    behavior: {task['type']}\n"
+        "    format: mrs\n"
+        f'    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{url_path}"\n'
+        f"    path: ./ruleset/{strategy}.mrs\n"
+        "    interval: 86400\n"
+    )
+
+
 def make_intro(repo_name=None, branch=None):
     repo_name = repo_name or os.getenv("GITHUB_REPOSITORY") or DEFAULT_REPO_NAME
     branch = branch or os.getenv("ARTIFACTS_BRANCH") or DEFAULT_ARTIFACTS_BRANCH
-    mrs_url_root = urllib.parse.quote(_repo_relative_path(DIR_MRS), safe="/!~-._")
+    providers = "".join(
+        _quickstart_provider_yaml(task, repo_name, branch) for task in quickstart_merge_tasks()
+    )
     return f"""## 快速开始
 
 推荐使用 `.mrs` 二进制规则集（加载快、内存占用低）；`.txt` 文本规则集同样提供，见下方产物清单。
@@ -204,28 +257,7 @@ def make_intro(repo_name=None, branch=None):
 
 ```yaml
 rule-providers:
-  block:
-    type: http
-    behavior: domain
-    format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/block/domain/rksk102/all-adblock.mrs"
-    path: ./ruleset/block.mrs
-    interval: 86400
-  direct:
-    type: http
-    behavior: ipcidr
-    format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/direct/ipcidr/rksk102/all-cnip.mrs"
-    path: ./ruleset/direct.mrs
-    interval: 86400
-  policy:
-    type: http
-    behavior: domain
-    format: mrs
-    url: "https://cdn.jsdelivr.net/gh/{repo_name}@{branch}/{mrs_url_root}/policy/domain/rksk102/all-proxy.mrs"
-    path: ./ruleset/policy.mrs
-    interval: 86400
-
+{providers}
 rules:
   - RULE-SET,block,REJECT
   - RULE-SET,direct,DIRECT
