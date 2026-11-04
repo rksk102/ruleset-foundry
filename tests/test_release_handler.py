@@ -1402,12 +1402,71 @@ class TestVerifyOnly:
             release_handler.verify_only()
         assert exc.value.code == 1
 
+    def test_require_baseline_rejects_missing_rulesets_dir(self, verify_workspace):
+        """ISS-16：--require-baseline 时基线目录缺失必须硬失败，不得降级为告警。"""
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only(require_baseline=True)
+
+        assert exc.value.code == 1
+
+    def test_require_baseline_rejects_missing_manifest(self, verify_workspace):
+        os.unlink("rulesets/products.manifest")
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only(require_baseline=True)
+
+        assert exc.value.code == 1
+
+    def test_require_baseline_passes_with_valid_baseline(self, verify_workspace):
+        stub = GhStub()
+        run_with_stub(stub, lambda: release_handler.verify_only(require_baseline=True))
+        assert stub.calls == [], "预检不应调用 gh"
+
+    def test_default_mode_still_degrades_without_baseline_dir(self, verify_workspace):
+        """默认调用保持原语义：无基线目录、但有成对产物时只告警。"""
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        assert release_handler.verify_products() is None
+        assert release_handler.verify_products(require_baseline=False) is None
+
+    def test_explicit_require_baseline_raises_without_rulesets_dir(self, verify_workspace):
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        with pytest.raises(manifest.ManifestError, match=release_handler.BASELINE_MISSING):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_main_cli_require_baseline_missing_dir_exits_nonzero(self, verify_workspace, monkeypatch):
+        shutil.rmtree(verify_workspace / "rulesets")
+        monkeypatch.setattr(
+            sys, "argv", ["release_handler.py", "--verify-only", "--require-baseline"]
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(GhStub(), release_handler.main)
+
+        assert exc.value.code == 1
+
     def test_main_dispatches_verify_only_without_publishing(self, verify_workspace, monkeypatch):
         calls = []
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--verify-only"])
-        monkeypatch.setattr(release_handler, "verify_only", lambda: calls.append(True))
+        monkeypatch.setattr(
+            release_handler, "verify_only", lambda **kw: calls.append(kw.get("require_baseline"))
+        )
         run_with_stub(GhStub(), release_handler.main)
-        assert calls == [True], "main() 应分发到 verify_only 并提前返回"
+        assert calls == [False], "main() 应分发到 verify_only 并提前返回，且默认不要求基线"
+
+    def test_main_passes_require_baseline_flag(self, verify_workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            sys, "argv", ["release_handler.py", "--verify-only", "--require-baseline"]
+        )
+        monkeypatch.setattr(
+            release_handler, "verify_only", lambda **kw: calls.append(kw.get("require_baseline"))
+        )
+        run_with_stub(GhStub(), release_handler.main)
+        assert calls == [True], "main() 必须把 --require-baseline 传入 verify_only"
 
     def test_main_dispatches_print_hash_without_publishing(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--print-hash"])
