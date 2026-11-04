@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import sys
 import tempfile
 import time
@@ -28,6 +30,7 @@ from utils import (
     is_safe_component,
     normalize_policy,
     normalize_type,
+    redact_url_userinfo,
 )
 
 try:
@@ -51,6 +54,11 @@ MANIFEST_FILE = RULESETS_DIR / manifest.MANIFEST_NAME
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 5
+
+# 单源总时限（秒）：重定向、重试、退避全部共享；不新增配置键，避免被上游拖住整轮任务。
+SOURCE_TOTAL_TIMEOUT = 90.0
+# 目标端口白名单：仅允许标准 HTTPS 端口，非预期端口一律拒绝。
+ALLOWED_TARGET_PORTS = frozenset({443})
 
 UNRECOGNIZED_MIN_LINES = 20
 
@@ -101,6 +109,134 @@ def _same_host(left, right):
         return (urlsplit(str(left)).hostname or "").lower() == (urlsplit(str(right)).hostname or "").lower()
     except ValueError:
         return False
+
+
+def _literal_ip(host):
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+def _is_public_address(addr):
+    """仅接受全局可路由且非多播/未指定的地址；回环、私网、链路本地、保留段全部拒绝。"""
+    return addr.is_global and not addr.is_multicast and not addr.is_unspecified
+
+
+class TargetResolutionRejected(aiohttp.ClientConnectionError):
+    """连接器 resolver 拒绝非公网/混合/空解析结果。"""
+
+
+def _ascii_host(host):
+    """按 IDNA 编码主机名，使其与 yarl 的 raw_host（DNS 缓存键）一致。
+
+    ASCII 主机名原样返回（与 yarl 一致，不额外套用 IDNA 的字符限制）；只有非 ASCII 才编码。
+    """
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+
+
+def _resolved_host(result):
+    return result.get("host") if isinstance(result, dict) else getattr(result, "host", None)
+
+
+class _PublicTargetResolver(aiohttp.abc.AbstractResolver):
+    """包装真实 resolver：任何一次实际解析都必须全部解析成公网地址。
+
+    预检与建连之间仍存在 DNS 重新解析（缓存过期/未命中）的窗口，连接器实际走的这个 resolver
+    才是无法被上游重定向绕开的关口：非公网、公私混合、空结果一律拒绝。
+    """
+
+    def __init__(self, resolver):
+        self._resolver = resolver
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        results = await self._resolver.resolve(host, port, family)
+        if not results:
+            raise TargetResolutionRejected(f"无法解析目标主机 {host}，已拒绝（fail-closed）")
+        for result in results:
+            address = _resolved_host(result)
+            resolved = _literal_ip(address) if address else None
+            if resolved is None or not _is_public_address(resolved):
+                raise TargetResolutionRejected(f"拒绝解析到非公网地址的目标主机 {host} -> {address}")
+        return results
+
+    async def close(self):
+        await self._resolver.close()
+
+
+async def _resolved_addresses(session, hostname, port):
+    """用连接器实际使用的 resolver 解析目标地址（含连接器 DNS 缓存，缩小 rebinding 窗口）。
+
+    返回地址列表；无法验证（没有连接器/resolver、解析失败）返回 None 或空列表，由调用方 fail-closed。
+    """
+    connector = getattr(session, "connector", None)
+    resolve_host = getattr(connector, "_resolve_host", None)
+    if resolve_host is None:
+        return None
+    try:
+        results = await resolve_host(hostname, port)
+    except TargetResolutionRejected:
+        raise
+    except Exception:
+        return []
+    addresses = []
+    for item in results:
+        address = _resolved_host(item)
+        if address:
+            addresses.append(str(address))
+    return addresses
+
+
+async def check_request_target(session, url):
+    """逐跳请求前校验目标地址，返回拒绝原因；None 表示放行。
+
+    拒绝条件：userinfo、非预期端口、非公网 IP 字面量，以及主机名按 IDNA 编码后由连接器 resolver
+    解析出的非公网地址。解析不到或没有可用 resolver 一律 fail-closed。这里只是快速预检；来源下载
+    已禁用 trust_env 代理，实际连接由 ``_PublicTargetResolver`` 再次强制校验。
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as e:
+        return f"目标 URL 非法: {e}"
+    display = redact_url_userinfo(url)
+    if parts.username is not None or parts.password is not None:
+        return f"拒绝含 userinfo 的目标地址: {display}"
+    host = parts.hostname
+    if not host:
+        return f"目标 URL 缺少主机名: {display}"
+    if (port if port is not None else 443) not in ALLOWED_TARGET_PORTS:
+        return f"拒绝非预期端口 {port}: {display}（仅允许 {'/'.join(str(p) for p in sorted(ALLOWED_TARGET_PORTS))}）"
+
+    literal = _literal_ip(host)
+    if literal is not None:
+        if not _is_public_address(literal):
+            return f"拒绝非公网目标地址 {host}: {display}"
+        return None
+
+    ascii_host = _ascii_host(host)
+    if ascii_host is None:
+        return f"目标主机名无法按 IDNA 编码，已拒绝: {display}"
+    try:
+        addresses = await _resolved_addresses(session, ascii_host, port if port is not None else 443)
+    except TargetResolutionRejected as e:
+        return f"{e}: {display}"
+    if not addresses:
+        return f"无法验证目标主机解析结果，已拒绝（fail-closed）: {display}"
+    for address in addresses:
+        resolved = _literal_ip(address)
+        if resolved is None or not _is_public_address(resolved):
+            return f"拒绝解析到非公网地址的目标主机 {host} -> {address}: {display}"
+    return None
+
+
+def _timeout_reason(remaining):
+    return f"超过单源总时限 {SOURCE_TOTAL_TIMEOUT:.0f}s（剩余 {max(remaining, 0):.1f}s）"
 
 
 def parse_retry_after(value, default, max_seconds=MAX_RETRY_AFTER):
@@ -241,32 +377,36 @@ def _base_rel_path(task):
 
 
 def normalize_source_url(url):
-    parts = urlsplit(url)
+    parts = urlsplit(redact_url_userinfo(url))
     host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
     try:
         port = parts.port
     except ValueError:
         port = None
-    userinfo = ""
-    if parts.username is not None:
-        userinfo = parts.username
-        if parts.password is not None:
-            userinfo += ":" + parts.password
-        userinfo += "@"
     netloc = host if port in (None, 443) else f"{host}:{port}"
-    return urlunsplit(("https", f"{userinfo}{netloc}", parts.path, parts.query, ""))
+    return urlunsplit(("https", netloc, parts.path, parts.query, ""))
 
 
 def validate_source_url(url, line_no, line):
+    display = redact_url_userinfo(line)
     try:
         parts = urlsplit(url)
         port = parts.port
     except ValueError as e:
-        _fail_marker(line_no, line, f"来源 URL 端口或主机名非法: {e}")
+        _fail_marker(line_no, display, f"来源 URL 端口或主机名非法: {e}")
+    if parts.username is not None or parts.password is not None:
+        _fail_marker(line_no, display, "来源 URL 含 userinfo（凭据必须放在环境变量，禁止写入 sources.urls）")
     if not parts.hostname:
-        _fail_marker(line_no, line, "来源 URL 缺少主机名")
+        _fail_marker(line_no, display, "来源 URL 缺少主机名")
     if port == 0:
-        _fail_marker(line_no, line, "来源 URL 端口非法: 0")
+        _fail_marker(line_no, display, "来源 URL 端口非法: 0")
+    if (port if port is not None else 443) not in ALLOWED_TARGET_PORTS:
+        _fail_marker(line_no, display, f"来源 URL 端口 {port} 不在允许范围（仅允许 443）")
+    literal = _literal_ip(parts.hostname)
+    if literal is not None and not _is_public_address(literal):
+        _fail_marker(line_no, display, f"来源 URL 指向非公网地址: {parts.hostname}")
 
 
 def check_same_slug_collisions(tasks):
@@ -590,7 +730,7 @@ def parse_sources():
         if not source:
             _fail_marker(
                 line_no,
-                line,
+                redact_url_userinfo(line),
                 "来源行必须是独占一行的 https:// URL（可在空白后加 # 尾随注释）",
             )
         validate_source_url(source.group(1), line_no, line)
@@ -631,6 +771,16 @@ def _retry_delay(resp, attempt, backoff_budget):
 async def download_one(session, task):
     url = task["url"]
     backoff_budget = MAX_RETRY_AFTER * 2
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SOURCE_TOTAL_TIMEOUT
+
+    def remaining():
+        return deadline - loop.time()
+
+    def expire(context):
+        budget = remaining()
+        warning(f"  {context}，单源总时限 {SOURCE_TOTAL_TIMEOUT:.0f}s 已用尽: {redact_url_userinfo(task['url'])}")
+        return (task, None, _timeout_reason(budget))
 
     for attempt in range(RETRIES + 1):
         url = task["url"]
@@ -638,28 +788,50 @@ async def download_one(session, task):
         delay = None
         try:
             while True:
+                budget = remaining()
+                if budget <= 0:
+                    return expire("请求前")
                 if not _is_https_url(url):
-                    warning(f"  拒绝非 HTTPS 请求: {url}")
+                    warning(f"  拒绝非 HTTPS 请求: {redact_url_userinfo(url)}")
                     return (task, None, "重定向到非 HTTPS 地址")
+                try:
+                    rejection = await asyncio.wait_for(check_request_target(session, url), budget)
+                except TimeoutError:
+                    return expire("目标地址校验")
+                if rejection:
+                    warning(f"  {rejection}")
+                    return (task, None, rejection)
+                # 校验耗时也属于单源总预算，ClientTimeout 必须用校验后的剩余预算
+                budget = remaining()
+                if budget <= 0:
+                    return expire("目标地址校验后")
                 headers = dict(auth_headers(url) or {}) if _same_host(url, task["url"]) else {}
                 headers["User-Agent"] = USER_AGENT
                 async with session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+                    # 总超时严格取剩余预算（绝不越过单源 deadline），单次连接/读取仍受配置上限约束
+                    timeout=aiohttp.ClientTimeout(
+                        total=budget,
+                        sock_connect=min(TIMEOUT, budget),
+                        sock_read=min(TIMEOUT, budget),
+                    ),
                     headers=headers,
                     allow_redirects=False,
                 ) as resp:
                     if resp.status in REDIRECT_STATUS:
                         location = resp.headers.get("Location")
                         if not location:
-                            warning(f"  重定向缺少 Location: {url} -> HTTP {resp.status}")
+                            warning(f"  重定向缺少 Location: {redact_url_userinfo(url)} -> HTTP {resp.status}")
                             return (task, None, f"HTTP {resp.status}（重定向缺少 Location）")
                         next_url = urljoin(url, location)
                         if not _is_https_url(next_url):
-                            warning(f"  拒绝非 HTTPS 重定向: {url} -> {next_url}")
+                            warning(
+                                f"  拒绝非 HTTPS 重定向: {redact_url_userinfo(url)}"
+                                f" -> {redact_url_userinfo(next_url)}"
+                            )
                             return (task, None, "重定向到非 HTTPS 地址")
                         if redirects >= MAX_REDIRECTS:
-                            warning(f"  重定向次数超过 {MAX_REDIRECTS} 次: {task['url']}")
+                            warning(f"  重定向次数超过 {MAX_REDIRECTS} 次: {redact_url_userinfo(task['url'])}")
                             return (task, None, f"重定向次数超过 {MAX_REDIRECTS} 次")
                         url = next_url
                         redirects += 1
@@ -670,24 +842,27 @@ async def download_one(session, task):
                     if not _is_https_url(final_url) or any(
                         not _is_https_url(getattr(item, "url", "")) for item in history
                     ):
-                        warning(f"  拒绝非 HTTPS 重定向: {url} -> {final_url}")
+                        warning(
+                            f"  拒绝非 HTTPS 重定向: {redact_url_userinfo(url)}"
+                            f" -> {redact_url_userinfo(final_url)}"
+                        )
                         return (task, None, "重定向到非 HTTPS 地址")
                     if resp.status == 200:
                         content = await read_capped(resp.content)
                         if content is None:
-                            warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {url}")
+                            warning(f"  响应超过 {MAX_SOURCE_BYTES} 字节上限: {redact_url_userinfo(url)}")
                             return (task, None, f"超过 {MAX_SOURCE_BYTES} 字节上限")
                         if not content:
-                            warning(f"  空响应: {url}")
+                            warning(f"  空响应: {redact_url_userinfo(url)}")
                             return (task, None, "空响应")
                         # 全量 NUL 检查 + 前 64 KB 采样解码；后段无 NUL 的二进制会进入解析并被未识别门禁拦下
                         if b"\x00" in content or not processor.is_text_data(processor.safe_decode(content[:65536])):
-                            warning(f"  非文本响应: {url}")
+                            warning(f"  非文本响应: {redact_url_userinfo(url)}")
                             return (task, None, "非文本响应")
                         return (task, content, None)
 
                     if 400 <= resp.status < 500 and resp.status not in RETRYABLE_STATUS:
-                        warning(f"  下载失败 (不可重试): {url} -> HTTP {resp.status}")
+                        warning(f"  下载失败 (不可重试): {redact_url_userinfo(url)} -> HTTP {resp.status}")
                         return (task, None, f"HTTP {resp.status}")
 
                     if attempt == RETRIES:
@@ -697,42 +872,59 @@ async def download_one(session, task):
                     if exceeds_budget:
                         warning(
                             f"  Retry-After {delay}s 超过退避上限/预算"
-                            f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {url}"
+                            f"（{MAX_RETRY_AFTER}s / {backoff_budget}s），拒绝提前重试: {redact_url_userinfo(url)}"
                         )
                         return (task, None, f"HTTP {resp.status}（Retry-After {delay}s 超过退避预算）")
+                    # 单次重试的退避等待也必须落在总时限内
+                    if delay > remaining():
+                        return expire(f"等待 {delay}s 退避")
                     warning(
-                        f"  下载失败，{delay}s 后重试 [{attempt + 1}/{RETRIES + 1}]: {url} -> HTTP {resp.status}"
+                        f"  下载失败，{delay}s 后重试 [{attempt + 1}/{RETRIES + 1}]:"
+                        f" {redact_url_userinfo(url)} -> HTTP {resp.status}"
                     )
                     break
 
             if delay:
                 if delay > backoff_budget:
-                    warning(f"  退避预算耗尽（{backoff_budget}s），放弃重试: {url}")
+                    warning(f"  退避预算耗尽（{backoff_budget}s），放弃重试: {redact_url_userinfo(url)}")
                     return (task, None, f"HTTP {resp.status}（退避预算耗尽）")
                 backoff_budget -= delay
                 await asyncio.sleep(delay)
 
+        except TargetResolutionRejected as e:
+            warning(f"  目标地址校验失败: {redact_url_userinfo(url)} -> {e}")
+            return (task, None, f"拒绝目标地址: {e}")
         except (TimeoutError, aiohttp.ClientError) as e:
             if attempt == RETRIES:
-                warning(f"  下载失败 [{attempt + 1}/{RETRIES + 1}]: {url} -> {e}")
+                warning(f"  下载失败 [{attempt + 1}/{RETRIES + 1}]: {redact_url_userinfo(url)} -> {e}")
                 return (task, None, f"{type(e).__name__}: {e}")
-            await asyncio.sleep(2 * (attempt + 1))
+            wait = 2 * (attempt + 1)
+            if wait > remaining():
+                return expire(f"等待 {wait}s 重试")
+            await asyncio.sleep(wait)
         except Exception as e:
-            warning(f"  下载异常: {url} -> {type(e).__name__}: {e}")
+            warning(f"  下载异常: {redact_url_userinfo(url)} -> {type(e).__name__}: {e}")
             return (task, None, f"{type(e).__name__}: {e}")
 
     return (task, None, "未知错误")
 
 
 async def download_all(tasks):
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY, limit_per_host=PER_HOST)
-    async with aiohttp.ClientSession(
-        connector=connector,
-        trust_env=True,
-        max_field_size=16 * 1024,
-    ) as session:
-        coros = [download_one(session, t) for t in tasks]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+    # 来源下载不信任环境代理（trust_env=False）：代理侧解析会让目标地址校验失去意义。
+    # 同时把连接器 resolver 包成公网白名单，任何一次实际解析（含预检后 DNS 重新解析）都会被校验。
+    resolver = _PublicTargetResolver(aiohttp.DefaultResolver())
+    connector = aiohttp.TCPConnector(limit=CONCURRENCY, limit_per_host=PER_HOST, resolver=resolver)
+    try:
+        async with aiohttp.ClientSession(
+            connector=connector,
+            trust_env=False,
+            max_field_size=16 * 1024,
+        ) as session:
+            coros = [download_one(session, t) for t in tasks]
+            results = await asyncio.gather(*coros, return_exceptions=True)
+    finally:
+        # resolver 是外部注入的，aiohttp 不会代为关闭
+        await resolver.close()
 
     normalized = []
     for task, result in zip(tasks, results, strict=True):

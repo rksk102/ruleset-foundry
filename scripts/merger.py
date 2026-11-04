@@ -16,6 +16,7 @@ from utils import (
     get_rule_type,
     is_repo_subdir,
     normalize_path,
+    redact_url_userinfo,
 )
 
 try:
@@ -133,7 +134,7 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow
                     continue
                 if line.startswith("#"):
                     if line.startswith("# Source:"):
-                        source_urls.append(line.split(":", 1)[1].strip())
+                        source_urls.append(redact_url_userinfo(line.split(":", 1)[1].strip()))
                     continue
                 if line.startswith("//"):
                     continue

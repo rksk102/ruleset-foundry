@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -88,6 +88,25 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
     return sorted(v4_result) + sorted(v6_result), errors
+
+
+def redact_url_userinfo(url):
+    """去掉 URL 中的 userinfo：凭据不得进入日志、错误信息或产物表头。"""
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return "<无法解析的 URL>"
+    if parts.username is None and parts.password is None:
+        return str(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        return f"{parts.scheme}://{host}/<端口非法>"
+    netloc = host if port is None else f"{host}:{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def atomic_write(filepath, content):
