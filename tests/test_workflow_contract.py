@@ -239,3 +239,58 @@ def test_setup_python_env_pins_exact_patch_version():
     )
     assert re.fullmatch(r"\d+\.\d+\.\d+", setup["with"]["python-version"])
     assert setup["with"]["python-version"] == "3.14.10"
+
+
+def test_kernel_bump_amd64_validation_rechecks_live_latest():
+    job = load_workflow("kernel-bump.yml")["jobs"]["validate_amd64"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["needs"] == "prepare"
+    assert job["if"] == "needs.prepare.outputs.changed == 'true'"
+
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "kernel_pin.py --apply" in runs
+    assert '--tag "$TAG"' in runs
+    assert '--kernel-sha256 "$KERNEL_SHA256"' in runs
+    assert '--kernel-sha256-arm64 "$KERNEL_SHA256_ARM64"' in runs
+    assert "convert_mrs.py --verify-current-kernel" in runs
+
+    steps = job["steps"]
+    names = [step.get("name", "") for step in steps]
+    assert names.index("记录当前钉扎版本") < names.index("在干净检出中重建配置")
+    assert names.index("在干净检出中重建配置") < names.index("独立复核实时 latest 与版本单调性")
+
+    current = steps[names.index("记录当前钉扎版本")]
+    assert "read_metadata" in current["run"]
+    assert 'print("tag=" + read_metadata()["pinned_version"])' in current["run"]
+
+    recheck = steps[names.index("独立复核实时 latest 与版本单调性")]
+    assert recheck["env"]["CANDIDATE_TAG"] == "${{ needs.prepare.outputs.tag }}"
+    assert recheck["env"]["CURRENT_TAG"] == "${{ steps.current.outputs.tag }}"
+    script = recheck["run"]
+    assert '"repo_api"' in script
+    assert "fetch_release(None)" in script
+    assert '"published_at"' in script
+    assert 'if latest.get("tag_name") != candidate:' in script
+    assert "if candidate_published < current_published:" in script
+    assert "::error::" in script
+    assert "sys.exit(1)" in script
+
+
+def test_kernel_bump_commit_requires_both_architecture_validations():
+    workflow = load_workflow("kernel-bump.yml")
+    commit = workflow["jobs"]["commit"]
+    assert commit["needs"] == ["prepare", "validate_arm64", "validate_amd64"]
+    assert "needs.validate_arm64.result == 'success'" in commit["if"]
+    assert "needs.validate_amd64.result == 'success'" in commit["if"]
+    assert commit["if"].endswith(DEFAULT_BRANCH_GATE)
+
+
+def test_kernel_bump_notify_tracks_amd64_result():
+    workflow = load_workflow("kernel-bump.yml")
+    notify = workflow["jobs"]["notify-on-failure"]
+    assert notify["needs"] == ["prepare", "validate_arm64", "validate_amd64", "commit"]
+    step = notify["steps"][0]
+    assert step["env"]["R_VALIDATE_AMD64"] == "${{ needs.validate_amd64.result }}"
+    failed_gate, rest = step["run"].split("FAILED=1", 1)
+    assert "$R_VALIDATE_AMD64" in failed_gate
+    assert '[ "$R_VALIDATE_AMD64" != "success" ]' in rest
