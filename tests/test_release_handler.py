@@ -1029,6 +1029,18 @@ class TestRunGhErrorHandling:
         finally:
             subprocess.run = original
 
+    def test_unicode_decode_error_does_not_escape(self, monkeypatch, caplog):
+        """gh 输出非 UTF-8 时 text=True 会抛 UnicodeDecodeError，必须降级为失败返回。"""
+
+        def boom(*a, **k):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", boom)
+
+        assert release_handler.run_gh(["release", "list"]) is None
+        assert "解码失败" in caplog.text
+        assert "release list" in caplog.text
+
     def test_bytes_download_enforces_asset_size_cap(self, monkeypatch):
         class Pipe:
             def __init__(self):
