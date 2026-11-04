@@ -268,10 +268,17 @@ class TestBaseRelPath:
 
 
 class TestNormalizeSourceUrl:
-    def test_userinfo_is_kept_for_deduplication(self):
-        assert main.normalize_source_url("https://user1@localhost/x") != main.normalize_source_url(
+    def test_userinfo_is_stripped(self):
+        assert main.normalize_source_url("https://user1:pw@localhost/x") == main.normalize_source_url(
             "https://user2@localhost/x"
         )
+        assert "@" not in main.normalize_source_url("https://user1:pw@localhost/x")
+
+    def test_query_kept_and_fragment_dropped(self):
+        assert main.normalize_source_url("https://example.com/x.txt?a=1#frag") == "https://example.com/x.txt?a=1"
+
+    def test_ipv6_host_is_bracketed(self):
+        assert main.normalize_source_url("https://[2001:db8::1]:443/x.txt") == "https://[2001:db8::1]/x.txt"
 
 
 class TestCollidingOutputPaths:
@@ -599,6 +606,58 @@ class TestParseSources:
         with pytest.raises(SystemExit) as exc:
             self.load(tmp_path, "这行没有协议前缀\nhttps://github.com/a/b/raw/m/x.txt\n")
         assert exc.value.code == 1
+
+
+class TestSourceTargetRejection:
+    """ISS-02/18：来源不得含 userinfo，且只能是 443 上的公网目标。"""
+
+    def load(self, tmp_path, content):
+        target = tmp_path / "sources.urls"
+        write(target, content)
+        original = main.SOURCES_FILE
+        main.SOURCES_FILE = str(target)
+        try:
+            return main.parse_sources()
+        finally:
+            main.SOURCES_FILE = original
+
+    def test_userinfo_source_is_rejected_without_echoing_password(self, tmp_path, capsys):
+        password = "s3cr3t-pass"
+        url = "https://acct:" + password + "@localhost/list.txt"
+
+        with pytest.raises(SystemExit) as exc:
+            self.load(tmp_path, url + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "sources.urls:1" in out
+        assert "userinfo" in out
+        assert password not in out
+        assert "localhost/list.txt" in out
+
+    @pytest.mark.parametrize(
+        ("line", "reason"),
+        [
+            ("https://example.com:8443/x.txt", "端口"),
+            ("https://example.com:80/x.txt", "端口"),
+            ("https://127.0.0.1/x.txt", "非公网"),
+            ("https://[::1]/x.txt", "非公网"),
+            ("https://169.254.169.254/latest/meta-data/", "非公网"),
+            ("https://10.1.2.3/x.txt", "非公网"),
+        ],
+    )
+    def test_source_target_must_be_public_https_443(self, tmp_path, capsys, line, reason):
+        with pytest.raises(SystemExit) as exc:
+            self.load(tmp_path, line + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "sources.urls:1" in out
+        assert reason in out
+
+    def test_explicit_443_source_is_accepted(self, tmp_path):
+        tasks = self.load(tmp_path, "https://example.com:443/x.txt\n")
+        assert [task["url"] for task in tasks] == ["https://example.com:443/x.txt"]
 
 
 class TestMixedDomainKind:
