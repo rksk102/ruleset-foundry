@@ -807,7 +807,7 @@ class TestProcessGroupUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count is None
-        assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
         lines = [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(25)] + ["good.com"]
@@ -817,7 +817,7 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
 
         assert count is None
-        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
 
     def test_small_unexpressible_count_only_warns(self):
@@ -826,7 +826,7 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = self.run_group(("\n".join(lines) + "\n").encode())
 
         assert count == 1
-        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_gate_failure_does_not_write_output(self):
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
@@ -845,7 +845,7 @@ class TestProcessGroupUnrecognizedGate:
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
         raw = ("\n".join(lines) + "\n").encode()
         _count, errors = self.run_group(raw)
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/ads.txt"]
 
     def test_unrecognized_gate_label_uses_contributing_member(self):
@@ -868,7 +868,7 @@ class TestProcessGroupUnrecognizedGate:
             main.atomic_write = original
         assert count is None
         assert errors["download"] == [(dead, "下载失败")]
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == [alive]
 
     def test_header_only_lists_contributing_sources(self):
@@ -911,7 +911,8 @@ class TestProcessGroupUnrecognizedGate:
             main.atomic_write = original
         assert count == 1
         assert written[main.ensure_within_rulesets(group["path"])] == ["# Source: " + alive, "good.com"]
-        assert errors["parse"] == []
+        # 非空 raw 但解析为空必须显式失败一次，不再静默通过
+        assert errors["parse"] == [(dead, "未解析出任何行（疑似空规则集或格式变更）")]
 
     def test_download_error_reason_is_preserved(self):
         group = self.make_group()
@@ -929,13 +930,13 @@ class TestProcessGroupUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count == 1
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_low_unrecognized_ratio_not_flagged(self):
         lines = ["bad line"] + [f"good{i}.com" for i in range(50)]
         raw = ("\n".join(lines) + "\n").encode()
         _count, errors = self.run_group(raw)
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
 
 class TestProcessGroupIpUnrecognizedGate:
@@ -961,7 +962,7 @@ class TestProcessGroupIpUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count is None
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/cn.txt"]
 
     def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
@@ -972,7 +973,7 @@ class TestProcessGroupIpUnrecognizedGate:
         count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
 
         assert count is None
-        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
 
     def test_default_routes_are_not_unexpected_drops(self):
@@ -981,14 +982,14 @@ class TestProcessGroupIpUnrecognizedGate:
         count, errors = self.run_group(("\n".join(lines) + "\n").encode())
 
         assert count == 1
-        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_low_invalid_ratio_not_flagged(self):
         lines = ["garbage row"] + [f"10.{i}.0.0/16" for i in range(0, 100, 2)]
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count == 50
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
 
 class _Boom(BaseException):
@@ -1022,3 +1023,42 @@ class TestDownloadAll:
         assert results[1][0] is tasks[1]
         assert results[1][1] is None
         assert results[1][2] == "_Boom: boom"
+
+
+class TestEmptySourceParseErrors:
+    """ISS-15：raw 非空但解析为空的成员各记一次 parse error；全空时不重复、空 raw 只汇总一次。"""
+
+    DEAD = "https://raw.githubusercontent.com/o/r/empty.txt"
+    ALIVE = "https://raw.githubusercontent.com/o/r/ads.txt"
+    REASON = "未解析出任何行（疑似空规则集或格式变更）"
+
+    def group(self):
+        return {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": self.DEAD}), (1, {"url": self.ALIVE})],
+            "sources": [self.DEAD, self.ALIVE],
+        }
+
+    def run_group(self, raw_by_index, monkeypatch):
+        monkeypatch.setattr(main, "atomic_write", lambda *args: None)
+        return main.process_group(self.group(), raw_by_index)
+
+    def test_one_empty_source_is_reported_while_other_is_kept(self, monkeypatch):
+        count, errors = self.run_group({0: b"# only comment\n", 1: b"good.com\n"}, monkeypatch)
+
+        assert count == 1
+        assert errors["parse"] == [(self.DEAD, self.REASON)]
+
+    def test_all_sources_empty_report_each_member_exactly_once(self, monkeypatch):
+        count, errors = self.run_group({0: b"# only comment\n", 1: b"! adblock comment\n"}, monkeypatch)
+
+        assert count is None
+        assert errors["parse"] == [(self.DEAD, self.REASON), (self.ALIVE, self.REASON)]
+
+    def test_empty_raw_payloads_fail_once_without_duplicates(self, monkeypatch):
+        count, errors = self.run_group({0: b"", 1: b""}, monkeypatch)
+
+        assert count is None
+        assert errors["parse"] == [(self.DEAD, self.REASON)]

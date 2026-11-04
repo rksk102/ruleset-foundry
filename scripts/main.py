@@ -530,13 +530,13 @@ def plan_groups(tasks):
 
 
 def _process_ip_group(all_lines):
-    result, ip_errors, stats = processor.process_ip_detailed(all_lines)
-    for bad, why in ip_errors[:10]:
+    result, cidr_errors, stats = processor.process_ip_detailed(all_lines)
+    for bad, why in cidr_errors.samples:
         warning(f"    无效 CIDR 已丢弃: {bad} -> {why}")
-    if len(ip_errors) > 10:
-        warning(f"    ... 及其他 {len(ip_errors) - 10} 条无效 CIDR")
+    if cidr_errors.count > len(cidr_errors.samples):
+        warning(f"    ... 及其他 {cidr_errors.count - len(cidr_errors.samples)} 条无效 CIDR")
 
-    stats["unrecognized"] += len(ip_errors)
+    stats["unrecognized"] += cidr_errors.count
     if stats["dropped_default_route"]:
         warning(f"    默认路由(/0) 已按设计丢弃: {stats['dropped_default_route']} 行")
     for type_name, count in sorted(stats["dropped_rule_type"].items()):
@@ -550,28 +550,32 @@ def _unexpected_drop_count(stats):
     )
 
 
-def _gate_unrecognized(unrecognized, total, contributing, errors, label="未识别行"):
-    """丢弃行占比门禁：domain 与 ipcidr 组共用，超阈值记 parse 错误（fail-closed）。"""
-    if not unrecognized:
+def _gate_drops(unrecognized, unexpected, total, contributing, errors):
+    """合计丢弃门禁：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。
+
+    默认路由等“按设计丢弃”的类别不进入分子，也不进入分母（由调用方扣除）。
+    """
+    dropped = unrecognized + unexpected
+    if not dropped:
         return True
     if total <= 0:
         sources_label = contributing[0] if contributing else "未知来源"
-        errors["parse"].append((sources_label, f"{label}存在但有效输入计数为 0，疑似上游格式变更"))
+        errors["parse"].append((sources_label, "存在丢弃行但有效输入计数为 0，疑似上游格式变更"))
         return False
-    ratio = unrecognized / total
-    warning(f"    {label}: {unrecognized}/{total} ({ratio:.1%})")
-    if ratio >= UNRECOGNIZED_WARN_RATIO and unrecognized >= UNRECOGNIZED_MIN_LINES:
+    ratio = dropped / total
+    warning(f"    丢弃行合计: {dropped}/{total} ({ratio:.1%})（未识别 {unrecognized} + 意外丢弃 {unexpected}）")
+    if ratio >= UNRECOGNIZED_WARN_RATIO and dropped >= UNRECOGNIZED_MIN_LINES:
         sources_label = contributing[0] + (f" 等 {len(contributing)} 个源" if len(contributing) > 1 else "")
         errors["parse"].append(
             (
                 sources_label,
-                f"{label}占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
-                f"（{unrecognized}/{total}），疑似上游格式变更",
+                f"丢弃行合计占比 {ratio:.1%} 超过阈值 {UNRECOGNIZED_WARN_RATIO:.0%}"
+                f"（未识别 {unrecognized} + 意外丢弃 {unexpected} = {dropped}/{total}），疑似上游格式变更",
             )
         )
         return False
     if ratio >= UNRECOGNIZED_WARN_RATIO:
-        warning(f"    占比超阈值但{label}只有 {unrecognized} 行（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
+        warning(f"    占比超阈值但丢弃行合计只有 {dropped} 行（< {UNRECOGNIZED_MIN_LINES}），仅告警不阻断发布")
     return True
 
 
@@ -586,26 +590,33 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
             continue
         try:
             parsed = processor.parse_lines(processor.safe_decode(raw))
-            # 表头只记录解析出非空行的源；规则最终是否保留由后续去重/门禁决定
-            if parsed:
-                all_lines.extend(parsed)
-                contributing.append(task["url"])
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
+            continue
+        # 表头只记录解析出非空行的源；规则最终是否保留由后续去重/门禁决定
+        if parsed:
+            all_lines.extend(parsed)
+            contributing.append(task["url"])
+        elif raw:
+            errors["parse"].append((task["url"], "未解析出任何行（疑似空规则集或格式变更）"))
 
     if not all_lines:
-        for _idx, task in group["members"]:
-            if raw_by_index.get(_idx) is not None:
-                errors["parse"].append((task["url"], "未解析出任何行（疑似空规则集或格式变更）"))
+        if not errors["parse"] and not errors["download"]:
+            # 所有成员都是空响应：raw 为空时报一次汇总错误，避免静默通过
+            if contributing:
+                label = contributing[0]
+            elif group["members"]:
+                label = group["members"][0][1]["url"]
+            else:
+                label = group["path"]
+            errors["parse"].append((label, "未解析出任何行（疑似空规则集或格式变更）"))
         return None, errors
 
     if group["type"] == "ipcidr":
         result, _special = _process_ip_group(all_lines)
         gate_total = len(all_lines) - _special.get("dropped_default_route", 0)
-        gate_ok = _gate_unrecognized(_special.get("unrecognized", 0), gate_total, contributing, errors)
-        gate_ok = (
-            _gate_unrecognized(_unexpected_drop_count(_special), gate_total, contributing, errors, label="意外丢弃行")
-            and gate_ok
+        gate_ok = _gate_drops(
+            _special.get("unrecognized", 0), _unexpected_drop_count(_special), gate_total, contributing, errors
         )
     else:
         effective_kind = group.get("domain_kind", "exact")
@@ -638,12 +649,8 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         for type_name, count in sorted((special.get("dropped_rule_type") or {}).items()):
             warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
 
-        gate_ok = _gate_unrecognized(special.get("unrecognized", 0), len(all_lines), contributing, errors)
-        gate_ok = (
-            _gate_unrecognized(
-                _unexpected_drop_count(special), len(all_lines), contributing, errors, label="意外丢弃行"
-            )
-            and gate_ok
+        gate_ok = _gate_drops(
+            special.get("unrecognized", 0), _unexpected_drop_count(special), len(all_lines), contributing, errors
         )
 
     if not gate_ok:

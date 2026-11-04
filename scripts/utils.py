@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urlsplit, urlunsplit
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -51,11 +52,21 @@ def beijing_timestamp():
 
 _IP_CANDIDATE_RE = re.compile(r"^\s*([0-9a-fA-F:.]+(?:/[0-9]+)?)\s*(?:[#!].*)?$")
 
+IP_CIDR_ERROR_SAMPLES = 10
+
+
+class CidrErrorSummary(NamedTuple):
+    """无效 CIDR 的完整计数与最多 IP_CIDR_ERROR_SAMPLES 条样本（内存不随错误数增长）。"""
+
+    count: int
+    samples: tuple[tuple[str, str], ...]
+
 
 def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
     ipv4_nets = []
     ipv6_nets = []
-    errors = []
+    error_count = 0
+    error_samples = []
 
     for entry in entries:
         text = entry.strip()
@@ -66,14 +77,18 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
         if extract:
             match = _IP_CANDIDATE_RE.search(text)
             if not match:
-                errors.append((text, "未找到 IP/CIDR"))
+                error_count += 1
+                if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
+                    error_samples.append((text, "未找到 IP/CIDR"))
                 continue
             candidate = match.group(1)
 
         try:
             net = ipaddress.ip_network(candidate, strict=strict)
         except ValueError as e:
-            errors.append((text, str(e)))
+            error_count += 1
+            if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
+                error_samples.append((text, str(e)))
             continue
 
         if net.prefixlen == 0:
@@ -87,7 +102,7 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
 
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
-    return sorted(v4_result) + sorted(v6_result), errors
+    return sorted(v4_result) + sorted(v6_result), CidrErrorSummary(error_count, tuple(error_samples))
 
 
 def redact_url_userinfo(url):
