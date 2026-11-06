@@ -748,6 +748,17 @@ class TestCombinedDropGate:
         count, errors = main.process_group(group, {0: raw})
         return count, errors, writes
 
+    def test_semantic_hosts_expansion_preserves_all_rules_and_passes_gate(self, monkeypatch):
+        hostnames = [f"h{i}.example" for i in range(21)]
+        lines = [f"good{i}.example" for i in range(190)]
+        lines.append("full:0.0.0.0 " + " ".join(hostnames))
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count == 211
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
     @staticmethod
     def domain_lines(unrecognized, unexpressible, valid):
         return (
