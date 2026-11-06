@@ -1,0 +1,13 @@
+{
+  "name": "ruleset-deps-merger",
+  "url": "https://github.com/rksk102/ruleset-foundry",
+  "description": "Merge eligible Dependabot pull requests after exact-SHA policy and check validation.",
+  "public": false,
+  "default_events": [],
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "checks": "read",
+    "metadata": "read"
+  }
+}
