@@ -1395,7 +1395,7 @@ class TestBumpConfigRecomputesSameTag:
     def run_bump(self, monkeypatch, work_dir, config_text, *, tag=None, assets=None):
         cfg = work_dir / "config.yaml"
         cfg.write_text(config_text, encoding="utf-8")
-        os.chmod(cfg, 0o640)
+        os.chmod(cfg, 0o400)
         gh_output = work_dir / "gh_output.txt"
         monkeypatch.chdir(work_dir)
         monkeypatch.setenv("GITHUB_OUTPUT", str(gh_output))
@@ -1448,7 +1448,7 @@ class TestBumpConfigRecomputesSameTag:
         assert cfg.read_text(encoding="utf-8") == self.config_text()
         assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
         assert kernel_runs and smoke == [True]
-        assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o400
         assert not list(work_dir.glob(".config.yaml.*")), "原子写入不得残留临时文件"
 
     def test_drifted_amd64_hash_is_rejected(self, monkeypatch, work_dir):
