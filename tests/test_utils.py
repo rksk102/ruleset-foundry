@@ -596,17 +596,17 @@ class TestFlattenIpCidr:
     def test_collapse_and_order(self):
         result, errors = utils.flatten_ip_cidr(["1.0.0.0/24", "1.0.1.0/24", "2001:db8::/32"])
         assert result == ["1.0.0.0/23", "2001:db8::/32"]
-        assert errors == []
+        assert errors.count == 0
 
     def test_invalid_collected_as_errors(self):
         result, errors = utils.flatten_ip_cidr(["bad-cidr", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8"]
-        assert len(errors) == 1
-        assert errors[0][0] == "bad-cidr"
+        assert errors.count == 1
+        assert errors.samples[0][0] == "bad-cidr"
 
     def test_blank_lines_skipped(self):
         result, errors = utils.flatten_ip_cidr(["", "  ", "10.0.0.0/8"])
-        assert errors == []
+        assert errors.count == 0
         assert result == ["10.0.0.0/8"]
 
 
@@ -752,12 +752,12 @@ class TestFlattenIpModes:
     def test_strict_mode_rejects_trailing_text(self):
         result, errors = utils.flatten_ip_cidr(["1.2.3.0/24 # comment"])
         assert result == []
-        assert len(errors) == 1
+        assert errors.count == 1
 
     def test_extract_mode_reads_trailing_text(self):
         result, errors = utils.flatten_ip_cidr(["1.2.3.0/24 # comment"], extract=True)
         assert result == ["1.2.3.0/24"]
-        assert errors == []
+        assert errors.count == 0
 
     def test_extract_mode_rejects_ip_fragments_inside_text(self):
         for line in (
@@ -767,7 +767,7 @@ class TestFlattenIpModes:
         ):
             result, errors = utils.flatten_ip_cidr([line], extract=True)
             assert result == [], line
-            assert len(errors) == 1, line
+            assert errors.count == 1, line
 
     def test_extract_mode_matches_processor_pipeline(self):
         import processor
@@ -785,3 +785,30 @@ class TestFlattenIpOrdering:
     def test_v4_block_before_v6_block(self):
         result, _errors = utils.flatten_ip_cidr(["2001:db8::/32", "10.0.0.0/8"])
         assert result == ["10.0.0.0/8", "2001:db8::/32"]
+
+
+class TestFlattenIpErrorSummary:
+    """ISS-07：错误计数完整，但样本有界，内存不随错误数线性增长。"""
+
+    def test_hundred_thousand_errors_keep_bounded_samples(self):
+        entries = [f"bad line {i}" for i in range(100_000)]
+
+        result, errors = utils.flatten_ip_cidr(entries, extract=True)
+
+        assert result == []
+        assert errors.count == 100_000
+        assert len(errors.samples) == utils.IP_CIDR_ERROR_SAMPLES == 10
+        assert errors.samples[0][0] == "bad line 0"
+        assert errors.samples[-1][0] == "bad line 9"
+
+    def test_count_covers_no_match_and_invalid_cidr(self):
+        _result, errors = utils.flatten_ip_cidr(["v1.2.3.4", "999.1.1.1/33", "1.0.0.0/24"], extract=True)
+
+        assert errors.count == 2
+        assert [sample[0] for sample in errors.samples] == ["v1.2.3.4", "999.1.1.1/33"]
+
+    def test_summary_is_an_immutable_tuple(self):
+        _result, errors = utils.flatten_ip_cidr(["nope"], extract=True)
+
+        assert isinstance(errors.samples, tuple)
+        assert errors == utils.CidrErrorSummary(1, (("nope", "未找到 IP/CIDR"),))

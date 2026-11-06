@@ -22,6 +22,8 @@
   amd64 或 arm64，校验 GitHub asset digest、解压后 SHA-256、ELF 架构和可运行性。
 - `kernel-bump.yml` 会自动把新版本及两个架构哈希提交到 `main`，没有 PR 评审。
   如果不接受该模型，请禁用该 workflow 的 commit job。
+- 同一 tag 下只允许自动补全空哈希；已有非空哈希与上游资产不一致时，自动升级会失败并告警，
+  不会直接改写信任锚，必须人工核查后处理。
 - 上游规则是不可信文本，不会被当作代码执行，但内容会原样进入发布产物。
 - 第三方 GitHub Actions 均按 commit SHA 固定。
 

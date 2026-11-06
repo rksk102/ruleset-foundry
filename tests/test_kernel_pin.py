@@ -30,12 +30,12 @@ def test_kernel_bump_passes_only_metadata_and_rebuilds_in_clean_jobs():
     assert prepare["outputs"]["kernel_sha256"] == "${{ steps.metadata.outputs.kernel_sha256 }}"
     assert prepare["outputs"]["kernel_sha256_arm64"] == "${{ steps.metadata.outputs.kernel_sha256_arm64 }}"
 
-    for job_name in ("prepare", "validate_arm64", "commit"):
+    for job_name in ("prepare", "validate_arm64", "validate_amd64", "commit"):
         steps = workflow["jobs"][job_name]["steps"]
         uses = [step.get("uses", "") for step in steps]
         assert not any("upload-artifact" in action or "download-artifact" in action for action in uses)
 
-    for job_name in ("validate_arm64", "commit"):
+    for job_name in ("validate_arm64", "validate_amd64", "commit"):
         runs = "\n".join(step.get("run", "") for step in workflow["jobs"][job_name]["steps"])
         assert "kernel_pin.py --apply" in runs
 

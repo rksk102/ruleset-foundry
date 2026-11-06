@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -787,6 +788,83 @@ class TestMainOrchestration:
         ]
         assert mutating == [], "内容无变化且当天 Release 完整时不应做任何发布变更"
 
+    def unchanged_listing(self, *extra):
+        """内容不变轮次的 Release 列表：当前标签 isLatest，且可附加过期记录。"""
+        now_id = hashlib.sha256(b"same").hexdigest()[:12]
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return release_listing(
+            {"tagName": f"rules-{now_id}", "createdAt": old, "isLatest": True},
+            *extra,
+        )
+
+    def test_unchanged_round_still_retries_cleanup(self, publish_workspace, monkeypatch):
+        """9b：内容不变且 latest 健康时也必须执行保留期清理，而不是提前返回。"""
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
+        stub = GhStub(responses={("release", "list"): listing})
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+
+        run_with_stub(stub, release_handler.main)
+
+        flat = " ".join(stub.commands())
+        assert "release delete rules-19990101-0000 --yes" in flat, "内容不变轮次仍必须清理过期 Release"
+        assert "git/refs/tags/rules-19990101-0000" in flat, "过期 Release 的 tag 也应一并清理"
+        actions = stub.release_actions()
+        assert actions.count("delete") == 1
+        assert "create" not in actions and "upload" not in actions, "内容不变时不得重新打包上传"
+        assert "edit" not in actions, "latest 已健康时不得重新标记 latest"
+        assert saved == [], "内容不变时不得保存哈希（保持原语义，避免无谓重发）"
+
+    def test_unchanged_round_cleanup_failure_is_not_fatal(self, publish_workspace, monkeypatch):
+        """9b：清理失败在内容不变轮次同样只告警，不得中断运行或触发补发。"""
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
+        attempts = []
+
+        def fail_delete(cmd):
+            if cmd[:2] == ["release", "delete"]:
+                attempts.append(list(cmd))
+                return True
+            return False
+
+        stub = GhStub(fail_when=fail_delete, responses={("release", "list"): listing})
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+
+        run_with_stub(stub, release_handler.main)
+
+        assert len(attempts) == 1, "清理必须被尝试"
+        actions = stub.release_actions()
+        assert "create" not in actions and "upload" not in actions and "edit" not in actions
+        assert "git/refs/tags/" not in " ".join(stub.commands()), "Release 删除失败时不得继续删 tag"
+        assert saved == []
+
+    def test_cleanup_failure_is_retried_by_next_unchanged_round(self, publish_workspace, monkeypatch):
+        """9b：上一轮清理失败后，内容不变的下一轮必须重试清理并成功。"""
+        old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
+        attempts = []
+
+        def fail_first_delete(cmd):
+            if cmd[:2] == ["release", "delete"]:
+                attempts.append(list(cmd))
+                return len(attempts) == 1
+            return False
+
+        stub = GhStub(fail_when=fail_first_delete, responses={("release", "list"): listing})
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+
+        run_with_stub(stub, release_handler.main)
+        run_with_stub(stub, release_handler.main)
+
+        assert len(attempts) == 2, "两轮都必须尝试清理"
+        assert "git/refs/tags/rules-19990101-0000" in " ".join(stub.commands()), "第二轮重试应完成清理"
+        actions = stub.release_actions()
+        assert "create" not in actions and "upload" not in actions, "重试清理不得触发重新发布"
+        assert saved == [], "内容不变的两轮都不得保存哈希"
+
     def test_republishes_when_release_missing(self, publish_workspace, monkeypatch):
         """哈希未变但最近一次 Release 不存在（如强制补发失败/被删）时应补发自愈。"""
         stub = GhStub(release_exists=False, responses={"release": "ok"})
@@ -941,6 +1019,35 @@ class TestMainOrchestration:
 
 class TestOrphanTagCleanup:
     REFS_ENDPOINT = "repos/{owner}/{repo}/git/matching-refs/tags/rules-"
+    # 固定 SHA，避免测试里散落字面量
+    COMMIT_SHA = "a" * 40
+    TAG_OBJECT_SHA = "b" * 40
+    TAG_TARGET_SHA = "c" * 40
+
+    def ref_endpoint(self, tag):
+        return f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}"
+
+    def commit_endpoint(self, sha):
+        return f"repos/{{owner}}/{{repo}}/commits/{sha}"
+
+    def tag_object_endpoint(self, sha):
+        return f"repos/{{owner}}/{{repo}}/git/tags/{sha}"
+
+    def object_response(self, obj_type, sha):
+        return f"{obj_type}\t{sha}"
+
+    def hash_tag_stub(self, ref_type, ref_sha, commit_date, extra=None):
+        responses = {
+            ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
+            ("api", self.ref_endpoint("rules-aaaaaaaaaaaa")): self.object_response(ref_type, ref_sha),
+        }
+        if commit_date is not None:
+            responses[("api", self.commit_endpoint(ref_sha))] = commit_date
+        responses.update(extra or {})
+        return GhStub(responses=responses)
+
+    def delete_calls(self, stub):
+        return [call for call in stub.calls if call[:3] == ["api", "-X", "DELETE"]]
 
     def test_deletes_only_old_legacy_automatic_tags(self, monkeypatch, caplog):
         refs = "\n".join(
@@ -948,8 +1055,6 @@ class TestOrphanTagCleanup:
             for tag in (
                 "rules-20200101-0000",
                 "rules-29990101-0000",
-                "rules-aaaaaaaaaaaa",
-                "rules-bbbbbbbbbbbb",
                 "rules-cccccccccccc",
                 "rules-dddddddddddd",
                 "rules-manual",
@@ -966,29 +1071,125 @@ class TestOrphanTagCleanup:
         )
 
         assert cleaned == 1
-        deletes = [call for call in stub.calls if call[:3] == ["api", "-X", "DELETE"]]
-        assert deletes == [
+        assert self.delete_calls(stub) == [
             ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-20200101-0000"]
         ]
         flat = " ".join(stub.commands())
         assert "commits/" not in flat, "旧格式 tag 不应再查询 commit 日期"
-        assert "rules-bbbbbbbbbbbb" not in flat
-        assert "2 个无法确认创建时间的新格式孤立 tag" in caplog.text
+        assert "git/ref/tags/" not in flat, "旧格式 tag 不应查询 ref 对象"
+        assert "20200230" in caplog.text, "非法旧格式时间必须保留并告警"
+        assert "rules-cccccccccccc" not in flat, "有 Release 的 tag 不参与对账"
+        assert "rules-dddddddddddd" not in flat, "本轮 tag 不参与对账"
+        assert "rules-manual" not in flat and "v1.0.0" not in flat
 
-    def test_hash_tag_with_old_commit_is_not_deleted(self, monkeypatch):
-        stub = GhStub(
-            responses={
-                ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
-            }
+    def test_deletes_orphan_hash_tag_whose_commit_is_old(self, monkeypatch):
+        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2020-01-01T00:00:00Z")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 1
+
+        assert self.delete_calls(stub) == [
+            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-aaaaaaaaaaaa"]
+        ]
+        flat = " ".join(stub.commands())
+        assert f"commits/{self.COMMIT_SHA}" in flat, "新格式 tag 必须按目标提交时间判断年龄"
+
+    def test_keeps_orphan_hash_tag_with_recent_commit(self, monkeypatch):
+        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2026-03-01T00:00:00Z")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == [], "未过保留期的 tag 不得删除"
+
+    def test_annotated_tag_is_dereferenced_to_its_commit(self, monkeypatch):
+        stub = self.hash_tag_stub(
+            "tag",
+            self.TAG_OBJECT_SHA,
+            None,
+            extra={
+                ("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response(
+                    "commit", self.TAG_TARGET_SHA
+                ),
+                ("api", self.commit_endpoint(self.TAG_TARGET_SHA)): "2020-01-01T00:00:00Z",
+            },
+        )
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 1
+
+        flat = " ".join(stub.commands())
+        assert f"git/tags/{self.TAG_OBJECT_SHA}" in flat, "annotated tag 必须先解引用 tag 对象"
+        assert f"commits/{self.TAG_TARGET_SHA}" in flat, "必须用解引用后的提交时间判断年龄"
+        assert self.delete_calls(stub) == [
+            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-aaaaaaaaaaaa"]
+        ]
+
+    def test_annotated_tag_pointing_at_non_commit_is_kept(self, monkeypatch, caplog):
+        stub = self.hash_tag_stub(
+            "tag",
+            self.TAG_OBJECT_SHA,
+            None,
+            extra={("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response("blob", "d" * 40)},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
         assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == [], "目标不是提交时必须 fail-safe 保留"
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+        assert "rules-aaaaaaaaaaaa" in caplog.text, "保留原因必须可追查"
 
+    def test_unresolvable_tag_object_is_kept_with_warning(self, monkeypatch, caplog):
+        stub = GhStub(
+            fail_when=lambda cmd: "git/ref/tags/" in " ".join(cmd),
+            responses={("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa"},
+        )
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == []
+        assert "commits/" not in " ".join(stub.commands()), "对象不明时不得猜测提交"
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    def test_unparsable_commit_object_is_kept(self, monkeypatch, caplog):
+        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, None)
+        stub.responses[("api", self.ref_endpoint("rules-aaaaaaaaaaaa"))] = "garbage"
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == []
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    def test_unparsable_commit_date_is_kept(self, monkeypatch, caplog):
+        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "not-a-date")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == []
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    def test_hash_tag_with_release_or_current_is_not_queried(self, monkeypatch):
+        refs = "\n".join(
+            ["refs/tags/rules-aaaaaaaaaaaa", "refs/tags/rules-bbbbbbbbbbbb", "refs/tags/rules-cccccccccccc"]
+        )
+        stub = GhStub(responses={("api", self.REFS_ENDPOINT): refs})
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        cleaned = release_handler.cleanup_orphan_rules_tags(
+            {"rules-aaaaaaaaaaaa"}, "rules-bbbbbbbbbbbb", cutoff
+        )
+
+        assert cleaned == 0
         flat = " ".join(stub.commands())
-        assert "commits/" not in flat
-        assert "git/refs/tags/rules-aaaaaaaaaaaa" not in flat
+        assert "rules-aaaaaaaaaaaa" not in flat, "有 Release 的新格式 tag 不得查询/删除"
+        assert "rules-bbbbbbbbbbbb" not in flat, "本轮 tag 不得查询/删除"
 
     def test_orphan_delete_is_retried_by_next_reconciliation(self, monkeypatch):
         delete_attempts = []
@@ -1028,6 +1229,18 @@ class TestRunGhErrorHandling:
                 raise AssertionError("OSError 应导致 SystemExit(1)")
         finally:
             subprocess.run = original
+
+    def test_unicode_decode_error_does_not_escape(self, monkeypatch, caplog):
+        """gh 输出非 UTF-8 时 text=True 会抛 UnicodeDecodeError，必须降级为失败返回。"""
+
+        def boom(*a, **k):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", boom)
+
+        assert release_handler.run_gh(["release", "list"]) is None
+        assert "解码失败" in caplog.text
+        assert "release list" in caplog.text
 
     def test_bytes_download_enforces_asset_size_cap(self, monkeypatch):
         class Pipe:
@@ -1189,12 +1402,71 @@ class TestVerifyOnly:
             release_handler.verify_only()
         assert exc.value.code == 1
 
+    def test_require_baseline_rejects_missing_rulesets_dir(self, verify_workspace):
+        """ISS-16：--require-baseline 时基线目录缺失必须硬失败，不得降级为告警。"""
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only(require_baseline=True)
+
+        assert exc.value.code == 1
+
+    def test_require_baseline_rejects_missing_manifest(self, verify_workspace):
+        os.unlink("rulesets/products.manifest")
+
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only(require_baseline=True)
+
+        assert exc.value.code == 1
+
+    def test_require_baseline_passes_with_valid_baseline(self, verify_workspace):
+        stub = GhStub()
+        run_with_stub(stub, lambda: release_handler.verify_only(require_baseline=True))
+        assert stub.calls == [], "预检不应调用 gh"
+
+    def test_default_mode_still_degrades_without_baseline_dir(self, verify_workspace):
+        """默认调用保持原语义：无基线目录、但有成对产物时只告警。"""
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        assert release_handler.verify_products() is None
+        assert release_handler.verify_products(require_baseline=False) is None
+
+    def test_explicit_require_baseline_raises_without_rulesets_dir(self, verify_workspace):
+        shutil.rmtree(verify_workspace / "rulesets")
+
+        with pytest.raises(manifest.ManifestError, match=release_handler.BASELINE_MISSING):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_main_cli_require_baseline_missing_dir_exits_nonzero(self, verify_workspace, monkeypatch):
+        shutil.rmtree(verify_workspace / "rulesets")
+        monkeypatch.setattr(
+            sys, "argv", ["release_handler.py", "--verify-only", "--require-baseline"]
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(GhStub(), release_handler.main)
+
+        assert exc.value.code == 1
+
     def test_main_dispatches_verify_only_without_publishing(self, verify_workspace, monkeypatch):
         calls = []
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--verify-only"])
-        monkeypatch.setattr(release_handler, "verify_only", lambda: calls.append(True))
+        monkeypatch.setattr(
+            release_handler, "verify_only", lambda **kw: calls.append(kw.get("require_baseline"))
+        )
         run_with_stub(GhStub(), release_handler.main)
-        assert calls == [True], "main() 应分发到 verify_only 并提前返回"
+        assert calls == [False], "main() 应分发到 verify_only 并提前返回，且默认不要求基线"
+
+    def test_main_passes_require_baseline_flag(self, verify_workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            sys, "argv", ["release_handler.py", "--verify-only", "--require-baseline"]
+        )
+        monkeypatch.setattr(
+            release_handler, "verify_only", lambda **kw: calls.append(kw.get("require_baseline"))
+        )
+        run_with_stub(GhStub(), release_handler.main)
+        assert calls == [True], "main() 必须把 --require-baseline 传入 verify_only"
 
     def test_main_dispatches_print_hash_without_publishing(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--print-hash"])

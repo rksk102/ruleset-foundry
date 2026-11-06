@@ -6,7 +6,8 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from typing import NamedTuple
+from urllib.parse import urlsplit, urlunsplit
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -51,11 +52,21 @@ def beijing_timestamp():
 
 _IP_CANDIDATE_RE = re.compile(r"^\s*([0-9a-fA-F:.]+(?:/[0-9]+)?)\s*(?:[#!].*)?$")
 
+IP_CIDR_ERROR_SAMPLES = 10
+
+
+class CidrErrorSummary(NamedTuple):
+    """无效 CIDR 的完整计数与最多 IP_CIDR_ERROR_SAMPLES 条样本（内存不随错误数增长）。"""
+
+    count: int
+    samples: tuple[tuple[str, str], ...]
+
 
 def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
     ipv4_nets = []
     ipv6_nets = []
-    errors = []
+    error_count = 0
+    error_samples = []
 
     for entry in entries:
         text = entry.strip()
@@ -66,14 +77,18 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
         if extract:
             match = _IP_CANDIDATE_RE.search(text)
             if not match:
-                errors.append((text, "未找到 IP/CIDR"))
+                error_count += 1
+                if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
+                    error_samples.append((text, "未找到 IP/CIDR"))
                 continue
             candidate = match.group(1)
 
         try:
             net = ipaddress.ip_network(candidate, strict=strict)
         except ValueError as e:
-            errors.append((text, str(e)))
+            error_count += 1
+            if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
+                error_samples.append((text, str(e)))
             continue
 
         if net.prefixlen == 0:
@@ -87,7 +102,53 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
 
     v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
     v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
-    return sorted(v4_result) + sorted(v6_result), errors
+    return sorted(v4_result) + sorted(v6_result), CidrErrorSummary(error_count, tuple(error_samples))
+
+
+USERINFO_HIDDEN_PLACEHOLDER = "<URL 已隐藏：userinfo 可能被 / ? # 截断>"
+
+
+def _userinfo_split_by_path_separator(url):
+    """True 当 authority 内没有 `@`、但路径/查询/片段里有 `@`，且 authority 含 `:`。
+
+    `https://acct:s3cr3t/pass@host/x` 这类畸形 URL 的密码会被 urlsplit 截断成 "s3cr3t"，
+    残余部分落进 path；若截断点恰好是数字（`https://acct:12/cd@host/x`），残余还会被当成
+    合法端口。host:port 与 user:password 在语法上不可区分，任何"解析后重新拼接"的显示方式
+    都可能回显密码或其前缀，只能整体遮蔽。
+    """
+    text = str(url)
+    scheme_end = text.find("://")
+    if scheme_end < 0:
+        return False
+    rest = text[scheme_end + 3 :]
+    authority_end = len(rest)
+    for separator in "/?#":
+        index = rest.find(separator)
+        if index >= 0:
+            authority_end = min(authority_end, index)
+    authority, remainder = rest[:authority_end], rest[authority_end:]
+    return ":" in authority and "@" not in authority and "@" in remainder
+
+
+def redact_url_userinfo(url):
+    """去掉 URL 中的 userinfo：凭据不得进入日志、错误信息或产物表头。"""
+    if _userinfo_split_by_path_separator(url):
+        return USERINFO_HIDDEN_PLACEHOLDER
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return "<无法解析的 URL>"
+    if parts.username is None and parts.password is None:
+        return str(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        return f"{parts.scheme}://{host}/<端口非法>"
+    netloc = host if port is None else f"{host}:{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def atomic_write(filepath, content):

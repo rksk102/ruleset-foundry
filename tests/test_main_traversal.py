@@ -73,7 +73,9 @@ class TestMarkerWhitelistRejected:
 
 class TestUrlDerivedComponents:
     def test_userinfo_host_cannot_become_drive(self, monkeypatch, work_dir):
-        task = single_task(monkeypatch, work_dir, "https://u:p@evil.com:8443/x.txt\n")
+        # 含 userinfo/非 443 的来源已在解析阶段被拒绝（见 test_main）；路径派生仍只按 hostname
+        clean_task = single_task(monkeypatch, work_dir, "https://evil.com/x.txt\n")
+        task = {**clean_task, "url": "https://u:p@evil.com:8443/x.txt"}
         owner, name, rel, abs_path = main.build_filepath(task)
         assert (owner, name) == ("evil.com", "x.txt")
         assert rel.as_posix() == "policy/domain/evil.com/x.txt"

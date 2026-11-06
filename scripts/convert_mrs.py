@@ -316,13 +316,16 @@ def _verify_kernel(kernel_bin=None):
         return None
 
 
-def _atomic_write_text(path, text):
+def _atomic_write_text(path, text, mode=None):
     path = Path(path)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        if mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(temp_path, mode)
         os.replace(temp_path, path)
         temp_path = None
     finally:
@@ -393,9 +396,15 @@ def get_latest_mihomo(skip_hash_check=False):
                 info(f"  使用缓存内核 ({PINNED_VERSION}): {cached}")
                 return
 
-        data = _fetch_latest_release_info()
-        tag_name = data["tag_name"]
-        info(f"  最新版本: {tag_name}")
+        # 固定 pin 时必须显式按配置 tag 取同一 release 的资产：若在 prepare 之后上游 latest 前进，
+        # 用 latest 的新资产去比配置里的旧 SHA 会永久错配（ISS-06）。
+        data = _fetch_latest_release_info(pinned=PINNED_VERSION)
+        tag_name = data.get("tag_name", "") if isinstance(data, dict) else ""
+        if PINNED_VERSION and tag_name != PINNED_VERSION:
+            raise ValueError(f"按 tag {PINNED_VERSION} 查询 release 却返回 tag {tag_name!r}，拒绝使用不一致的资产")
+        if not tag_name:
+            raise ValueError("release 响应缺少 tag_name")
+        info(f"  目标版本: {tag_name}")
 
         cached = _cached_kernel_usable(tag_name, expected_sha, arch, require_sha=not skip_hash_check)
         if cached:
@@ -535,6 +544,9 @@ def _smoke_convert(kernel_bin=None):
     except subprocess.CalledProcessError as e:
         error(f"  内核冒烟转换失败: {(e.stderr or '').strip()}")
         sys.exit(1)
+    except UnicodeError as e:
+        error(f"  内核冒烟转换输出解码失败（非 UTF-8）: {e}")
+        sys.exit(1)
     finally:
         for path in (src, dst):
             if path.exists():
@@ -543,6 +555,14 @@ def _smoke_convert(kernel_bin=None):
     if not produced:
         error("  内核冒烟转换未产出有效文件")
         sys.exit(1)
+
+
+def _config_pin_value(text, key):
+    match = re.search(rf'^[ \t]*{key}:[ \t]*(?:"([^"]*)"|(\S+))', text, flags=re.M)
+    if not match:
+        return None
+    raw = match.group(1) if match.group(1) is not None else match.group(2)
+    return raw.strip()
 
 
 def bump_config():
@@ -555,10 +575,7 @@ def bump_config():
 
     cfg_path = Path("config.yaml")
     text = cfg_path.read_text(encoding="utf-8")
-    current = re.search(r'pinned_version:\s*"([^"]*)"', text)
-    if current and current.group(1) == tag:
-        info(f"  已是最新正式版 {tag}，无需更新")
-        return
+    cfg_mode = stat.S_IMODE(cfg_path.stat().st_mode)
 
     KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     candidates = {}
@@ -587,6 +604,28 @@ def bump_config():
         candidates[arch] = candidate
         hashes[arch] = file_sha256(candidate)
 
+    # 同 tag 仍重算双架构哈希：完全匹配才 no-op，空值可补全，非空漂移必须人工确认。
+    pinned_hashes = {
+        "amd64": (_config_pin_value(text, "kernel_sha256") or "").lower(),
+        "arm64": (_config_pin_value(text, "kernel_sha256_arm64") or "").lower(),
+    }
+    if _config_pin_value(text, "pinned_version") == tag:
+        # 同 tag 下非空哈希与重算值不一致，说明 tag 内容被替换或配置被篡改；
+        # 直接改写会把错误哈希静默“修复”成可发布状态，因此在写盘前失败。
+        for arch, key in (("amd64", "kernel_sha256"), ("arm64", "kernel_sha256_arm64")):
+            pinned = pinned_hashes[arch]
+            if pinned and pinned != hashes[arch]:
+                message = (
+                    f"  config.yaml 中 {key} 与 {tag} 的 {arch} 资产重算哈希不一致"
+                    f"（config {pinned}，实测 {hashes[arch]}），拒绝写入"
+                )
+                error(message)
+                gh_error(message)
+                sys.exit(1)
+        if pinned_hashes["amd64"] == hashes["amd64"] and pinned_hashes["arm64"] == hashes["arm64"]:
+            info(f"  已是最新正式版 {tag} 且双架构哈希一致，无需更新")
+            return
+
     current_arch = current_kernel_arch()
     candidate = candidates.get(current_arch)
     if candidate is None:
@@ -601,7 +640,7 @@ def bump_config():
     text = _set_config_field(text, "pinned_version", tag)
     text = _set_config_field(text, "kernel_sha256", hashes["amd64"])
     text = _set_config_field(text, "kernel_sha256_arm64", hashes["arm64"])
-    cfg_path.write_text(text, encoding="utf-8")
+    _atomic_write_text(cfg_path, text, mode=cfg_mode)
     info(f"  已更新 config.yaml: {tag} (amd64 {hashes['amd64'][:12]}..., arm64 {hashes['arm64'][:12]}...)")
 
     output_file = os.environ.get("GITHUB_OUTPUT")
@@ -643,16 +682,18 @@ def main():
 
     start_time = time.time()
     ensure_products_anchored()
+
+    # 源目录缺失时必须在清理输出目录之前失败，旧 MRS 逐字节保留（ISS-10）。
+    if not os.path.exists(SRC_ROOT):
+        error(f"源目录 {SRC_ROOT} 不存在！")
+        sys.exit(1)
+
     get_latest_mihomo()
 
     group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
     for stale, why in clean_directory(DST_ROOT):
         warning(f"  清理失败（可能残留陈旧 .mrs）: {stale} -> {why}")
-
-    if not os.path.exists(SRC_ROOT):
-        error(f"源目录 {SRC_ROOT} 不存在！")
-        sys.exit(1)
 
     files_map = []
     for root, dirs, files in os.walk(SRC_ROOT):
@@ -718,6 +759,10 @@ def main():
             err_msg = e.stderr.strip() if e.stderr else "未知错误"
             error(f"  {prefix} {rel_path}")
             error(f"      L {err_msg}")
+            stats["failed"] += 1
+        except UnicodeError as e:
+            error(f"  {prefix} {rel_path}")
+            error(f"      L 转换输出解码失败（非 UTF-8）: {e}")
             stats["failed"] += 1
         except OSError as e:
             error(f"  {prefix} {rel_path}")

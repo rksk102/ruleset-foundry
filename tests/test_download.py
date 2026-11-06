@@ -1,4 +1,5 @@
 import asyncio
+import socket
 from datetime import UTC
 
 import main
@@ -29,18 +30,76 @@ class FakeResponse:
         return False
 
 
+PUBLIC_IPV4 = "93.184.216.34"
+
+
+class FakeConnector:
+    """模拟连接器 resolver：默认把所有主机名解析成一个公网地址，可按主机名覆盖。"""
+
+    def __init__(self, resolved=None):
+        self.resolved = resolved
+        self.queries = []
+
+    def addresses_for(self, host):
+        if isinstance(self.resolved, dict):
+            return list(self.resolved.get(host, [PUBLIC_IPV4]))
+        if self.resolved is None:
+            return [PUBLIC_IPV4]
+        return list(self.resolved)
+
+    async def _resolve_host(self, host, port):
+        self.queries.append((host, port))
+        return [{"host": address, "hostname": host, "port": port} for address in self.addresses_for(host)]
+
+
 class FakeSession:
-    def __init__(self, response):
+    def __init__(self, response, resolved=None):
         self._responses = list(response) if isinstance(response, (list, tuple)) else [response]
         self.calls = []
+        self.connector = FakeConnector(resolved)
 
     def get(self, url, timeout=None, headers=None, **kw):
-        self.calls.append({"url": url, "headers": headers, "allow_redirects": kw.get("allow_redirects")})
+        self.calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "allow_redirects": kw.get("allow_redirects"),
+                "timeout": timeout,
+            }
+        )
         index = min(len(self.calls) - 1, len(self._responses) - 1)
         return self._responses[index]
 
 
 TASK = {"url": "https://example.com/list.txt", "policy": "block", "type": "domain"}
+
+
+def resolve_result(address, hostname="example.com", port=443):
+    return {
+        "host": address,
+        "hostname": hostname,
+        "port": port,
+        "family": socket.AF_INET,
+        "proto": socket.IPPROTO_TCP,
+        "flags": 0,
+    }
+
+
+class _InnerResolver:
+    """按批次返回解析结果，用于模拟“预检公网、建连私网”的 rebinding。"""
+
+    def __init__(self, batches):
+        self._batches = [list(batch) for batch in batches]
+        self.calls = []
+        self.closed = False
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        self.calls.append((host, port))
+        index = min(len(self.calls) - 1, len(self._batches) - 1)
+        return [dict(item) for item in self._batches[index]]
+
+    async def close(self):
+        self.closed = True
 
 
 def download(chunks, status=200, headers=None):
@@ -138,6 +197,446 @@ class TestHttpsRedirects:
         assert content is None
         assert "重定向" in err
         assert len(session.calls) == main.MAX_REDIRECTS + 1
+
+
+class TestTargetAddressValidation:
+    """每一跳请求前按 IP 属性/端口/userinfo 校验，且主机名必须由连接器 resolver 解析后再判定。"""
+
+    def redirect_to(self, location, resolved=None):
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": location}),
+                FakeResponse(200, [b"example.com\n"], url=location),
+            ],
+            resolved=resolved,
+        )
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+        return session, content, err
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "https://127.0.0.1/list.txt",
+            "https://10.0.0.5/list.txt",
+            "https://172.16.3.4/list.txt",
+            "https://192.168.1.10/list.txt",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://0.0.0.0/list.txt",
+            "https://[::1]/list.txt",
+            "https://[fe80::1]/list.txt",
+            "https://[fc00::1]/list.txt",
+        ],
+    )
+    def test_private_loopback_link_local_redirect_never_requested(self, target):
+        session, content, err = self.redirect_to(target)
+
+        assert content is None
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+        assert "非公网" in err
+
+    @pytest.mark.parametrize("url", ["https://127.0.0.1/list.txt", "https://[::1]/list.txt"])
+    def test_source_ip_literal_rejected_before_request(self, url):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+        _task, content, err = asyncio.run(main.download_one(session, {**TASK, "url": url}))
+
+        assert content is None
+        assert "非公网" in err
+        assert session.calls == []
+
+    def test_unexpected_port_rejected(self):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+        task = {**TASK, "url": "https://example.com:8443/list.txt"}
+        _task, content, err = asyncio.run(main.download_one(session, task))
+
+        assert content is None
+        assert "端口" in err
+        assert session.calls == []
+
+    def test_redirect_to_unexpected_port_rejected(self):
+        session, content, err = self.redirect_to("https://cdn.example.net:8443/list.txt")
+
+        assert content is None
+        assert "端口" in err
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+    def test_hostname_resolving_to_private_address_rejected(self):
+        session, content, err = self.redirect_to(
+            "https://internal.example/list.txt", resolved={"internal.example": ["10.0.0.7"]}
+        )
+
+        assert content is None
+        assert "非公网" in err
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+    def test_mixed_public_and_private_resolution_rejected(self):
+        session, content, err = self.redirect_to(
+            "https://rebind.example/list.txt",
+            resolved={"rebind.example": [PUBLIC_IPV4, "127.0.0.1"]},
+        )
+
+        assert content is None
+        assert "非公网" in err
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+    def test_unresolvable_target_fails_closed(self):
+        session, content, err = self.redirect_to(
+            "https://internal.example/list.txt", resolved={"internal.example": []}
+        )
+
+        assert content is None
+        assert "fail-closed" in err
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+    def test_session_without_connector_fails_closed(self):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        session.connector = None
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "fail-closed" in err
+        assert session.calls == []
+
+    def test_ambient_proxy_does_not_skip_local_validation(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]), resolved=["10.0.0.7"])
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "非公网" in err
+        assert session.calls == []
+
+    def test_proxy_env_cannot_bypass_private_literal(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+        _task, content, err = asyncio.run(main.download_one(session, {**TASK, "url": "https://10.0.0.5/list.txt"}))
+
+        assert content is None
+        assert "非公网" in err
+        assert session.calls == []
+
+    def test_idna_hostname_is_resolved_as_ascii(self):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        task = {**TASK, "url": "https://bücher.example/list.txt"}
+
+        _task, content, err = asyncio.run(main.download_one(session, task))
+
+        assert err is None
+        assert content == b"example.com\n"
+        # 与 yarl 的 raw_host / 连接器 DNS 缓存键保持一致
+        assert session.connector.queries == [("xn--bcher-kva.example", 443)]
+
+    def test_ascii_hostname_is_passed_through_unchanged(self):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        task = {**TASK, "url": "https://raw_source.example/list.txt"}
+
+        _task, _content, err = asyncio.run(main.download_one(session, task))
+
+        assert err is None
+        assert session.connector.queries == [("raw_source.example", 443)]
+
+    def test_connect_time_resolver_rejection_is_reported_without_retry(self):
+        class RebindingSession:
+            connector = FakeConnector()
+
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, **kw):
+                self.calls.append(url)
+                raise main.TargetResolutionRejected("建连时解析到非公网地址")
+
+        session = RebindingSession()
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "拒绝目标地址" in err
+        assert "非公网" in err
+        assert len(session.calls) == 1
+
+    def test_public_cross_host_redirect_still_allowed(self):
+        target = "https://cdn.example.net/list.txt"
+        session, content, err = self.redirect_to(target)
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert [call["url"] for call in session.calls] == [TASK["url"], target]
+
+
+class TestConnectorResolverPolicy:
+    """连接器实际使用的 resolver 必须逐次校验：非公网/混合/空结果一律拒绝。"""
+
+    def resolver(self, batches):
+        inner = _InnerResolver(batches)
+        return main._PublicTargetResolver(inner), inner
+
+    def test_public_resolution_passes_through(self):
+        wrapper, inner = self.resolver([[resolve_result(PUBLIC_IPV4)]])
+
+        results = asyncio.run(wrapper.resolve("example.com", 443))
+
+        assert results == [resolve_result(PUBLIC_IPV4)]
+        assert inner.calls == [("example.com", 443)]
+
+    @pytest.mark.parametrize(
+        "addresses",
+        [[], ["10.0.0.7"], [PUBLIC_IPV4, "127.0.0.1"], ["169.254.169.254"], ["fe80::1"], ["::1"]],
+    )
+    def test_non_public_mixed_or_empty_resolution_rejected(self, addresses):
+        wrapper, _inner = self.resolver([[resolve_result(address) for address in addresses]])
+
+        with pytest.raises(main.TargetResolutionRejected):
+            asyncio.run(wrapper.resolve("example.com", 443))
+
+    def test_close_delegates_to_inner_resolver(self):
+        wrapper, inner = self.resolver([[resolve_result(PUBLIC_IPV4)]])
+
+        asyncio.run(wrapper.close())
+
+        assert inner.closed is True
+
+    def test_rebinding_between_precheck_and_connect_is_rejected(self):
+        wrapper, inner = self.resolver(
+            [
+                [resolve_result(PUBLIC_IPV4)],
+                [resolve_result("127.0.0.1")],
+            ]
+        )
+
+        async def run():
+            connector = main.aiohttp.TCPConnector(resolver=wrapper, use_dns_cache=False)
+            try:
+                first = await connector._resolve_host("example.com", 443)
+                with pytest.raises(main.TargetResolutionRejected):
+                    await connector._resolve_host("example.com", 443)
+                return first
+            finally:
+                await connector.close()
+
+        first = asyncio.run(run())
+
+        assert [item["host"] for item in first] == [PUBLIC_IPV4]
+        assert len(inner.calls) == 2
+
+
+class TestDownloadAllNetworkPolicy:
+    def test_env_proxy_disabled_and_validating_resolver_installed(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+        captured = {}
+
+        class Session:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(main.aiohttp, "ClientSession", Session)
+
+        asyncio.run(main.download_all([]))
+
+        assert captured["trust_env"] is False
+        assert isinstance(captured["connector"]._resolver, main._PublicTargetResolver)
+
+
+class TestUserinfoNeverRequestedOrEchoed:
+    USERINFO_URL = "https://acct:" + "s3cr3t-pass" + "@localhost/list.txt"
+
+    def test_source_userinfo_rejected_without_echoing_password(self, capsys):
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+        _task, content, err = asyncio.run(main.download_one(session, {**TASK, "url": self.USERINFO_URL}))
+
+        assert content is None
+        assert "userinfo" in err
+        assert "s3cr3t-pass" not in err
+        assert "s3cr3t-pass" not in capsys.readouterr().out
+        assert "localhost/list.txt" in err
+        assert session.calls == []
+
+    def test_redirect_userinfo_rejected_without_echoing_password(self, capsys):
+        target = self.USERINFO_URL
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": target}),
+                FakeResponse(200, [b"example.com\n"], url=target),
+            ]
+        )
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "userinfo" in err
+        assert "s3cr3t-pass" not in err
+        assert "s3cr3t-pass" not in capsys.readouterr().out
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+    @pytest.mark.parametrize("password", ["s3cr3t/pass", "12/cd", "443/cd"])
+    def test_malformed_redirect_userinfo_does_not_echo_password_prefix(self, capsys, password):
+        target = "https://acct:" + password + "@localhost/list.txt"
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": target}),
+                FakeResponse(200, [b"example.com\n"], url=target),
+            ]
+        )
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        out = capsys.readouterr().out
+        prefix = password.split("/", 1)[0]
+        assert password not in err
+        assert prefix not in err
+        assert password not in out
+        assert prefix not in out
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+
+class TestTransientDnsRetry:
+    def test_temporary_os_error_retries_and_succeeds(self, monkeypatch):
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+
+        class FlakyConnector(FakeConnector):
+            async def _resolve_host(self, host, port):
+                self.queries.append((host, port))
+                if len(self.queries) == 1:
+                    raise OSError("temporary DNS failure")
+                return [resolve_result(PUBLIC_IPV4, hostname=host, port=port)]
+
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        session.connector = FlakyConnector()
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert len(session.connector.queries) == 2
+        assert len(session.calls) == 1
+        assert slept == [2]
+
+
+class TestSourceTotalDeadline:
+    def test_deadline_is_ninety_seconds(self):
+        assert main.SOURCE_TOTAL_TIMEOUT == 90.0
+
+    def test_expired_budget_makes_no_request(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 0.0)
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "总时限" in err
+        assert session.calls == []
+
+    def test_target_validation_is_bounded_by_remaining_budget(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 0.05)
+
+        class BlockingConnector:
+            async def _resolve_host(self, host, port):
+                await asyncio.sleep(10)
+                return [resolve_result(PUBLIC_IPV4, hostname=host, port=port)]
+
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        session.connector = BlockingConnector()
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "总时限" in err
+        assert session.calls == []
+
+    def test_budget_is_recomputed_after_target_validation(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 5.0)
+
+        class SlowConnector:
+            async def _resolve_host(self, host, port):
+                await asyncio.sleep(0.3)
+                return [resolve_result(PUBLIC_IPV4, hostname=host, port=port)]
+
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        session.connector = SlowConnector()
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert err is None
+        assert content == b"example.com\n"
+        # 校验耗时已扣减：ClientTimeout 不能还是校验前的 5s
+        assert session.calls[0]["timeout"].total <= main.SOURCE_TOTAL_TIMEOUT - 0.2
+
+    def test_request_timeout_uses_remaining_budget(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 5.0)
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": "/next.txt"}),
+                FakeResponse(200, [b"example.com\n"], url="https://example.com/next.txt"),
+            ]
+        )
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert len(session.calls) == 2
+        for call in session.calls:
+            timeout = call["timeout"]
+            assert 0 < timeout.total <= main.SOURCE_TOTAL_TIMEOUT
+            # 单次连接/读取仍受 network.timeout_seconds 上限约束，总超时只由剩余预算决定
+            assert timeout.sock_connect == timeout.sock_read == min(main.TIMEOUT, timeout.total)
+
+    def test_retry_after_beyond_deadline_is_not_waited(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 5.0)
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+        session = FakeSession(FakeResponse(429, [b"x"], {"Retry-After": "30"}))
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        assert "总时限" in err
+        assert slept == []
+        assert len(session.calls) == 1
+
+    def test_transport_retry_wait_respects_deadline(self, monkeypatch):
+        monkeypatch.setattr(main, "SOURCE_TOTAL_TIMEOUT", 1.0)
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        class BoomSession:
+            connector = FakeConnector()
+
+            def get(self, *args, **kw):
+                raise main.aiohttp.ClientError("boom")
+
+        monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+
+        _task, content, err = asyncio.run(main.download_one(BoomSession(), TASK))
+
+        assert content is None
+        assert "总时限" in err
+        assert slept == []
 
 
 def test_request_includes_explicit_user_agent():
@@ -357,7 +856,7 @@ class TestProcessGroupUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count is None
-        assert any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
         lines = [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(25)] + ["good.com"]
@@ -367,7 +866,7 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
 
         assert count is None
-        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
 
     def test_small_unexpressible_count_only_warns(self):
@@ -376,7 +875,7 @@ class TestProcessGroupUnrecognizedGate:
         count, errors = self.run_group(("\n".join(lines) + "\n").encode())
 
         assert count == 1
-        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_gate_failure_does_not_write_output(self):
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
@@ -395,7 +894,7 @@ class TestProcessGroupUnrecognizedGate:
         lines = [f"bad line {i}" for i in range(25)] + ["good.com"]
         raw = ("\n".join(lines) + "\n").encode()
         _count, errors = self.run_group(raw)
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/ads.txt"]
 
     def test_unrecognized_gate_label_uses_contributing_member(self):
@@ -418,7 +917,7 @@ class TestProcessGroupUnrecognizedGate:
             main.atomic_write = original
         assert count is None
         assert errors["download"] == [(dead, "下载失败")]
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == [alive]
 
     def test_header_only_lists_contributing_sources(self):
@@ -461,7 +960,8 @@ class TestProcessGroupUnrecognizedGate:
             main.atomic_write = original
         assert count == 1
         assert written[main.ensure_within_rulesets(group["path"])] == ["# Source: " + alive, "good.com"]
-        assert errors["parse"] == []
+        # 非空 raw 但解析为空必须显式失败一次，不再静默通过
+        assert errors["parse"] == [(dead, "未解析出任何行（疑似空规则集或格式变更）")]
 
     def test_download_error_reason_is_preserved(self):
         group = self.make_group()
@@ -479,13 +979,13 @@ class TestProcessGroupUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count == 1
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_low_unrecognized_ratio_not_flagged(self):
         lines = ["bad line"] + [f"good{i}.com" for i in range(50)]
         raw = ("\n".join(lines) + "\n").encode()
         _count, errors = self.run_group(raw)
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
 
 class TestProcessGroupIpUnrecognizedGate:
@@ -511,7 +1011,7 @@ class TestProcessGroupIpUnrecognizedGate:
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count is None
-        flagged = [src for src, reason in errors["parse"] if "未识别行占比" in reason]
+        flagged = [src for src, reason in errors["parse"] if "丢弃行合计占比" in reason]
         assert flagged == ["https://raw.githubusercontent.com/o/r/cn.txt"]
 
     def test_unexpressible_rules_fail_gate_without_writing(self, monkeypatch):
@@ -522,7 +1022,7 @@ class TestProcessGroupIpUnrecognizedGate:
         count, errors = main.process_group(self.make_group(), {0: ("\n".join(lines) + "\n").encode()})
 
         assert count is None
-        assert any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
 
     def test_default_routes_are_not_unexpected_drops(self):
@@ -531,14 +1031,14 @@ class TestProcessGroupIpUnrecognizedGate:
         count, errors = self.run_group(("\n".join(lines) + "\n").encode())
 
         assert count == 1
-        assert not any("意外丢弃行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
     def test_low_invalid_ratio_not_flagged(self):
         lines = ["garbage row"] + [f"10.{i}.0.0/16" for i in range(0, 100, 2)]
         raw = ("\n".join(lines) + "\n").encode()
         count, errors = self.run_group(raw)
         assert count == 50
-        assert not any("未识别行占比" in reason for _src, reason in errors["parse"])
+        assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
 
 class _Boom(BaseException):
@@ -572,3 +1072,42 @@ class TestDownloadAll:
         assert results[1][0] is tasks[1]
         assert results[1][1] is None
         assert results[1][2] == "_Boom: boom"
+
+
+class TestEmptySourceParseErrors:
+    """ISS-15：raw 非空但解析为空的成员各记一次 parse error；全空时不重复、空 raw 只汇总一次。"""
+
+    DEAD = "https://raw.githubusercontent.com/o/r/empty.txt"
+    ALIVE = "https://raw.githubusercontent.com/o/r/ads.txt"
+    REASON = "未解析出任何行（疑似空规则集或格式变更）"
+
+    def group(self):
+        return {
+            "path": "rulesets/block/domain/Owner/ads.txt",
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": self.DEAD}), (1, {"url": self.ALIVE})],
+            "sources": [self.DEAD, self.ALIVE],
+        }
+
+    def run_group(self, raw_by_index, monkeypatch):
+        monkeypatch.setattr(main, "atomic_write", lambda *args: None)
+        return main.process_group(self.group(), raw_by_index)
+
+    def test_one_empty_source_is_reported_while_other_is_kept(self, monkeypatch):
+        count, errors = self.run_group({0: b"# only comment\n", 1: b"good.com\n"}, monkeypatch)
+
+        assert count == 1
+        assert errors["parse"] == [(self.DEAD, self.REASON)]
+
+    def test_all_sources_empty_report_each_member_exactly_once(self, monkeypatch):
+        count, errors = self.run_group({0: b"# only comment\n", 1: b"! adblock comment\n"}, monkeypatch)
+
+        assert count is None
+        assert errors["parse"] == [(self.DEAD, self.REASON), (self.ALIVE, self.REASON)]
+
+    def test_empty_raw_payloads_fail_once_without_duplicates(self, monkeypatch):
+        count, errors = self.run_group({0: b"", 1: b""}, monkeypatch)
+
+        assert count is None
+        assert errors["parse"] == [(self.DEAD, self.REASON)]

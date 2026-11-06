@@ -21,16 +21,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: 安装 Python 环境
+        uses: ./.github/actions/setup-python-env
       - name: 检查生成产物是否被跟踪
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts
         run: |
           set -euo pipefail
-          tracked=$(git ls-files 'merged-rules/*' 'merged-rules-mrs/*' 'rulesets/*' 'logs/*' '.cache/*')
+          # 产物目录必须从配置派生，避免 rulesets_dir/log_dir 自定义后门禁漏检
+          mapfile -t GENERATED_DIRS < <(python - <<'PY'
+          from config_loader import get
+
+          for path in (
+              get("paths", "rulesets_dir", default="rulesets"),
+              get("paths", "merged_output_dir", default="merged-rules"),
+              get("paths", "mrs_output_dir", default="merged-rules-mrs"),
+              get("paths", "log_dir", default="logs"),
+              get("mihomo", "kernel_cache_path", default=".cache/mihomo-kernel"),
+          ):
+              print(path)
+          PY
+          )
+          if [ "${#GENERATED_DIRS[@]}" -ne 5 ]; then
+            echo "::error::无法从配置派生生成产物路径"
+            exit 1
+          fi
+          tracked=$(git ls-files -- "${GENERATED_DIRS[@]/%//*}")
           if [ -n "$tracked" ]; then
-            echo "::error::生成产物不得进入 git（merged-rules/ merged-rules-mrs/ rulesets/ logs/ .cache/）。"
+            echo "::error::生成产物不得进入 git（${GENERATED_DIRS[*]}）。"
             echo "$tracked" | head -20
             exit 1
           fi
-          echo "OK: 产物未被跟踪"
+          echo "OK: 产物未被跟踪（${GENERATED_DIRS[*]}）"
 
   lint:
     runs-on: ubuntu-latest

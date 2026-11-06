@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -605,9 +606,12 @@ class TestBumpConfig:
             convert_mrs._fetch_latest_release_info = original_fetch
         return cfg.read_text(encoding="utf-8")
 
-    def test_noop_when_already_latest(self, work_dir):
+    def test_same_tag_must_still_verify_dual_arch_assets(self, work_dir):
+        # ISS-08：同 tag 不再盲目早退，缺资产必须 fail-closed 而不是静默 no-op
         text = 'mihomo:\n  pinned_version: "v9.9.9"\n'
-        assert self.run_with(work_dir, "v9.9.9", [], text) == text
+        with pytest.raises(SystemExit) as exc:
+            self.run_with(work_dir, "v9.9.9", [], text)
+        assert exc.value.code == 1
 
     def test_missing_asset_exits(self, work_dir):
         try:
@@ -892,6 +896,58 @@ class TestGetLatestMihomo:
         assert downloads == []
         assert fetch_calls == []
 
+    def test_pinned_release_is_fetched_by_tag_endpoint(self, monkeypatch, work_dir):
+        self.setup_kernel(monkeypatch, work_dir)
+        seen = []
+
+        def fake_open(req, timeout=None):
+            seen.append(req.full_url)
+            raise RuntimeError("stop-after-recording")
+
+        monkeypatch.setattr(convert_mrs, "_open_url", fake_open)
+        monkeypatch.setattr(convert_mrs.time, "sleep", lambda _s: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+        assert seen[0] == "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/v1.2.3"
+        assert all("/latest" not in url for url in seen)
+
+    def test_pinned_release_fetch_passes_tag_explicitly(self, monkeypatch, work_dir):
+        bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir)
+        calls = []
+
+        def fake_fetch(max_retries=3, pinned=None):
+            calls.append(pinned)
+            return self.release()
+
+        monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
+        self.downloaded(monkeypatch, bin_path)
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
+
+        convert_mrs.get_latest_mihomo()
+
+        assert calls == ["v1.2.3"]
+
+    def test_pinned_release_tag_mismatch_is_rejected(self, monkeypatch, work_dir):
+        bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir)
+        monkeypatch.setattr(
+            convert_mrs,
+            "_fetch_latest_release_info",
+            lambda *a, **k: {"tag_name": "v9.9.9", "assets": [asset("mihomo-linux-amd64-v9.9.9.gz")]},
+        )
+        downloads = []
+        monkeypatch.setattr(convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(True))
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.get_latest_mihomo()
+
+        assert exc.value.code == 1
+        assert downloads == [], "tag 不一致时不得下载并按旧 SHA 校验"
+        assert not bin_path.exists()
+
     def test_print_hash_mode_preserves_cached_kernel(self, monkeypatch, work_dir):
         bin_path, _version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", lambda *a, **k: self.release())
@@ -1131,6 +1187,53 @@ class TestConvertOutput:
         assert exc.value.code == 1
         assert stale.read_bytes() == b"stale-mrs"
 
+    def test_undecodable_kernel_output_fails_single_file(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, b"ignored")
+        summaries = []
+        monkeypatch.setattr(convert_mrs, "write_summary", lambda stats, _t: summaries.append(dict(stats)))
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"partial-mrs")
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+
+        assert exc.value.code == 1
+        assert summaries == [{"success": 0, "failed": 1, "skipped": 0, "total": 1}]
+        assert not (work_dir / "dst" / "rules.mrs").exists()
+        assert not list((work_dir / "dst").glob(".convert-*")), "失败后必须清理临时文件"
+
+
+class TestMissingSourceKeepsPreviousOutput:
+    def test_missing_source_aborts_before_cleanup(self, monkeypatch, work_dir):
+        dst = work_dir / "dst"
+        dst.mkdir()
+        stale = dst / "rules.mrs"
+        stale.write_bytes(b"old-mrs")
+        monkeypatch.setattr(convert_mrs, "SRC_ROOT", str(work_dir / "missing-src"))
+        monkeypatch.setattr(convert_mrs, "DST_ROOT", str(dst))
+        monkeypatch.setattr(convert_mrs, "ensure_kernel_platform", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_config_usable", lambda: None)
+        monkeypatch.setattr(convert_mrs, "ensure_products_anchored", lambda: None)
+        kernel_prep = []
+        monkeypatch.setattr(convert_mrs, "get_latest_mihomo", lambda *a, **k: kernel_prep.append(True))
+        cleaned = []
+        monkeypatch.setattr(convert_mrs, "clean_directory", lambda path: cleaned.append(path) or [])
+        monkeypatch.setattr(sys, "argv", ["convert_mrs.py"])
+        for name in ("info", "warning", "error", "success", "group_start", "group_end"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs.main()
+
+        assert exc.value.code == 1
+        assert cleaned == [], "缺失源目录时不得清理输出目录"
+        assert kernel_prep == []
+        assert stale.read_bytes() == b"old-mrs"
+
 
 class TestSmokeConvert:
     def prepare(self, monkeypatch, work_dir):
@@ -1183,6 +1286,22 @@ class TestSmokeConvert:
             convert_mrs._smoke_convert()
 
         assert exc.value.code == 1
+
+    def test_undecodable_output_exits_and_cleans_up(self, monkeypatch, work_dir):
+        self.prepare(monkeypatch, work_dir)
+
+        def fake_run(cmd, **_kwargs):
+            Path(cmd[-1]).write_bytes(b"partial")
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc:
+            convert_mrs._smoke_convert()
+
+        assert exc.value.code == 1
+        assert not (work_dir / "smoke-input.txt").exists()
+        assert not (work_dir / "smoke-output.mrs").exists()
 
 
 class TestBumpConfigSuccess:
@@ -1251,3 +1370,131 @@ class TestBumpConfigSuccess:
             (str(work_dir / "cache" / "mihomo-amd64"), "amd64"),
             (str(work_dir / "cache" / "mihomo-arm64"), "arm64"),
         ]
+
+
+class TestBumpConfigRecomputesSameTag:
+    TAG = "v9.9.9"
+    AMD64_SHA = "e" * 64
+    ARM64_SHA = "f" * 64
+
+    def config_text(self, tag=None, amd64=None, arm64=None):
+        return (
+            "mihomo:\n"
+            f'  pinned_version: "{self.TAG if tag is None else tag}"\n'
+            f'  kernel_sha256: "{self.AMD64_SHA if amd64 is None else amd64}"\n'
+            f'  kernel_sha256_arm64: "{self.ARM64_SHA if arm64 is None else arm64}"\n'
+        )
+
+    def release_assets(self, tag=None):
+        target = self.TAG if tag is None else tag
+        return [
+            asset(f"mihomo-linux-amd64-{target}.gz", "sha256:" + "a" * 64),
+            asset(f"mihomo-linux-arm64-{target}.gz", "sha256:" + "b" * 64),
+        ]
+
+    def run_bump(self, monkeypatch, work_dir, config_text, *, tag=None, assets=None):
+        cfg = work_dir / "config.yaml"
+        cfg.write_text(config_text, encoding="utf-8")
+        os.chmod(cfg, 0o400)
+        gh_output = work_dir / "gh_output.txt"
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setenv("GITHUB_OUTPUT", str(gh_output))
+        monkeypatch.setattr(convert_mrs, "KERNEL_CACHE_DIR", work_dir / "cache")
+        monkeypatch.setattr(convert_mrs, "KERNEL_BIN", str(work_dir / "cache" / "mihomo"))
+        monkeypatch.setattr(
+            convert_mrs,
+            "_fetch_latest_release_info",
+            lambda max_retries=3, pinned=None: {
+                "tag_name": self.TAG if tag is None else tag,
+                "assets": self.release_assets(tag) if assets is None else assets,
+            },
+        )
+        downloads = []
+        monkeypatch.setattr(
+            convert_mrs,
+            "_download_kernel",
+            lambda url, expected_digest=None, output_path=None: downloads.append((url, str(output_path))),
+        )
+        computed = {"amd64": self.AMD64_SHA, "arm64": self.ARM64_SHA}
+        monkeypatch.setattr(convert_mrs, "file_sha256", lambda path: computed[Path(path).name.rsplit("-", 1)[-1]])
+        monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "d" * 64)
+        kernel_runs = []
+        monkeypatch.setattr(
+            convert_mrs, "_verify_kernel", lambda *a, **k: kernel_runs.append(Path(a[0])) or "Mihomo Meta v9.9.9"
+        )
+        smoke = []
+        monkeypatch.setattr(convert_mrs, "_smoke_convert", lambda *a, **k: smoke.append(True))
+        monkeypatch.setattr(convert_mrs, "current_kernel_arch", lambda: "amd64")
+        for name in ("info", "warning", "error", "success", "group_start", "group_end", "gh_error"):
+            monkeypatch.setattr(convert_mrs, name, lambda *a, **k: None)
+        convert_mrs.bump_config()
+        return cfg, gh_output, downloads, kernel_runs, smoke
+
+    def test_exact_match_is_noop_after_recompute(self, monkeypatch, work_dir):
+        text = self.config_text()
+        cfg, gh_output, downloads, kernel_runs, smoke = self.run_bump(monkeypatch, work_dir, text)
+
+        assert cfg.read_text(encoding="utf-8") == text
+        assert not gh_output.exists(), "完全匹配时不得输出 changed"
+        assert len(downloads) == 2, "同 tag 也必须重算双架构哈希"
+        assert kernel_runs == []
+        assert smoke == []
+
+    def test_empty_amd64_hash_is_recomputed_and_reported(self, monkeypatch, work_dir):
+        cfg, gh_output, _downloads, kernel_runs, smoke = self.run_bump(
+            monkeypatch, work_dir, self.config_text(amd64="")
+        )
+
+        assert cfg.read_text(encoding="utf-8") == self.config_text()
+        assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
+        assert kernel_runs and smoke == [True]
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o400
+        assert not list(work_dir.glob(".config.yaml.*")), "原子写入不得残留临时文件"
+
+    def test_drifted_amd64_hash_is_rejected(self, monkeypatch, work_dir):
+        text = self.config_text(amd64="0" * 64)
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text)
+
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()
+
+    def test_drifted_arm64_hash_is_rejected(self, monkeypatch, work_dir):
+        text = self.config_text(arm64="1" * 64)
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text)
+
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()
+
+    def test_new_tag_rewrites_all_three_fields(self, monkeypatch, work_dir):
+        text = self.config_text(tag="v1.0.0", amd64="a" * 64, arm64="b" * 64)
+        cfg, gh_output, *_rest = self.run_bump(monkeypatch, work_dir, text)
+
+        assert cfg.read_text(encoding="utf-8") == self.config_text()
+        assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
+
+    def test_same_tag_missing_arm64_asset_fails_closed(self, monkeypatch, work_dir):
+        text = self.config_text()
+        assets = [asset(f"mihomo-linux-amd64-{self.TAG}.gz", "sha256:" + "a" * 64)]
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text, assets=assets)
+
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()
+
+    def test_same_tag_missing_digest_fails_closed(self, monkeypatch, work_dir):
+        text = self.config_text()
+        assets = [
+            asset(f"mihomo-linux-amd64-{self.TAG}.gz", "sha256:" + "a" * 64),
+            asset(f"mihomo-linux-arm64-{self.TAG}.gz", digest=""),
+        ]
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text, assets=assets)
+
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()

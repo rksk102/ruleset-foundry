@@ -50,9 +50,10 @@ _OPAQUE_TYPES = {
 }
 
 _MIHOMO_RULE_TYPES = _SUFFIX_TYPES | _EXACT_TYPES | _CIDR_TYPES | _UNEXPRESSIBLE_IP_TYPES | _OPAQUE_TYPES
+_ALL_RULE_TYPE_NAMES = _MIHOMO_RULE_TYPES | _UNSUPPORTED_TYPES
 
 _RULE_TYPE_RE = re.compile(
-    r"(" + "|".join(sorted(_MIHOMO_RULE_TYPES | _UNSUPPORTED_TYPES, key=len, reverse=True)) + r")"
+    r"(" + "|".join(sorted(_ALL_RULE_TYPE_NAMES, key=len, reverse=True)) + r")"
     r"\s*,\s*(.*)$",
     re.IGNORECASE,
 )
@@ -196,6 +197,85 @@ def _yaml_payload_lines(content):
 
 _YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
 
+_HOSTS_LOCAL_PREFIXES = ("127.0.0.1", "0.0.0.0", "::1")
+
+_SEMANTIC_PREFIXES = (
+    ("domain-suffix:", "suffix"),
+    ("domain:", "suffix"),
+    ("full:", "exact"),
+    ("host:", "exact"),
+)
+
+_HOSTS_COMMENT_RE = re.compile(r"\s#")
+
+
+class _HostsField(str):
+    """hosts 行展开出的单个候选。
+
+    字符串值保留原前缀以维持 parse_lines 契约；语义和原始字段单独保存，
+    防止字段里的 full:/domain: 等文本被二次解释为规则语法。
+    """
+
+    def __new__(cls, value, semantic, field):
+        entry = super().__new__(cls, value)
+        entry.semantic = semantic
+        entry.field = field
+        return entry
+
+
+def _split_semantic_prefix(text):
+    """拆出 full:/host:/domain:/domain-suffix: 前缀，返回 (语义, 剩余文本)。"""
+    lowered = text.lower()
+    for prefix, kind in _SEMANTIC_PREFIXES:
+        if lowered.startswith(prefix):
+            return kind, text[len(prefix) :]
+    return None, text
+
+
+def _split_hosts_line(line):
+    """把 hosts 行拆成 (语义前缀原文, 语义, hostname 列表)；不是 hosts 行时返回 None。
+
+    行内注释以空白（含 tab）后的 # 起始，注释内容不进入候选。只有“本地地址 + 至少一个
+    hostname”才是 hosts 行，裸本地地址行保持原样交给后续清洗。
+    """
+    text = line.strip()
+    comment = _HOSTS_COMMENT_RE.search(text)
+    if comment:
+        text = text[: comment.start()].rstrip()
+    prefix = ""
+    semantic = None
+    for candidate, kind in _SEMANTIC_PREFIXES:
+        if text[: len(candidate)].lower() == candidate:
+            prefix = text[: len(candidate)]
+            semantic = kind
+            text = text[len(candidate) :]
+            break
+    parts = text.split()
+    if len(parts) < 2 or parts[0] not in _HOSTS_LOCAL_PREFIXES:
+        return None
+    return prefix, semantic, parts[1:]
+
+
+def _expand_hosts_entries(lines):
+    """hosts 行（[语义前缀] 本地地址 + hostname...）展开为逐 hostname 的 _HostsField。
+
+    每个 hostname 保留原语义前缀，因此 exact/suffix 语义逐个生效，分母按 hostname 计；
+    每个字段恰好进入输出或计入一次丢弃，保持“输入 hostname 守恒”。非 hosts 行原样保留，
+    没有 hosts 行时不复制列表。
+    """
+    expanded = None
+    for index, line in enumerate(lines):
+        entry = _split_hosts_line(line)
+        if entry is None:
+            if expanded is not None:
+                expanded.append(line)
+            continue
+        prefix, semantic, hostnames = entry
+        if expanded is None:
+            expanded = list(lines[:index])
+        expanded.extend(_HostsField(prefix + name, semantic, name) for name in hostnames)
+    return lines if expanded is None else expanded
+
 
 def parse_lines(raw_content):
     content = explicit_base64_decode(raw_content)
@@ -212,7 +292,7 @@ def parse_lines(raw_content):
     if any(_YAML_HEAD_RE.match(l) for l in probe):
         yaml_lines = _yaml_payload_lines(content)
         if yaml_lines is not None:
-            return yaml_lines
+            return _expand_hosts_entries(yaml_lines)
 
     lines = []
     in_payload = False
@@ -251,7 +331,65 @@ def parse_lines(raw_content):
         else:
             lines.append(line.strip("'\" "))
 
-    return lines
+    return _expand_hosts_entries(lines)
+
+
+def _record_domain(s, semantic, domain_kind, stats, valid_domains):
+    """把已确定语义的候选记入统计与输出集合；不能作为域名识别的计入一次未识别。"""
+    s = s.strip().lower()
+    if not s:
+        stats["unrecognized"] += 1
+        return
+    if _is_ip_literal(s):
+        stats["unrecognized"] += 1
+        return
+    if "." not in s:
+        if s.upper() in _ALL_RULE_TYPE_NAMES:
+            stats["unrecognized"] += 1
+            return
+        valid = all(c.isalnum() or c in "-_" for c in s) and s[0] != "-" and s[-1] != "-"
+        if valid and semantic == "suffix":
+            stats["suffix"] += 1
+            valid_domains.add("+." + s)
+        elif valid and semantic == "subdomain":
+            stats["subdomain"] += 1
+            valid_domains.add("." + s)
+        elif valid and semantic is None and domain_kind == "suffix":
+            stats["suffix_promoted"] += 1
+            valid_domains.add("+." + s)
+        elif valid:
+            stats["bare_single_label"] += 1
+            valid_domains.add(s)
+        else:
+            stats["unrecognized"] += 1
+        return
+    if " " in s or "*" in s:
+        stats["unrecognized"] += 1
+        return
+    if s.startswith(".") or s.endswith(".") or ".." in s:
+        stats["unrecognized"] += 1
+        return
+
+    labels = s.split(".")
+    if not all(
+        label and label[0] != "-" and label[-1] != "-" and all(c.isalnum() or c in "-_" for c in label)
+        for label in labels
+    ):
+        stats["unrecognized"] += 1
+        return
+
+    if semantic == "suffix":
+        stats["suffix"] += 1
+        valid_domains.add("+." + s)
+    elif semantic == "subdomain":
+        stats["subdomain"] += 1
+        valid_domains.add("." + s)
+    elif semantic is None and domain_kind == "suffix":
+        stats["suffix_promoted"] += 1
+        valid_domains.add("+." + s)
+    else:
+        stats["relaxed_exact"] += 1
+        valid_domains.add(s)
 
 
 def _analyze_and_process_domain(lines, domain_kind="exact"):
@@ -259,17 +397,16 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
     stats = new_stats()
     stats["suffix_promoted"] = 0
 
-    prefix_rules = (
-        ("domain-suffix:", "suffix"),
-        ("domain:", "suffix"),
-        ("full:", "exact"),
-        ("host:", "exact"),
-    )
-
-    for item in lines:
+    for item in _expand_hosts_entries(lines):
         s = item.strip()
         if not s:
             continue
+
+        if isinstance(item, _HostsField):
+            # 只消费原行语义和原始字段，字段里的前缀文本不再是语法
+            _record_domain(item.field, item.semantic, domain_kind, stats, valid_domains)
+            continue
+
         lowered = s.lower()
 
         if lowered.startswith("@@"):
@@ -280,12 +417,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             stats["dropped_keyword"] += 1
             continue
 
-        semantic = None
-        for prefix, kind in prefix_rules:
-            if lowered.startswith(prefix):
-                semantic = kind
-                s = s[len(prefix) :]
-                break
+        semantic, s = _split_semantic_prefix(s)
 
         if semantic is None:
             if lowered.startswith("+."):
@@ -330,10 +462,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 semantic = "subdomain"
                 s = s[1:]
 
-        parts = s.split()
-        if len(parts) >= 2 and parts[0] in ("127.0.0.1", "0.0.0.0", "::1"):
-            s = parts[1]
-
         adblock_anchor = s.startswith("||")
         if adblock_anchor:
             s = s[2:]
@@ -367,66 +495,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             if port.isdigit() and "." in head:
                 s = head
 
-        s = s.strip().lower()
-        if not s:
-            stats["unrecognized"] += 1
-            continue
-        if _is_ip_literal(s):
-            stats["unrecognized"] += 1
-            continue
-        if "." not in s:
-            if s.upper() in (_MIHOMO_RULE_TYPES | _UNSUPPORTED_TYPES):
-                stats["unrecognized"] += 1
-                continue
-            valid = all(c.isalnum() or c in "-_" for c in s) and s[0] != "-" and s[-1] != "-"
-            if valid and semantic == "suffix":
-                stats["suffix"] += 1
-                valid_domains.add("+." + s)
-                continue
-            if valid and semantic == "subdomain":
-                stats["subdomain"] += 1
-                valid_domains.add("." + s)
-                continue
-            if valid and semantic is None and domain_kind == "suffix":
-                stats["suffix_promoted"] += 1
-                valid_domains.add("+." + s)
-                continue
-            if valid:
-                stats["bare_single_label"] += 1
-                valid_domains.add(s)
-                continue
-            stats["unrecognized"] += 1
-            continue
-        if " " in s:
-            stats["unrecognized"] += 1
-            continue
-        if "*" in s:
-            stats["unrecognized"] += 1
-            continue
-        if s.startswith(".") or s.endswith(".") or ".." in s:
-            stats["unrecognized"] += 1
-            continue
-
-        labels = s.split(".")
-        if not all(
-            label and label[0] != "-" and label[-1] != "-" and all(c.isalnum() or c in "-_" for c in label)
-            for label in labels
-        ):
-            stats["unrecognized"] += 1
-            continue
-
-        if semantic == "suffix":
-            stats["suffix"] += 1
-            valid_domains.add("+." + s)
-        elif semantic == "subdomain":
-            stats["subdomain"] += 1
-            valid_domains.add("." + s)
-        elif semantic is None and domain_kind == "suffix":
-            stats["suffix_promoted"] += 1
-            valid_domains.add("+." + s)
-        else:
-            stats["relaxed_exact"] += 1
-            valid_domains.add(s)
+        _record_domain(s, semantic, domain_kind, stats, valid_domains)
 
     return sorted(valid_domains), stats
 
@@ -439,7 +508,11 @@ def process_ip_detailed(lines):
     candidates = []
     stats = new_stats()
     dropped_default_routes = []
-    for line in lines:
+    for line in _expand_hosts_entries(lines):
+        if isinstance(line, _HostsField):
+            # hosts 字段不是规则语法：逐字段交给 CIDR 解析报错，而非重新分类
+            candidates.append(line)
+            continue
         kind, payload, type_name = classify_rule_line(line)
         if kind is None:
             candidates.append(line)
@@ -452,9 +525,11 @@ def process_ip_detailed(lines):
             continue
         stats["dropped_rule_type"][type_name] = stats["dropped_rule_type"].get(type_name, 0) + 1
 
-    result, errors = utils.flatten_ip_cidr(candidates, extract=True, dropped_default_routes=dropped_default_routes)
+    result, cidr_errors = utils.flatten_ip_cidr(
+        candidates, extract=True, dropped_default_routes=dropped_default_routes
+    )
     stats["dropped_default_route"] = len(dropped_default_routes)
-    return result, errors, stats
+    return result, cidr_errors, stats
 
 
 def main():
@@ -481,8 +556,10 @@ def main():
             print(f"# 丢弃 {type_name} 规则 {count} 行: {ipcidr_drop_reason(type_name)}", file=sys.stderr)
         if stats.get("unrecognized"):
             print(f"# 丢弃空载荷规则: {stats['unrecognized']} 行", file=sys.stderr)
-        for bad, why in errors:
+        for bad, why in errors.samples:
             print(f"# 丢弃无效 CIDR: {bad} -> {why}", file=sys.stderr)
+        if errors.count > len(errors.samples):
+            print(f"# 另有 {errors.count - len(errors.samples)} 条无效 CIDR 未逐条列出", file=sys.stderr)
     else:
         result, stats = process_domain_detailed(lines)
         if stats.get("unrecognized"):

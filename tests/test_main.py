@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import main
 import pytest
 import utils
@@ -268,10 +270,23 @@ class TestBaseRelPath:
 
 
 class TestNormalizeSourceUrl:
-    def test_userinfo_is_kept_for_deduplication(self):
-        assert main.normalize_source_url("https://user1@localhost/x") != main.normalize_source_url(
+    def test_userinfo_is_stripped(self):
+        assert main.normalize_source_url("https://user1:pw@localhost/x") == main.normalize_source_url(
             "https://user2@localhost/x"
         )
+        assert "@" not in main.normalize_source_url("https://user1:pw@localhost/x")
+
+    def test_query_kept_and_fragment_dropped(self):
+        assert main.normalize_source_url("https://example.com/x.txt?a=1#frag") == "https://example.com/x.txt?a=1"
+
+    def test_explicit_port_and_at_sign_in_path_are_unchanged(self):
+        assert (
+            main.normalize_source_url("https://example.com:443/path@other/x.txt?a=1#frag")
+            == "https://example.com/path@other/x.txt?a=1"
+        )
+
+    def test_ipv6_host_is_bracketed(self):
+        assert main.normalize_source_url("https://[2001:db8::1]:443/x.txt") == "https://[2001:db8::1]/x.txt"
 
 
 class TestCollidingOutputPaths:
@@ -601,6 +616,70 @@ class TestParseSources:
         assert exc.value.code == 1
 
 
+class TestSourceTargetRejection:
+    """ISS-02/18：来源不得含 userinfo，且只能是 443 上的公网目标。"""
+
+    def load(self, tmp_path, content):
+        target = tmp_path / "sources.urls"
+        write(target, content)
+        original = main.SOURCES_FILE
+        main.SOURCES_FILE = str(target)
+        try:
+            return main.parse_sources()
+        finally:
+            main.SOURCES_FILE = original
+
+    def test_userinfo_source_is_rejected_without_echoing_password(self, tmp_path, capsys):
+        password = "s3cr3t-pass"
+        url = "https://acct:" + password + "@localhost/list.txt"
+
+        with pytest.raises(SystemExit) as exc:
+            self.load(tmp_path, url + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "sources.urls:1" in out
+        assert "userinfo" in out
+        assert password not in out
+        assert "localhost/list.txt" in out
+
+    @pytest.mark.parametrize("password", ["ab/cd", "12/cd", "443/cd", "ab?cd", "ab#cd"])
+    def test_malformed_userinfo_special_chars_never_reach_logs(self, work_dir, capsys, password):
+        url = "https://acct:" + password + "@localhost/list.txt"
+
+        with pytest.raises(SystemExit) as exc:
+            self.load(work_dir, url + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert password not in out
+        assert password.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0] not in out
+
+    @pytest.mark.parametrize(
+        ("line", "reason"),
+        [
+            ("https://example.com:8443/x.txt", "端口"),
+            ("https://example.com:80/x.txt", "端口"),
+            ("https://127.0.0.1/x.txt", "非公网"),
+            ("https://[::1]/x.txt", "非公网"),
+            ("https://169.254.169.254/latest/meta-data/", "非公网"),
+            ("https://10.1.2.3/x.txt", "非公网"),
+        ],
+    )
+    def test_source_target_must_be_public_https_443(self, tmp_path, capsys, line, reason):
+        with pytest.raises(SystemExit) as exc:
+            self.load(tmp_path, line + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "sources.urls:1" in out
+        assert reason in out
+
+    def test_explicit_443_source_is_accepted(self, tmp_path):
+        tasks = self.load(tmp_path, "https://example.com:443/x.txt\n")
+        assert [task["url"] for task in tasks] == ["https://example.com:443/x.txt"]
+
+
 class TestMixedDomainKind:
     def test_mixed_group_is_parse_error_without_writing(self, monkeypatch):
         group = {
@@ -661,6 +740,101 @@ class TestProcessGroupGates:
         assert count == 1
         assert errors["parse"] == []
         assert writes == [expected]
+
+
+class TestCombinedDropGate:
+    """ISS-03：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
+
+    DOMAIN_GROUP: ClassVar[dict] = {
+        "path": "rulesets/block/domain/Owner/ads.txt",
+        "policy": "block",
+        "type": "domain",
+        "domain_kind": "exact",
+        "members": [(0, {"url": "https://example.com/ads.txt"})],
+    }
+    IP_GROUP: ClassVar[dict] = {
+        "path": "rulesets/direct/ipcidr/Owner/cn.txt",
+        "policy": "direct",
+        "type": "ipcidr",
+        "members": [(0, {"url": "https://example.com/cn.txt"})],
+    }
+
+    def run_group(self, group, lines, monkeypatch):
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+        raw = ("\n".join(lines) + "\n").encode()
+        count, errors = main.process_group(group, {0: raw})
+        return count, errors, writes
+
+    def test_semantic_hosts_expansion_preserves_all_rules_and_passes_gate(self, monkeypatch):
+        hostnames = [f"h{i}.example" for i in range(21)]
+        lines = [f"good{i}.example" for i in range(190)]
+        lines.append("full:0.0.0.0 " + " ".join(hostnames))
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count == 211
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    @staticmethod
+    def domain_lines(unrecognized, unexpressible, valid):
+        return (
+            [f"bad line {i}" for i in range(unrecognized)]
+            + [f"DOMAIN-KEYWORD,ads-{i}.example.com" for i in range(unexpressible)]
+            + [f"good{i}.example" for i in range(valid)]
+        )
+
+    @staticmethod
+    def ip_lines(unrecognized, unexpressible, valid):
+        return (
+            [f"garbage row {i}" for i in range(unrecognized)]
+            + [f"DOMAIN-SUFFIX,ads-{i}.example.com" for i in range(unexpressible)]
+            + [f"1.{i}.0.0/24" for i in range(valid)]
+        )
+
+    def test_domain_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
+        count, errors, writes = self.run_group(
+            self.DOMAIN_GROUP, self.domain_lines(19, 19, 62), monkeypatch
+        )
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_ipcidr_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
+        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(19, 19, 62), monkeypatch)
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
+
+    def test_domain_small_mixed_noise_passes(self, monkeypatch):
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(4, 4, 92), monkeypatch)
+
+        assert count == 92
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_ipcidr_small_mixed_noise_passes(self, monkeypatch):
+        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(4, 4, 92), monkeypatch)
+
+        assert count == 92
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_below_absolute_floor_only_warns(self, monkeypatch):
+        count, errors, _writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(10, 9, 81), monkeypatch)
+
+        assert count == 81
+        assert errors["parse"] == []
+
+    def test_at_absolute_floor_fails(self, monkeypatch):
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(10, 10, 80), monkeypatch)
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
+        assert writes == []
 
 
 class TestProcessIpGroup:
