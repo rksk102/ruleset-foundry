@@ -332,6 +332,7 @@ def test_dependency_merge_app_permissions_match_registration_manifest():
     assert set(token_permissions) == {"contents", "pull-requests", "checks"}
     assert registration["public"] is False
     assert registration["default_events"] == []
+    assert registration["redirect_url"] == "https://github.com/rksk102/ruleset-foundry"
 
 
 def test_dependency_merge_has_single_writer_and_main_only_execution():
