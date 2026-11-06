@@ -19,6 +19,7 @@ from config_loader import ConfigError, get
 from logger import debug, gh_error, group_end, group_start, info, section, success, warning
 from utils import (
     REPO_ROOT,
+    USERINFO_HIDDEN_PLACEHOLDER,
     WINDOWS_RESERVED_NAMES,
     anchor_cwd_to_repo_root,
     atomic_write,
@@ -196,22 +197,30 @@ async def check_request_target(session, url):
     """逐跳请求前校验目标地址，返回拒绝原因；None 表示放行。
 
     拒绝条件：userinfo、非预期端口、非公网 IP 字面量，以及主机名按 IDNA 编码后由连接器 resolver
-    解析出的非公网地址。解析不到或没有可用 resolver 一律 fail-closed。这里只是快速预检；来源下载
+    解析出的非公网地址。解析不到或没有可用 resolver 一律 fail-closed；只有临时解析故障
+    （OSError/ClientError）会向上抛出，交给 ``download_one`` 的退避重试。这里只是快速预检；来源下载
     已禁用 trust_env 代理，实际连接由 ``_PublicTargetResolver`` 再次强制校验。
     """
+    display = redact_url_userinfo(url)
     try:
         parts = urlsplit(url)
         port = parts.port
-    except ValueError as e:
-        return f"目标 URL 非法: {e}"
-    display = redact_url_userinfo(url)
+    except ValueError:
+        # 异常文本会回显畸形 netloc（可能含密码前缀），只回报已脱敏的显示形式
+        return f"目标 URL 端口或主机名非法: {display}"
+    if display == USERINFO_HIDDEN_PLACEHOLDER:
+        # host:port 与畸形 userinfo 无法可靠区分，拒绝后才不会进入请求或产物日志
+        return f"拒绝 userinfo 解析有歧义的目标地址: {display}"
     if parts.username is not None or parts.password is not None:
         return f"拒绝含 userinfo 的目标地址: {display}"
     host = parts.hostname
     if not host:
         return f"目标 URL 缺少主机名: {display}"
     if (port if port is not None else 443) not in ALLOWED_TARGET_PORTS:
-        return f"拒绝非预期端口 {port}: {display}（仅允许 {'/'.join(str(p) for p in sorted(ALLOWED_TARGET_PORTS))}）"
+        return (
+            f"拒绝非预期端口 {port}: {display}"
+            f"（仅允许 {'/'.join(str(p) for p in sorted(ALLOWED_TARGET_PORTS))}）"
+        )
 
     literal = _literal_ip(host)
     if literal is not None:
@@ -377,14 +386,20 @@ def _base_rel_path(task):
 
 
 def normalize_source_url(url):
-    parts = urlsplit(redact_url_userinfo(url))
+    """规范化来源 URL 作为去重/比对键：去掉 userinfo、默认端口与片段。
+
+    这里只做结构归一化，不经过日志脱敏：畸形 userinfo 的遮蔽结果是整体替换的占位符，
+    而正常 URL（含显式 443、路径中的 `@`）必须保持原样。凭据安全由调用方在解析阶段拒绝。
+    """
+    try:
+        parts = urlsplit(str(url))
+        port = parts.port
+    except ValueError:
+        # 主机/端口部分无法解析时不做猜测，退回已遮蔽的显示形式（保证不含凭据）
+        return redact_url_userinfo(url)
     host = (parts.hostname or "").lower()
     if ":" in host:
         host = f"[{host}]"
-    try:
-        port = parts.port
-    except ValueError:
-        port = None
     netloc = host if port in (None, 443) else f"{host}:{port}"
     return urlunsplit(("https", netloc, parts.path, parts.query, ""))
 
@@ -394,8 +409,11 @@ def validate_source_url(url, line_no, line):
     try:
         parts = urlsplit(url)
         port = parts.port
-    except ValueError as e:
-        _fail_marker(line_no, display, f"来源 URL 端口或主机名非法: {e}")
+    except ValueError:
+        # 异常文本会回显畸形 netloc（例如 "Port could not be cast ... '12'"），可能泄露密码前缀
+        _fail_marker(line_no, display, "来源 URL 端口或主机名非法")
+    if display == USERINFO_HIDDEN_PLACEHOLDER:
+        _fail_marker(line_no, display, "来源 URL 的 userinfo 解析有歧义")
     if parts.username is not None or parts.password is not None:
         _fail_marker(line_no, display, "来源 URL 含 userinfo（凭据必须放在环境变量，禁止写入 sources.urls）")
     if not parts.hostname:

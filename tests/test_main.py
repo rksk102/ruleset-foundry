@@ -279,6 +279,12 @@ class TestNormalizeSourceUrl:
     def test_query_kept_and_fragment_dropped(self):
         assert main.normalize_source_url("https://example.com/x.txt?a=1#frag") == "https://example.com/x.txt?a=1"
 
+    def test_explicit_port_and_at_sign_in_path_are_unchanged(self):
+        assert (
+            main.normalize_source_url("https://example.com:443/path@other/x.txt?a=1#frag")
+            == "https://example.com/path@other/x.txt?a=1"
+        )
+
     def test_ipv6_host_is_bracketed(self):
         assert main.normalize_source_url("https://[2001:db8::1]:443/x.txt") == "https://[2001:db8::1]/x.txt"
 
@@ -636,6 +642,18 @@ class TestSourceTargetRejection:
         assert "userinfo" in out
         assert password not in out
         assert "localhost/list.txt" in out
+
+    @pytest.mark.parametrize("password", ["ab/cd", "12/cd", "443/cd", "ab?cd", "ab#cd"])
+    def test_malformed_userinfo_special_chars_never_reach_logs(self, work_dir, capsys, password):
+        url = "https://acct:" + password + "@localhost/list.txt"
+
+        with pytest.raises(SystemExit) as exc:
+            self.load(work_dir, url + "\n")
+
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert password not in out
+        assert password.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0] not in out
 
     @pytest.mark.parametrize(
         ("line", "reason"),

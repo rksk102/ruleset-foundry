@@ -481,6 +481,27 @@ class TestUserinfoNeverRequestedOrEchoed:
         assert "s3cr3t-pass" not in capsys.readouterr().out
         assert [call["url"] for call in session.calls] == [TASK["url"]]
 
+    @pytest.mark.parametrize("password", ["s3cr3t/pass", "12/cd", "443/cd"])
+    def test_malformed_redirect_userinfo_does_not_echo_password_prefix(self, capsys, password):
+        target = "https://acct:" + password + "@localhost/list.txt"
+        session = FakeSession(
+            [
+                FakeResponse(302, [], {"Location": target}),
+                FakeResponse(200, [b"example.com\n"], url=target),
+            ]
+        )
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert content is None
+        out = capsys.readouterr().out
+        prefix = password.split("/", 1)[0]
+        assert password not in err
+        assert prefix not in err
+        assert password not in out
+        assert prefix not in out
+        assert [call["url"] for call in session.calls] == [TASK["url"]]
+
 
 class TestSourceTotalDeadline:
     def test_deadline_is_ninety_seconds(self):
