@@ -329,6 +329,8 @@ SKIPPED_AUTO_MERGE_BRANCHES = (
     "dependabot/uv/django",  # 未分组/无法识别的更新级别
     "dependabot/uv/python-dependencies-major",
     "dependabot/github_actions/github-actions-major",
+    "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-major",
+    "dependabot/github_actions/dot-github/actions/setup-python-env/actions/setup-python-7.0.0",
     "dependabot/uv/python-dependencies-1a2b3c4d5e-extra",
     "feature/manual-pr",
 )
@@ -346,6 +348,7 @@ def test_auto_merge_skips_branches_outside_non_major_group_whitelist(work_dir, b
     (
         "dependabot/uv/python-dependencies",
         "dependabot/github_actions/github-actions",
+        "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-7313d4f700",
         "dependabot/uv/python-dependencies-1a2b3c4d5e",
     ),
 )

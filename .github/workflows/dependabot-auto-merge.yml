@@ -39,7 +39,10 @@ jobs:
           # 名也一律转人工审核（不依赖分支名里的 major 字样做判断）。
           ALLOWED_GROUPS="python-dependencies github-actions"
 
-          if [[ ! "$HEAD_BRANCH" =~ ^dependabot/[^/]+/[^/]+$ ]]; then
+          # Dependabot 会把更新目录的每一级都展开进分支名（如
+          # dependabot/github_actions/dot-github/actions/setup-python-env/<group>-<sha>），
+          # 因此允许任意层级的非空目录段，最后一段仍由下方分组白名单校验。
+          if [[ ! "$HEAD_BRANCH" =~ ^dependabot/[^/]+(/[^/]+)+$ ]]; then
             echo "非 Dependabot 分组分支（$HEAD_BRANCH），转人工审核"
             exit 0
           fi
