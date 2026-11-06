@@ -503,6 +503,34 @@ class TestUserinfoNeverRequestedOrEchoed:
         assert [call["url"] for call in session.calls] == [TASK["url"]]
 
 
+class TestTransientDnsRetry:
+    def test_temporary_os_error_retries_and_succeeds(self, monkeypatch):
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+
+        class FlakyConnector(FakeConnector):
+            async def _resolve_host(self, host, port):
+                self.queries.append((host, port))
+                if len(self.queries) == 1:
+                    raise OSError("temporary DNS failure")
+                return [resolve_result(PUBLIC_IPV4, hostname=host, port=port)]
+
+        session = FakeSession(FakeResponse(200, [b"example.com\n"]))
+        session.connector = FlakyConnector()
+
+        _task, content, err = asyncio.run(main.download_one(session, TASK))
+
+        assert err is None
+        assert content == b"example.com\n"
+        assert len(session.connector.queries) == 2
+        assert len(session.calls) == 1
+        assert slept == [2]
+
+
 class TestSourceTotalDeadline:
     def test_deadline_is_ninety_seconds(self):
         assert main.SOURCE_TOTAL_TIMEOUT == 90.0

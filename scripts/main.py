@@ -174,6 +174,8 @@ async def _resolved_addresses(session, hostname, port):
     """用连接器实际使用的 resolver 解析目标地址（含连接器 DNS 缓存，缩小 rebinding 窗口）。
 
     返回地址列表；无法验证（没有连接器/resolver、解析失败）返回 None 或空列表，由调用方 fail-closed。
+    临时 DNS 故障是例外：转成 aiohttp.ClientError 交给 download_one 的既有退避重试吸收；
+    安全拒绝（TargetResolutionRejected）不重试。
     """
     connector = getattr(session, "connector", None)
     resolve_host = getattr(connector, "_resolve_host", None)
@@ -183,6 +185,10 @@ async def _resolved_addresses(session, hostname, port):
         results = await resolve_host(hostname, port)
     except TargetResolutionRejected:
         raise
+    except (aiohttp.ClientError, OSError) as e:
+        raise aiohttp.ClientConnectionError(
+            f"目标主机 {hostname} 解析失败（{type(e).__name__}），可重试"
+        ) from e
     except Exception:
         return []
     addresses = []
