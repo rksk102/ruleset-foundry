@@ -105,8 +105,35 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
     return sorted(v4_result) + sorted(v6_result), CidrErrorSummary(error_count, tuple(error_samples))
 
 
+USERINFO_HIDDEN_PLACEHOLDER = "<URL 已隐藏：userinfo 可能被 / ? # 截断>"
+
+
+def _userinfo_split_by_path_separator(url):
+    """True 当 authority 内没有 `@`、但路径/查询/片段里有 `@`，且 authority 含 `:`。
+
+    `https://acct:s3cr3t/pass@host/x` 这类畸形 URL 的密码会被 urlsplit 截断成 "s3cr3t"，
+    残余部分落进 path；若截断点恰好是数字（`https://acct:12/cd@host/x`），残余还会被当成
+    合法端口。host:port 与 user:password 在语法上不可区分，任何"解析后重新拼接"的显示方式
+    都可能回显密码或其前缀，只能整体遮蔽。
+    """
+    text = str(url)
+    scheme_end = text.find("://")
+    if scheme_end < 0:
+        return False
+    rest = text[scheme_end + 3 :]
+    authority_end = len(rest)
+    for separator in "/?#":
+        index = rest.find(separator)
+        if index >= 0:
+            authority_end = min(authority_end, index)
+    authority, remainder = rest[:authority_end], rest[authority_end:]
+    return ":" in authority and "@" not in authority and "@" in remainder
+
+
 def redact_url_userinfo(url):
     """去掉 URL 中的 userinfo：凭据不得进入日志、错误信息或产物表头。"""
+    if _userinfo_split_by_path_separator(url):
+        return USERINFO_HIDDEN_PLACEHOLDER
     try:
         parts = urlsplit(str(url))
     except ValueError:
