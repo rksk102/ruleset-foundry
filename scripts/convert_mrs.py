@@ -604,15 +604,27 @@ def bump_config():
         candidates[arch] = candidate
         hashes[arch] = file_sha256(candidate)
 
-    # 同 tag 也必须用本次 release 的双架构资产重算哈希：三字段与远端完全一致才 no-op，
-    # 否则空/漂移哈希会持续阻断常规构建，arm64 错值也不在常规 CI 架构覆盖内（ISS-08）。
-    if (
-        _config_pin_value(text, "pinned_version") == tag
-        and (_config_pin_value(text, "kernel_sha256") or "").lower() == hashes["amd64"]
-        and (_config_pin_value(text, "kernel_sha256_arm64") or "").lower() == hashes["arm64"]
-    ):
-        info(f"  已是最新正式版 {tag} 且双架构哈希一致，无需更新")
-        return
+    # 同 tag 仍重算双架构哈希：完全匹配才 no-op，空值可补全，非空漂移必须人工确认。
+    pinned_hashes = {
+        "amd64": (_config_pin_value(text, "kernel_sha256") or "").lower(),
+        "arm64": (_config_pin_value(text, "kernel_sha256_arm64") or "").lower(),
+    }
+    if _config_pin_value(text, "pinned_version") == tag:
+        # 同 tag 下非空哈希与重算值不一致，说明 tag 内容被替换或配置被篡改；
+        # 直接改写会把错误哈希静默“修复”成可发布状态，因此在写盘前失败。
+        for arch, key in (("amd64", "kernel_sha256"), ("arm64", "kernel_sha256_arm64")):
+            pinned = pinned_hashes[arch]
+            if pinned and pinned != hashes[arch]:
+                message = (
+                    f"  config.yaml 中 {key} 与 {tag} 的 {arch} 资产重算哈希不一致"
+                    f"（config {pinned}，实测 {hashes[arch]}），拒绝写入"
+                )
+                error(message)
+                gh_error(message)
+                sys.exit(1)
+        if pinned_hashes["amd64"] == hashes["amd64"] and pinned_hashes["arm64"] == hashes["arm64"]:
+            info(f"  已是最新正式版 {tag} 且双架构哈希一致，无需更新")
+            return
 
     current_arch = current_kernel_arch()
     candidate = candidates.get(current_arch)

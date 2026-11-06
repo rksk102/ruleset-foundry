@@ -1451,20 +1451,23 @@ class TestBumpConfigRecomputesSameTag:
         assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
         assert not list(work_dir.glob(".config.yaml.*")), "原子写入不得残留临时文件"
 
-    def test_drifted_amd64_hash_is_corrected(self, monkeypatch, work_dir):
-        cfg, gh_output, *_rest = self.run_bump(monkeypatch, work_dir, self.config_text(amd64="0" * 64))
+    def test_drifted_amd64_hash_is_rejected(self, monkeypatch, work_dir):
+        text = self.config_text(amd64="0" * 64)
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text)
 
-        assert cfg.read_text(encoding="utf-8") == self.config_text()
-        assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()
 
-    def test_drifted_arm64_hash_is_corrected(self, monkeypatch, work_dir):
-        cfg, gh_output, _downloads, kernel_runs, smoke = self.run_bump(
-            monkeypatch, work_dir, self.config_text(arm64="1" * 64)
-        )
+    def test_drifted_arm64_hash_is_rejected(self, monkeypatch, work_dir):
+        text = self.config_text(arm64="1" * 64)
+        with pytest.raises(SystemExit) as exc:
+            self.run_bump(monkeypatch, work_dir, text)
 
-        assert cfg.read_text(encoding="utf-8") == self.config_text()
-        assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
-        assert kernel_runs and smoke == [True]
+        assert exc.value.code == 1
+        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
+        assert not (work_dir / "gh_output.txt").exists()
 
     def test_new_tag_rewrites_all_three_fields(self, monkeypatch, work_dir):
         text = self.config_text(tag="v1.0.0", amd64="a" * 64, arm64="b" * 64)
