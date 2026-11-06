@@ -467,6 +467,57 @@ class TestParseLines:
 class TestHostsHostnameConservation:
     """ISS-04：hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
 
+    def test_tab_separated_hosts_comment_does_not_become_rules(self):
+        result, stats = processor.process_domain_detailed(
+            processor.parse_lines("0.0.0.0 a.example\t# see cdn.example\n")
+        )
+
+        assert result == ["a.example"]
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "DOMAIN-SUFFIX,bank.example",
+            "||bank.example^",
+            "bank.example/path",
+            "bank.example:443",
+            "*.bank.example",
+            "full:bank.example",
+            "host:bank.example",
+            "domain:bank.example",
+            "domain-suffix:bank.example",
+        ],
+    )
+    def test_hosts_fields_are_not_reclassified_as_rules(self, field):
+        result, stats = processor.process_domain_detailed([f"0.0.0.0 a.example {field}"])
+
+        assert result == ["a.example"]
+        assert stats["unrecognized"] == 1
+        assert stats["dropped_rule_type"] == {}
+
+    def test_ipcidr_hosts_fields_are_not_reclassified_as_rules(self):
+        result, errors, stats = processor.process_ip_detailed(["0.0.0.0 DOMAIN-SUFFIX,bank.example"])
+
+        assert result == []
+        assert errors.count == 1
+        assert stats["dropped_rule_type"] == {}
+
+    @pytest.mark.parametrize(
+        ("prefix", "expected"),
+        [
+            ("full:", ["a.example", "b.example"]),
+            ("host:", ["a.example", "b.example"]),
+            ("domain:", ["+.a.example", "+.b.example"]),
+            ("domain-suffix:", ["+.a.example", "+.b.example"]),
+        ],
+    )
+    def test_semantic_hosts_line_preserves_prefix_for_every_hostname(self, prefix, expected):
+        result, stats = processor.process_domain_detailed([f"{prefix}0.0.0.0 a.example b.example"])
+
+        assert result == expected
+        assert stats["unrecognized"] == 0
+
     def test_all_hostnames_kept_for_multi_hosts_line(self):
         result, stats = processor.process_domain_detailed(["0.0.0.0 a.example b.example c.example"], "exact")
 
