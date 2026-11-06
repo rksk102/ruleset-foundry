@@ -1,6 +1,11 @@
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
+import manifest
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
@@ -43,15 +48,32 @@ def test_artifacts_branch_marker_mismatch_triggers_repush():
     assert '"${ARTIFACTS_HASH_MARKER}"' in publish["run"].split("git add -f", 1)[1]
 
 
-def test_artifacts_branch_marker_match_skips_repush():
+def test_artifacts_branch_marker_match_reconciles_actual_tree():
     job = load_workflow("pipeline.yml")["jobs"]["publish"]
     step = next(s for s in job["steps"] if s.get("id") == "product-state")
+    script = step["run"]
+    assert step["env"]["TXT_DIR"] == "${{ steps.product-paths.outputs.txt }}"
+    assert step["env"]["MRS_DIR"] == "${{ steps.product-paths.outputs.mrs }}"
+
+    marker_equal = script.split('elif [ "$ARTIFACTS_HASH" != "$CURRENT" ]; then', 1)[1].split("fi", 1)[0]
+    assert 'echo "changed=true" >> "$GITHUB_OUTPUT"' in marker_equal
+    reconcile = marker_equal.split("else", 1)[1]
     assert re.search(
-        r'elif \[ "\$ARTIFACTS_HASH" != "\$CURRENT" \]; then\n'
-        r'.*\n\s*echo "changed=true" >> "\$GITHUB_OUTPUT"\n'
-        r'\s*else\n\s*echo "changed=false" >> "\$GITHUB_OUTPUT"',
-        step["run"],
+        r'python scripts/artifact_tree\.py --ref FETCH_HEAD \\\n'
+        r'\s*--txt-dir "\$TXT_DIR" --mrs-dir "\$MRS_DIR" --marker "\$ARTIFACTS_HASH_MARKER"',
+        reconcile,
     )
+    assert 'if [ "$TREE_RC" -eq 0 ]; then' in reconcile
+    assert 'echo "changed=false" >> "$GITHUB_OUTPUT"' in reconcile.split('if [ "$TREE_RC" -eq 0 ]; then', 1)[1]
+    mismatch = reconcile.split('elif [ "$TREE_RC" -eq 10 ]; then', 1)[1]
+    assert 'echo "changed=true" >> "$GITHUB_OUTPUT"' in mismatch.split("else", 1)[0]
+    assert "exit 1" in mismatch.split("else", 1)[1]
+
+
+def test_publish_verify_only_requires_baseline():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = next(s for s in job["steps"] if s.get("name") == "产物一致性预检")
+    assert step["run"].strip() == "python scripts/release_handler.py --verify-only --require-baseline"
 
 
 def test_artifacts_branch_missing_or_untrusted_marker_triggers_repush():
@@ -239,3 +261,254 @@ def test_setup_python_env_pins_exact_patch_version():
     )
     assert re.fullmatch(r"\d+\.\d+\.\d+", setup["with"]["python-version"])
     assert setup["with"]["python-version"] == "3.14.10"
+
+
+def _step(job, name):
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
+def _heredoc_body(script):
+    body = script.split("<<'PY'", 1)[1].split("\n", 1)[1]
+    return body.split("\nPY", 1)[0]
+
+
+def _run_python_body(body, cwd=REPO):
+    return subprocess.run(
+        [sys.executable, "-c", body],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO / "scripts")},
+    )
+
+
+def _run_auto_merge(work_dir, branch, sha="a" * 40, author="app/dependabot", state="OPEN", pr="42"):
+    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
+    bin_dir = work_dir / "bin"
+    bin_dir.mkdir()
+    log = work_dir / "gh.log"
+    stub = bin_dir / "gh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$GH_LOG"\n'
+        'case "$1 $2" in\n'
+        '  "pr list") printf "%s\\n" "${GH_PR:-42}" ;;\n'
+        '  "pr view") printf "%s\\n" "${GH_AUTHOR:-app/dependabot} ${GH_STATE:-OPEN}" ;;\n'
+        "  *) : ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_LOG": str(log),
+            "GH_TOKEN": "token",
+            "PR_NUMBER": pr,
+            "HEAD_BRANCH": branch,
+            "HEAD_SHA": sha,
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GH_AUTHOR": author,
+            "GH_STATE": state,
+        },
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, calls
+
+
+def _merge_calls(calls):
+    return [call for call in calls if call.startswith("pr merge")]
+
+
+SKIPPED_AUTO_MERGE_BRANCHES = (
+    "dependabot/uv/requests-2.32.0",  # 安全更新：不进入任何 version-update 分组
+    "dependabot/uv/django",  # 未分组/无法识别的更新级别
+    "dependabot/uv/python-dependencies-major",
+    "dependabot/github_actions/github-actions-major",
+    "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-major",
+    "dependabot/github_actions/dot-github/actions/setup-python-env/actions/setup-python-7.0.0",
+    "dependabot/uv/python-dependencies-1a2b3c4d5e-extra",
+    "feature/manual-pr",
+)
+
+
+@pytest.mark.parametrize("branch", SKIPPED_AUTO_MERGE_BRANCHES)
+def test_auto_merge_skips_branches_outside_non_major_group_whitelist(work_dir, branch):
+    result, calls = _run_auto_merge(work_dir, branch)
+    assert result.returncode == 0, result.stderr
+    assert not _merge_calls(calls)
+
+
+@pytest.mark.parametrize(
+    "branch",
+    (
+        "dependabot/uv/python-dependencies",
+        "dependabot/github_actions/github-actions",
+        "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-7313d4f700",
+        "dependabot/uv/python-dependencies-1a2b3c4d5e",
+    ),
+)
+def test_auto_merge_merges_whitelisted_non_major_group(work_dir, branch):
+    result, calls = _run_auto_merge(work_dir, branch)
+    assert result.returncode == 0, result.stderr
+    merges = _merge_calls(calls)
+    assert len(merges) == 1
+    assert "--match-head-commit" in merges[0]
+    assert "--auto" in merges[0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "returncode"),
+    (
+        ({"author": "octocat"}, 0),
+        ({"state": "MERGED"}, 0),
+        ({"sha": ""}, 1),
+    ),
+)
+def test_auto_merge_keeps_author_state_and_sha_gates(work_dir, kwargs, returncode):
+    result, calls = _run_auto_merge(work_dir, "dependabot/uv/python-dependencies", **kwargs)
+    assert result.returncode == returncode
+    assert not _merge_calls(calls)
+
+
+def test_auto_merge_group_whitelist_matches_dependabot_config():
+    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
+    match = re.search(r'^ALLOWED_GROUPS="([^"]*)"$', script, re.M)
+    assert match, "工作流必须显式声明自动合并分组白名单"
+    allowed = set(match.group(1).split())
+
+    config = yaml.safe_load((REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    non_major = set()
+    major = set()
+    for entry in config["updates"]:
+        for name, group in (entry.get("groups") or {}).items():
+            types = set(group.get("update-types") or [])
+            assert types, f"分组 {name} 必须显式声明 update-types"
+            if "major" in types:
+                major.add(name)
+            else:
+                non_major.add(name)
+    assert allowed == non_major
+    assert not allowed & major
+
+
+def test_ci_generated_artifact_gate_derives_paths_from_config():
+    job = load_workflow("ci.yml")["jobs"]["no-generated-artifacts"]
+    names = [step.get("name") for step in job["steps"]]
+    assert names.index("安装 Python 环境") < names.index("检查生成产物是否被跟踪")
+    step = _step(job, "检查生成产物是否被跟踪")
+    script = step["run"]
+    for key in ("rulesets_dir", "merged_output_dir", "mrs_output_dir", "log_dir", "kernel_cache_path"):
+        assert f'"{key}"' in script
+    assert 'git ls-files -- "${GENERATED_DIRS[@]/%//*}"' in script
+    assert "'merged-rules/*'" not in script
+    assert "'rulesets/*'" not in script
+    assert step["env"]["PYTHONPATH"] == "${{ github.workspace }}/scripts"
+
+    config = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    result = _run_python_body(_heredoc_body(script))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        config["paths"]["rulesets_dir"],
+        config["paths"]["merged_output_dir"],
+        config["paths"]["mrs_output_dir"],
+        config["paths"]["log_dir"],
+        config["mihomo"]["kernel_cache_path"],
+    ]
+
+
+def test_pipeline_product_paths_derive_rulesets_from_config():
+    workflow = load_workflow("pipeline.yml")
+    config = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    expected = [
+        f"rulesets={config['paths']['rulesets_dir']}",
+        f"txt={config['paths']['merged_output_dir']}",
+        f"mrs={config['paths']['mrs_output_dir']}",
+    ]
+    for job_name in ("build", "publish"):
+        step = next(s for s in workflow["jobs"][job_name]["steps"] if s.get("id") == "product-paths")
+        assert 'get("paths", "rulesets_dir"' in step["run"]
+        result = _run_python_body(_heredoc_body(step["run"]))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == expected
+
+
+def test_rulesets_artifact_upload_and_download_use_configured_path():
+    workflow = load_workflow("pipeline.yml")
+    upload = _step(workflow["jobs"]["build"], "上传 rulesets 清单（供发布校验）")
+    download = _step(workflow["jobs"]["publish"], "下载 rulesets 产物（提供产物清单基线）")
+    assert upload["with"]["path"] == "${{ steps.product-paths.outputs.rulesets }}/products.manifest"
+    assert download["with"]["path"] == "${{ steps.product-paths.outputs.rulesets }}/"
+    for step in (upload, download):
+        assert "rulesets/" not in step["with"]["path"]
+
+
+def test_public_artifacts_branch_stages_without_product_manifest():
+    workflow = load_workflow("pipeline.yml")
+    script = _step(workflow["jobs"]["publish"], "发布规则产物到 artifacts 分支")["run"]
+    removal = f'rm -f "${{TXT_DIR}}/{manifest.MANIFEST_NAME}"'
+    assert removal in script
+    # 只删除 worktree 暂存副本：主工作区源文件必须保留给发布校验与 Release ZIP
+    assert f"${{GITHUB_WORKSPACE}}/${{TXT_DIR}}/{manifest.MANIFEST_NAME}" not in script
+    assert script.index('cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"') < script.index(removal)
+    assert script.index(removal) < script.index('git add -f')
+    assert script.index('cd "$WT"') < script.index(removal) < script.index('git worktree remove')
+
+
+def test_kernel_bump_amd64_validation_rechecks_live_latest():
+    job = load_workflow("kernel-bump.yml")["jobs"]["validate_amd64"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["needs"] == "prepare"
+    assert job["if"] == "needs.prepare.outputs.changed == 'true'"
+
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "kernel_pin.py --apply" in runs
+    assert '--tag "$TAG"' in runs
+    assert '--kernel-sha256 "$KERNEL_SHA256"' in runs
+    assert '--kernel-sha256-arm64 "$KERNEL_SHA256_ARM64"' in runs
+    assert "convert_mrs.py --verify-current-kernel" in runs
+
+    steps = job["steps"]
+    names = [step.get("name", "") for step in steps]
+    assert names.index("记录当前钉扎版本") < names.index("在干净检出中重建配置")
+    assert names.index("在干净检出中重建配置") < names.index("独立复核实时 latest 与版本单调性")
+
+    current = steps[names.index("记录当前钉扎版本")]
+    assert "read_metadata" in current["run"]
+    assert 'print("tag=" + read_metadata()["pinned_version"])' in current["run"]
+
+    recheck = steps[names.index("独立复核实时 latest 与版本单调性")]
+    assert recheck["env"]["CANDIDATE_TAG"] == "${{ needs.prepare.outputs.tag }}"
+    assert recheck["env"]["CURRENT_TAG"] == "${{ steps.current.outputs.tag }}"
+    script = recheck["run"]
+    assert '"repo_api"' in script
+    assert "fetch_release(None)" in script
+    assert '"published_at"' in script
+    assert 'if latest.get("tag_name") != candidate:' in script
+    assert "if candidate_published < current_published:" in script
+    assert "::error::" in script
+    assert "sys.exit(1)" in script
+
+
+def test_kernel_bump_commit_requires_both_architecture_validations():
+    workflow = load_workflow("kernel-bump.yml")
+    commit = workflow["jobs"]["commit"]
+    assert commit["needs"] == ["prepare", "validate_arm64", "validate_amd64"]
+    assert "needs.validate_arm64.result == 'success'" in commit["if"]
+    assert "needs.validate_amd64.result == 'success'" in commit["if"]
+    assert commit["if"].endswith(DEFAULT_BRANCH_GATE)
+
+
+def test_kernel_bump_notify_tracks_amd64_result():
+    workflow = load_workflow("kernel-bump.yml")
+    notify = workflow["jobs"]["notify-on-failure"]
+    assert notify["needs"] == ["prepare", "validate_arm64", "validate_amd64", "commit"]
+    step = notify["steps"][0]
+    assert step["env"]["R_VALIDATE_AMD64"] == "${{ needs.validate_amd64.result }}"
+    failed_gate, rest = step["run"].split("FAILED=1", 1)
+    assert "$R_VALIDATE_AMD64" in failed_gate
+    assert '[ "$R_VALIDATE_AMD64" != "success" ]' in rest

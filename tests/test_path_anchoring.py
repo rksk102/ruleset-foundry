@@ -43,6 +43,48 @@ class TestVerifyFailsClosed:
         assert release_handler.verify_products() is None
 
 
+class TestBaselineRequirement:
+    """ISS-16：显式 require_baseline 时，自定义 rulesets_dir 缺失不得静默降级为告警。"""
+
+    def paired_products(self, work_dir):
+        for folder, suffix in ((work_dir / "merged-rules", ".txt"), (work_dir / "merged-rules-mrs", ".mrs")):
+            (folder / "block" / "domain" / "Owner").mkdir(parents=True, exist_ok=True)
+            (folder / "block" / "domain" / "Owner" / f"a{suffix}").write_text("x", encoding="utf-8")
+
+    def patch_dirs(self, monkeypatch, work_dir, rulesets="custom-rulesets"):
+        monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / rulesets))
+        monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
+        monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+
+    def test_missing_custom_rulesets_dir_is_fatal_when_required(self, work_dir, monkeypatch):
+        self.paired_products(work_dir)
+        self.patch_dirs(monkeypatch, work_dir)
+
+        with pytest.raises(manifest.ManifestError):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_missing_custom_rulesets_dir_degrades_by_default(self, work_dir, monkeypatch):
+        self.paired_products(work_dir)
+        self.patch_dirs(monkeypatch, work_dir)
+
+        assert release_handler.verify_products() is None
+
+    def test_empty_custom_rulesets_dir_is_fatal_when_required(self, work_dir, monkeypatch):
+        self.paired_products(work_dir)
+        (work_dir / "custom-rulesets").mkdir()
+        self.patch_dirs(monkeypatch, work_dir)
+
+        with pytest.raises(manifest.ManifestError, match=release_handler.BASELINE_MISSING):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_no_products_fails_on_baseline_when_required(self, work_dir, monkeypatch):
+        """没有产物时也必须先撞上基线缺失，而不是先报空跑。"""
+        self.patch_dirs(monkeypatch, work_dir)
+
+        with pytest.raises(manifest.ManifestError, match=release_handler.BASELINE_MISSING):
+            release_handler.verify_products(require_baseline=True)
+
+
 class TestRepoRootAnchor:
     def test_anchor_helper_chdirs_to_repo_root(self, work_dir, monkeypatch):
         original = os.getcwd()

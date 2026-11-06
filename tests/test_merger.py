@@ -4,6 +4,7 @@ from pathlib import Path
 import manifest
 import merger
 import pytest
+import utils
 
 
 def fake_manifest(*rels):
@@ -282,6 +283,33 @@ class TestProcessTaskLogic:
         content = (output / "direct" / "ipcidr" / "Owner" / "all-cn.txt").read_text(encoding="utf-8")
         assert "1.0.0.0/23" in content
         assert "0.0.0.0/0" not in content
+
+    def test_ip_task_reports_bounded_invalid_cidr_samples(self, tmp_path, monkeypatch):
+        source = tmp_path / "rulesets"
+        output = tmp_path / "merged"
+        lines = [f"bad-cidr-{i}" for i in range(15)] + ["1.0.0.0/24"]
+        write(source / "direct" / "ipcidr" / "A" / "cn.txt", "\n".join(lines) + "\n")
+        messages = []
+        monkeypatch.setattr(merger, "warning", lambda message: messages.append(message))
+
+        result = self.use_dirs(
+            source,
+            output,
+            lambda: merger.process_task_logic(
+                "direct",
+                "ipcidr",
+                "Owner",
+                "all-cn.txt",
+                ["direct/ipcidr/A/cn.txt"],
+                "x",
+            ),
+        )
+
+        assert result["opt"] == 1
+        invalid = [message for message in messages if "无效 CIDR" in message]
+        assert len([message for message in invalid if message.strip().startswith("无效 CIDR:")]) == 10
+        assert len(invalid) == utils.IP_CIDR_ERROR_SAMPLES + 1
+        assert any("及其他 5 条无效 CIDR" in message for message in invalid)
 
 
 class TestDetectCrossPolicyConflicts:
