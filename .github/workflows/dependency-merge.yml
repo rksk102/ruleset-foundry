@@ -1,0 +1,99 @@
+name: "依赖合并 Bot"
+
+on:  # zizmor: ignore[dangerous-triggers] 仅执行 main 代码并通过 App API 合并，不检出或执行 PR 代码
+  workflow_run:
+    workflows: ["CI", "CodeQL"]
+    types: [completed]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "要评估的 PR 编号；留空则扫描全部开放 PR"
+        required: false
+        type: string
+      head_sha:
+        description: "已验证的 HEAD SHA；仅可与 PR 编号一起使用，留空则使用 PR 当前 HEAD"
+        required: false
+        type: string
+      dry_run:
+        description: "只评估，不合并、不评论"
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: dependency-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read  # 仅检出默认分支上的可信策略与脚本
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: 安装 Python 环境
+        uses: ./.github/actions/setup-python-env
+      - name: 生成依赖合并 App 安装令牌
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.DEPS_MERGER_CLIENT_ID }}
+          private-key: ${{ secrets.DEPS_MERGER_PRIVATE_KEY }}
+          owner: rksk102
+          repositories: ruleset-foundry
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+      - name: 评估并合并符合条件的 Dependabot PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+          RECONCILE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr_number == '') }}
+        run: |
+          set -euo pipefail
+          if [ "$RECONCILE" = "true" ]; then
+            if [ -n "${HEAD_SHA:-}" ]; then
+              echo "::error::提供 head_sha 时必须指定 pr_number"
+              exit 1
+            fi
+            uv run python scripts/dependency_merge.py \
+              --config .github/dependency-merge.yml \
+              --reconcile \
+              --dry-run "$DRY_RUN"
+          else
+            if [ "${{ github.event_name }}" = "workflow_run" ] && [ -z "${HEAD_SHA:-}" ]; then
+              echo "::error::workflow_run.head_sha 为空，拒绝在没有 SHA 绑定的情况下合并"
+              exit 1
+            fi
+            args=(
+              --config .github/dependency-merge.yml
+              --dry-run "$DRY_RUN"
+            )
+            if [ -n "${HEAD_SHA:-}" ]; then
+              args+=(--head-sha "$HEAD_SHA")
+            fi
+            if [ -n "${PR_NUMBER:-}" ]; then
+              args+=(--pr-number "$PR_NUMBER")
+            elif [ -n "${HEAD_BRANCH:-}" ]; then
+              args+=(--head-branch "$HEAD_BRANCH")
+            else
+              echo "::error::workflow_run 未提供 PR 编号或 head 分支"
+              exit 1
+            fi
+            uv run python scripts/dependency_merge.py "${args[@]}"
+          fi
