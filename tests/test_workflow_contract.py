@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -23,11 +24,6 @@ def test_product_state_step_has_github_token():
     job = load_workflow("pipeline.yml")["jobs"]["publish"]
     step = next(s for s in job["steps"] if s.get("id") == "product-state")
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
-
-
-def test_dependabot_auto_merge_requires_bot_head_actor():
-    job = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]
-    assert "github.event.workflow_run.actor.login == 'dependabot[bot]'" in job["if"]
 
 
 def test_artifacts_branch_marker_mismatch_triggers_repush():
@@ -282,105 +278,12 @@ def _run_python_body(body, cwd=REPO):
     )
 
 
-def _run_auto_merge(work_dir, branch, sha="a" * 40, author="app/dependabot", state="OPEN", pr="42"):
-    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
-    bin_dir = work_dir / "bin"
-    bin_dir.mkdir()
-    log = work_dir / "gh.log"
-    stub = bin_dir / "gh"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
-        'printf "%s\\n" "$*" >> "$GH_LOG"\n'
-        'case "$1 $2" in\n'
-        '  "pr list") printf "%s\\n" "${GH_PR:-42}" ;;\n'
-        '  "pr view") printf "%s\\n" "${GH_AUTHOR:-app/dependabot} ${GH_STATE:-OPEN}" ;;\n'
-        "  *) : ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    stub.chmod(0o755)
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-            "GH_LOG": str(log),
-            "GH_TOKEN": "token",
-            "PR_NUMBER": pr,
-            "HEAD_BRANCH": branch,
-            "HEAD_SHA": sha,
-            "GITHUB_REPOSITORY": "owner/repo",
-            "GH_AUTHOR": author,
-            "GH_STATE": state,
-        },
-    )
-    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-    return result, calls
+def _dependency_policy():
+    return yaml.safe_load((REPO / ".github" / "dependency-merge.yml").read_text(encoding="utf-8"))
 
 
-def _merge_calls(calls):
-    return [call for call in calls if call.startswith("pr merge")]
-
-
-SKIPPED_AUTO_MERGE_BRANCHES = (
-    "dependabot/uv/requests-2.32.0",  # 安全更新：不进入任何 version-update 分组
-    "dependabot/uv/django",  # 未分组/无法识别的更新级别
-    "dependabot/uv/python-dependencies-major",
-    "dependabot/github_actions/github-actions-major",
-    "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-major",
-    "dependabot/github_actions/dot-github/actions/setup-python-env/actions/setup-python-7.0.0",
-    "dependabot/uv/python-dependencies-1a2b3c4d5e-extra",
-    "feature/manual-pr",
-)
-
-
-@pytest.mark.parametrize("branch", SKIPPED_AUTO_MERGE_BRANCHES)
-def test_auto_merge_skips_branches_outside_non_major_group_whitelist(work_dir, branch):
-    result, calls = _run_auto_merge(work_dir, branch)
-    assert result.returncode == 0, result.stderr
-    assert not _merge_calls(calls)
-
-
-@pytest.mark.parametrize(
-    "branch",
-    (
-        "dependabot/uv/python-dependencies",
-        "dependabot/github_actions/github-actions",
-        "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-7313d4f700",
-        "dependabot/uv/python-dependencies-1a2b3c4d5e",
-    ),
-)
-def test_auto_merge_merges_whitelisted_non_major_group(work_dir, branch):
-    result, calls = _run_auto_merge(work_dir, branch)
-    assert result.returncode == 0, result.stderr
-    merges = _merge_calls(calls)
-    assert len(merges) == 1
-    assert "--match-head-commit" in merges[0]
-    assert "--auto" in merges[0]
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "returncode"),
-    (
-        ({"author": "octocat"}, 0),
-        ({"state": "MERGED"}, 0),
-        ({"sha": ""}, 1),
-    ),
-)
-def test_auto_merge_keeps_author_state_and_sha_gates(work_dir, kwargs, returncode):
-    result, calls = _run_auto_merge(work_dir, "dependabot/uv/python-dependencies", **kwargs)
-    assert result.returncode == returncode
-    assert not _merge_calls(calls)
-
-
-def test_auto_merge_group_whitelist_matches_dependabot_config():
-    script = load_workflow("dependabot-auto-merge.yml")["jobs"]["auto-merge"]["steps"][0]["run"]
-    match = re.search(r'^ALLOWED_GROUPS="([^"]*)"$', script, re.M)
-    assert match, "工作流必须显式声明自动合并分组白名单"
-    allowed = set(match.group(1).split())
-
+def test_dependency_merge_group_whitelist_matches_dependabot_config():
+    allowed = set(_dependency_policy()["allowed_groups"])
     config = yaml.safe_load((REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
     non_major = set()
     major = set()
@@ -394,6 +297,161 @@ def test_auto_merge_group_whitelist_matches_dependabot_config():
                 non_major.add(name)
     assert allowed == non_major
     assert not allowed & major
+
+
+def test_dependency_merge_required_checks_cover_all_ci_jobs():
+    workflow = load_workflow("ci.yml")
+    expected = {job.get("name", job_name) for job_name, job in workflow["jobs"].items()}
+    assert set(_dependency_policy()["required_checks"]) == expected
+
+
+def test_dependency_merge_codeql_allows_documented_skip_states():
+    optional = {entry["name"]: entry for entry in _dependency_policy()["optional_checks"]}
+    assert set(optional["CodeQL"]["allow_conclusions"]) == {"SKIPPED", "NEUTRAL"}
+
+
+def test_dependency_merge_app_permissions_match_registration_manifest():
+    workflow = load_workflow("dependency-merge.yml")
+    token_step = next(step for step in workflow["jobs"]["merge"]["steps"] if step.get("id") == "app-token")
+    action, sha = token_step["uses"].split("@", 1)
+    assert action == "actions/create-github-app-token"
+    assert re.fullmatch(r"[0-9a-f]{40}", sha)
+
+    token_permissions = {
+        key.removeprefix("permission-").replace("_", "-"): value
+        for key, value in token_step["with"].items()
+        if key.startswith("permission-")
+    }
+    registration = json.loads((REPO / ".github" / "dependency-merge-app.json").read_text(encoding="utf-8"))
+    manifest_permissions = registration["default_permissions"]
+    assert manifest_permissions["metadata"] == "read"
+    normalized_manifest_permissions = {
+        key.replace("_", "-"): value for key, value in manifest_permissions.items() if key != "metadata"
+    }
+    assert token_permissions == normalized_manifest_permissions
+    assert set(token_permissions) == {"contents", "pull-requests", "checks"}
+    assert registration["public"] is False
+    assert registration["default_events"] == []
+    assert registration["redirect_url"] == "https://github.com/rksk102/ruleset-foundry"
+
+
+def test_dependency_merge_has_single_writer_and_main_only_execution():
+    assert not (REPO / ".github" / "workflows" / "dependabot-auto-merge.yml").exists()
+    workflow = load_workflow("dependency-merge.yml")
+    events = workflow[True]
+    assert events["workflow_run"]["workflows"] == ["CI", "CodeQL"]
+    assert events["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
+    assert "schedule" in events
+    assert workflow["concurrency"] == {"group": "dependency-merge", "cancel-in-progress": False}
+
+    checkout = workflow["jobs"]["merge"]["steps"][0]
+    assert checkout["with"] == {"ref": "main", "persist-credentials": False}
+    run = workflow["jobs"]["merge"]["steps"][-1]["run"]
+    assert "--auto" not in run
+    assert "--admin" not in run
+
+
+def _run_dependency_merge_step(
+    work_dir,
+    pr_number,
+    head_branch,
+    head_sha="a" * 40,
+    event_name="workflow_run",
+    reconcile="false",
+    dry_run="true",
+):
+    script = load_workflow("dependency-merge.yml")["jobs"]["merge"]["steps"][-1]["run"]
+    script = script.replace("${{ github.event_name }}", event_name)
+    bin_dir = work_dir / "bin"
+    bin_dir.mkdir()
+    log = work_dir / "uv.log"
+    stub = bin_dir / "uv"
+    stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$UV_LOG"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "UV_LOG": str(log),
+            "GH_TOKEN": "token",
+            "PR_NUMBER": pr_number,
+            "HEAD_BRANCH": head_branch,
+            "HEAD_SHA": head_sha,
+            "DRY_RUN": dry_run,
+            "RECONCILE": reconcile,
+        },
+    )
+    return result, log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+@pytest.mark.parametrize(
+    ("pr_number", "head_branch", "expected", "forbidden"),
+    [
+        ("40", "dependabot/uv/python-dependencies", "--pr-number 40", "--head-branch"),
+        ("", "dependabot/uv/python-dependencies", "--head-branch dependabot/uv/python-dependencies", "--pr-number"),
+        ("40", "", "--pr-number 40", "--head-branch"),
+    ],
+)
+def test_dependency_merge_step_selects_one_pr_locator(work_dir, pr_number, head_branch, expected, forbidden):
+    result, log = _run_dependency_merge_step(work_dir, pr_number, head_branch)
+    assert result.returncode == 0, result.stderr
+    assert expected in log
+    assert forbidden not in log
+
+
+def test_dependency_merge_step_omits_empty_head_sha(work_dir):
+    result, log = _run_dependency_merge_step(work_dir, "40", "", head_sha="", event_name="workflow_dispatch")
+    assert result.returncode == 0, result.stderr
+    assert "--pr-number 40" in log
+    assert "--head-sha" not in log
+
+
+def test_dependency_merge_step_rejects_missing_pr_locator(work_dir):
+    result, log = _run_dependency_merge_step(work_dir, "", "")
+    assert result.returncode == 1
+    assert log == ""
+    assert "未提供 PR 编号或 head 分支" in result.stdout
+
+
+def test_dependency_merge_step_rejects_workflow_run_empty_head_sha(work_dir):
+    result, log = _run_dependency_merge_step(work_dir, "40", "dependabot/uv/python-dependencies", head_sha="")
+    assert result.returncode == 1
+    assert log == ""
+    assert "workflow_run.head_sha 为空" in result.stdout
+
+
+@pytest.mark.parametrize("dry_run", ["true", "false"])
+def test_dependency_merge_step_reconcile_passes_arguments(work_dir, dry_run):
+    result, log = _run_dependency_merge_step(
+        work_dir,
+        "",
+        "",
+        event_name="schedule",
+        head_sha="",
+        reconcile="true",
+        dry_run=dry_run,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--reconcile" in log
+    assert f"--dry-run {dry_run}" in log
+    assert "--head-sha" not in log
+
+
+def test_dependency_merge_step_rejects_reconcile_head_sha(work_dir):
+    result, log = _run_dependency_merge_step(
+        work_dir,
+        "",
+        "",
+        event_name="workflow_dispatch",
+        reconcile="true",
+        dry_run="false",
+    )
+    assert result.returncode == 1
+    assert log == ""
+    assert "提供 head_sha 时必须指定 pr_number" in result.stdout
 
 
 def test_ci_generated_artifact_gate_derives_paths_from_config():

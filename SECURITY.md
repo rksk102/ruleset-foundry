@@ -25,6 +25,9 @@
 - 同一 tag 下只允许自动补全空哈希；已有非空哈希与上游资产不一致时，自动升级会失败并告警，
   不会直接改写信任锚，必须人工核查后处理。
 - 上游规则是不可信文本，不会被当作代码执行，但内容会原样进入发布产物。
+- Dependabot PR 由私有 `ruleset-deps-merger` GitHub App 的安装令牌直接合并；仅允许配置中的非 major
+  分组在精确 HEAD SHA 和全部必需检查通过后合并。Bot 不执行 PR 分支代码、不使用原生 auto-merge，
+  不具有 ruleset bypass 或 Administration 权限；私钥只保存在仓库 Secret 中，可暂停 installation 回滚。
 - 第三方 GitHub Actions 均按 commit SHA 固定。
 
 ## 报告漏洞

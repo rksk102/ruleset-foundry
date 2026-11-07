@@ -1,0 +1,22 @@
+repository: rksk102/ruleset-foundry
+base_branch: main
+allowed_authors:
+  - app/dependabot
+  - dependabot[bot]
+allowed_groups:
+  - python-dependencies
+  - github-actions
+required_checks:
+  - lint
+  - test
+  - 依赖审查
+  - 内核冒烟
+  - 工作流静态检查
+  - 禁止提交生成产物
+optional_checks:
+  - name: Analyze (python)
+  - name: Analyze (actions)
+  - name: CodeQL
+    allow_conclusions:
+      - SKIPPED
+      - NEUTRAL
