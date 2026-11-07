@@ -10,14 +10,15 @@ venv/
 logs/
 *.log
 *.zip
+/SHA256SUMS
 *.tmp
 
-rulesets/
+/rulesets/
 
-merged-rules/
-merged-rules-mrs/
+/merged-rules/
+/merged-rules-mrs/
 
-mihomo
+/mihomo
 
 .idea/
 
