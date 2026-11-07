@@ -351,7 +351,15 @@ def test_dependency_merge_has_single_writer_and_main_only_execution():
     assert "--admin" not in run
 
 
-def _run_dependency_merge_step(work_dir, pr_number, head_branch, head_sha="a" * 40, event_name="workflow_run"):
+def _run_dependency_merge_step(
+    work_dir,
+    pr_number,
+    head_branch,
+    head_sha="a" * 40,
+    event_name="workflow_run",
+    reconcile="false",
+    dry_run="true",
+):
     script = load_workflow("dependency-merge.yml")["jobs"]["merge"]["steps"][-1]["run"]
     script = script.replace("${{ github.event_name }}", event_name)
     bin_dir = work_dir / "bin"
@@ -372,8 +380,8 @@ def _run_dependency_merge_step(work_dir, pr_number, head_branch, head_sha="a" * 
             "PR_NUMBER": pr_number,
             "HEAD_BRANCH": head_branch,
             "HEAD_SHA": head_sha,
-            "DRY_RUN": "true",
-            "RECONCILE": "false",
+            "DRY_RUN": dry_run,
+            "RECONCILE": reconcile,
         },
     )
     return result, log.read_text(encoding="utf-8") if log.exists() else ""
@@ -406,6 +414,44 @@ def test_dependency_merge_step_rejects_missing_pr_locator(work_dir):
     assert result.returncode == 1
     assert log == ""
     assert "未提供 PR 编号或 head 分支" in result.stdout
+
+
+def test_dependency_merge_step_rejects_workflow_run_empty_head_sha(work_dir):
+    result, log = _run_dependency_merge_step(work_dir, "40", "dependabot/uv/python-dependencies", head_sha="")
+    assert result.returncode == 1
+    assert log == ""
+    assert "workflow_run.head_sha 为空" in result.stdout
+
+
+@pytest.mark.parametrize("dry_run", ["true", "false"])
+def test_dependency_merge_step_reconcile_passes_arguments(work_dir, dry_run):
+    result, log = _run_dependency_merge_step(
+        work_dir,
+        "",
+        "",
+        event_name="schedule",
+        head_sha="",
+        reconcile="true",
+        dry_run=dry_run,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--reconcile" in log
+    assert f"--dry-run {dry_run}" in log
+    assert "--head-sha" not in log
+
+
+def test_dependency_merge_step_rejects_reconcile_head_sha(work_dir):
+    result, log = _run_dependency_merge_step(
+        work_dir,
+        "",
+        "",
+        event_name="workflow_dispatch",
+        reconcile="true",
+        dry_run="false",
+    )
+    assert result.returncode == 1
+    assert log == ""
+    assert "提供 head_sha 时必须指定 pr_number" in result.stdout
 
 
 def test_ci_generated_artifact_gate_derives_paths_from_config():

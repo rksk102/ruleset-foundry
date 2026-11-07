@@ -510,6 +510,16 @@ def test_config_rejects_invalid_yaml(work_dir):
         dm.load_config(path)
 
 
+@pytest.mark.parametrize("suffix", ["required_checks:\n  - lint\n", "  name: Analyze (python)\n"])
+def test_config_rejects_duplicate_keys(work_dir, suffix):
+    path = write_config(work_dir)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n" + suffix)
+
+    with pytest.raises(dm.MergeConfigError, match="重复键"):
+        dm.load_config(path)
+
+
 def test_subprocess_runner_requires_gh_token(monkeypatch):
     monkeypatch.delenv("GH_TOKEN", raising=False)
 
