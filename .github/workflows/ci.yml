@@ -64,10 +64,12 @@ jobs:
           fi
           echo "OK: 没有被忽略的跟踪文件"
       - name: 获取变更提交范围
+        id: change-range
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          FORCED: ${{ github.event.forced || false }}
         run: |
           set -euo pipefail
           if [[ "$BASE_SHA" =~ ^0+$ ]]; then
@@ -82,25 +84,43 @@ jobs:
           git fetch --no-tags --depth=2 origin "$fetch_ref"
           for _ in {1..16}; do
             if git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null; then
+              echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$(git rev-parse --is-shallow-repository)" = "false" ]; then
+              if [ "${FORCED:-false}" = "true" ]; then
+                break
+              fi
               echo "::error::两个提交没有共同祖先，无法建立变更范围。"
               exit 1
             fi
             git fetch --no-tags --deepen=64 origin "$BASE_SHA"
             git fetch --no-tags --deepen=64 origin "$fetch_ref"
           done
+          if [ "${FORCED:-false}" = "true" ]; then
+            if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+              git fetch --no-tags --unshallow origin "$fetch_ref"
+            fi
+            echo "::notice::强制推送的历史没有共同祖先，将检查完整 HEAD 历史。"
+            echo "base=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "::error::无法建立完整变更范围（约 1024 个提交上限），请拆分或同步分支。"
           exit 1
       - name: 检查新增提交中的被忽略文件
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ steps.change-range.outputs.base }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          if [ -z "$BASE_SHA" ]; then
+            # 不用当前 ignore 规则追溯旧历史；当前 HEAD 已由前置门禁检查。
+            echo "::notice::整史重写无增量基线，被忽略文件由当前 HEAD 门禁检查。"
+            exit 0
+          fi
+          range="${BASE_SHA}..${HEAD_SHA}"
           ignored="$(
-            git log --format= --name-only --no-renames --diff-filter=A -z "${BASE_SHA}..${HEAD_SHA}" |
+            git log --format= --name-only --no-renames --diff-filter=A -z "$range" |
               sort -zu |
               git check-ignore --no-index -z --stdin |
               tr '\0' '\n' || test "$?" -eq 1
@@ -113,12 +133,16 @@ jobs:
           echo "OK: 范围内没有被忽略的新增文件"
       - name: 检查新增提交中的大文件
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_SHA: ${{ steps.change-range.outputs.base }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          range="$HEAD_SHA"
+          if [ -n "$BASE_SHA" ]; then
+            range="${BASE_SHA}..${HEAD_SHA}"
+          fi
           object_sizes="$(
-            git rev-list --objects "${BASE_SHA}..${HEAD_SHA}" |
+            git rev-list --objects "$range" |
               cut -d' ' -f1 |
               git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize)'
           )"

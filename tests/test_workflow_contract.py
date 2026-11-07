@@ -291,7 +291,11 @@ def _run_ci_gate_step(work_dir, name, env=None):
         cwd=work_dir,
         capture_output=True,
         text=True,
-        env={**os.environ, **(env or {})},
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(work_dir / "github-output.txt"),
+            **(env or {}),
+        },
     )
 
 
@@ -626,6 +630,7 @@ def test_ci_fetch_range_handles_advanced_pr_base(work_dir):
         },
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    assert (checkout / "github-output.txt").read_text(encoding="utf-8") == f"base={base}\n"
     assert _git(checkout, "merge-base", base, head) == original_base
     assert _git(checkout, "rev-list", "--count", f"{base}..{head}") == "2"
 
@@ -636,7 +641,8 @@ def test_ci_fetch_range_handles_advanced_pr_base(work_dir):
     assert "1048577" in result.stdout
 
 
-def test_ci_fetch_range_rejects_unrelated_histories(work_dir):
+@pytest.mark.parametrize("forced", [False, True], ids=["unrelated-pr", "forced-rewrite"])
+def test_ci_fetch_range_unrelated_histories(work_dir, forced):
     source = work_dir / "source"
     source.mkdir()
     _init_git_repo(source)
@@ -647,9 +653,18 @@ def test_ci_fetch_range_rejects_unrelated_histories(work_dir):
 
     _git(source, "checkout", "-q", "--orphan", "unrelated")
     _git(source, "read-tree", "--empty")
+    (source / ".gitignore").write_text("artifact.bin\n", encoding="utf-8")
+    _git(source, "add", ".gitignore")
+    _git(source, "commit", "-qm", "unrelated base")
+    (source / "large.bin").write_bytes(b"x" * 1048577)
+    (source / "artifact.bin").write_text("generated", encoding="utf-8")
+    _git(source, "add", "large.bin")
+    _git(source, "add", "-f", "artifact.bin")
+    _git(source, "commit", "-qm", "add forbidden files")
+    _git(source, "rm", "-q", "large.bin", "artifact.bin")
     (source / "other.txt").write_text("other\n", encoding="utf-8")
     _git(source, "add", "other.txt")
-    _git(source, "commit", "-qm", "unrelated")
+    _git(source, "commit", "-qm", "remove forbidden files")
     head = _git(source, "rev-parse", "HEAD")
 
     origin = work_dir / "origin.git"
@@ -668,11 +683,28 @@ def test_ci_fetch_range_rejects_unrelated_histories(work_dir):
             "HEAD_SHA": head,
             "PR_NUMBER": "",
             "GITHUB_REF": "refs/heads/unrelated",
+            "FORCED": str(forced).lower(),
         },
     )
+    if not forced:
+        assert result.returncode == 1
+        assert "两个提交没有共同祖先" in result.stdout
+        assert "1024" not in result.stdout
+        return
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _git(checkout, "checkout", "-q", "--detach", head)
+    assert (checkout / "github-output.txt").read_text(encoding="utf-8") == "base=\n"
+    result = _run_ci_gate_step(
+        checkout, "检查新增提交中的被忽略文件", {"BASE_SHA": "", "HEAD_SHA": head}
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "当前 HEAD" in result.stdout
+    result = _run_ci_gate_step(
+        checkout, "检查新增提交中的大文件", {"BASE_SHA": "", "HEAD_SHA": head}
+    )
     assert result.returncode == 1
-    assert "两个提交没有共同祖先" in result.stdout
-    assert "1024" not in result.stdout
+    assert "1048577" in result.stdout
 
 
 def test_pipeline_product_paths_derive_rulesets_from_config():
