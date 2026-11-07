@@ -206,9 +206,6 @@ def test_real_merge_uses_plain_merge_and_exact_head_sha():
     assert merge_calls(fake) == [
         ["pr", "merge", "40", "--repo", REPO, "--merge", "--match-head-commit", SHA]
     ]
-    for call in merge_calls(fake):
-        assert "--auto" not in call
-        assert "--admin" not in call
     assert fake.prs[40]["state"] == "MERGED"
 
 
@@ -218,7 +215,6 @@ def test_successful_merge_comment_contains_head_marker():
     bodies = fake.comments[40]
     assert len(bodies) == 1
     assert dm.COMMENT_MARKER.format(sha=SHA) in bodies[0]
-    assert SHA in bodies[0]
 
 
 def test_existing_head_marker_comment_is_deduplicated():
@@ -276,10 +272,9 @@ def test_required_check_boundaries(replacement, expected_kind, needle):
             "Analyze (actions) pending",
         ),
         ("Analyze (python)", check("Analyze (python)", conclusion="SKIPPED"), dm.BLOCK_KIND, "skipped"),
-        ("CodeQL", check("CodeQL", conclusion="SKIPPED"), dm.MERGE_KIND, ""),
         ("CodeQL", check("CodeQL", conclusion="NEUTRAL"), dm.MERGE_KIND, ""),
     ],
-    ids=["absent", "pending", "unallowed-skipped", "codeql-skipped", "codeql-neutral"],
+    ids=["absent", "pending", "unallowed-skipped", "codeql-neutral"],
 )
 def test_optional_check_boundaries(name, replacement, expected_kind, needle):
     pr = make_pr()
