@@ -517,6 +517,27 @@ def test_ci_ignored_file_gate_rejects_force_added_files(work_dir):
     assert "artifact.bin" in result.stdout
 
 
+def test_ci_history_ignored_gate_rejects_added_and_removed_files(work_dir):
+    _init_git_repo(work_dir)
+    (work_dir / ".gitignore").write_text("artifact.bin\n", encoding="utf-8")
+    _git(work_dir, "add", ".gitignore")
+    _git(work_dir, "commit", "-qm", "base")
+    base = _git(work_dir, "rev-parse", "HEAD")
+
+    (work_dir / "artifact.bin").write_text("small generated file", encoding="utf-8")
+    _git(work_dir, "add", "-f", "artifact.bin")
+    _git(work_dir, "commit", "-qm", "add ignored")
+    _git(work_dir, "rm", "-q", "artifact.bin")
+    _git(work_dir, "commit", "-qm", "remove ignored")
+    head = _git(work_dir, "rev-parse", "HEAD")
+
+    result = _run_ci_gate_step(
+        work_dir, "检查新增提交中的被忽略文件", {"BASE_SHA": base, "HEAD_SHA": head}
+    )
+    assert result.returncode == 1
+    assert "artifact.bin" in result.stdout
+
+
 def test_ci_large_blob_gate_checks_added_and_removed_versions(work_dir):
     _init_git_repo(work_dir)
     (work_dir / "base.txt").write_text("base\n", encoding="utf-8")
@@ -574,15 +595,21 @@ def test_ci_fetch_range_handles_advanced_pr_base(work_dir):
     _git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
 
     _git(source, "switch", "-qc", "feature")
+    large = source / "large.bin"
+    large.write_bytes(b"x" * 1048577)
+    _git(source, "add", "large.bin")
+    _git(source, "commit", "-qm", "add large")
+    _git(source, "rm", "-q", "large.bin")
     (source / "feature.txt").write_text("feature\n", encoding="utf-8")
     _git(source, "add", "feature.txt")
-    _git(source, "commit", "-qm", "feature")
+    _git(source, "commit", "-qm", "remove large and add feature")
     head = _git(source, "rev-parse", "HEAD")
 
     _git(source, "switch", "-q", "main")
-    (source / "main.txt").write_text("main\n", encoding="utf-8")
-    _git(source, "add", "main.txt")
-    _git(source, "commit", "-qm", "advance base")
+    for index in range(65):
+        (source / "main.txt").write_text(f"{index}\n", encoding="utf-8")
+        _git(source, "add", "main.txt")
+        _git(source, "commit", "-qm", f"advance base {index}")
     base = _git(source, "rev-parse", "HEAD")
     _git(source, "push", "-q", "origin", "main", "feature:refs/pull/7/head")
 
@@ -600,7 +627,52 @@ def test_ci_fetch_range_handles_advanced_pr_base(work_dir):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(checkout, "merge-base", base, head) == original_base
-    assert _git(checkout, "rev-list", "--count", f"{base}..{head}") == "1"
+    assert _git(checkout, "rev-list", "--count", f"{base}..{head}") == "2"
+
+    result = _run_ci_gate_step(
+        checkout, "检查新增提交中的大文件", {"BASE_SHA": base, "HEAD_SHA": head}
+    )
+    assert result.returncode == 1
+    assert "1048577" in result.stdout
+
+
+def test_ci_fetch_range_rejects_unrelated_histories(work_dir):
+    source = work_dir / "source"
+    source.mkdir()
+    _init_git_repo(source)
+    (source / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(source, "add", "base.txt")
+    _git(source, "commit", "-qm", "base")
+    base = _git(source, "rev-parse", "HEAD")
+
+    _git(source, "checkout", "-q", "--orphan", "unrelated")
+    _git(source, "read-tree", "--empty")
+    (source / "other.txt").write_text("other\n", encoding="utf-8")
+    _git(source, "add", "other.txt")
+    _git(source, "commit", "-qm", "unrelated")
+    head = _git(source, "rev-parse", "HEAD")
+
+    origin = work_dir / "origin.git"
+    _git(work_dir, "init", "--bare", "-q", str(origin))
+    _git(source, "remote", "add", "origin", str(origin))
+    _git(source, "push", "-q", "origin", "main", "unrelated")
+    _git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "-q", "--depth=1", f"file://{origin}", str(checkout))
+    result = _run_ci_gate_step(
+        checkout,
+        "获取变更提交范围",
+        {
+            "BASE_SHA": base,
+            "HEAD_SHA": head,
+            "PR_NUMBER": "",
+            "GITHUB_REF": "refs/heads/unrelated",
+        },
+    )
+    assert result.returncode == 1
+    assert "两个提交没有共同祖先" in result.stdout
+    assert "1024" not in result.stdout
 
 
 def test_pipeline_product_paths_derive_rulesets_from_config():

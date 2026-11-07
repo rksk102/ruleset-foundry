@@ -84,11 +84,33 @@ jobs:
             if git merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null; then
               exit 0
             fi
+            if [ "$(git rev-parse --is-shallow-repository)" = "false" ]; then
+              echo "::error::两个提交没有共同祖先，无法建立变更范围。"
+              exit 1
+            fi
             git fetch --no-tags --deepen=64 origin "$BASE_SHA"
             git fetch --no-tags --deepen=64 origin "$fetch_ref"
           done
           echo "::error::无法建立完整变更范围（约 1024 个提交上限），请拆分或同步分支。"
           exit 1
+      - name: 检查新增提交中的被忽略文件
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ignored="$(
+            git log --format= --name-only --no-renames --diff-filter=A -z "${BASE_SHA}..${HEAD_SHA}" |
+              sort -zu |
+              git check-ignore --no-index -z --stdin |
+              tr '\0' '\n' || test "$?" -eq 1
+          )"
+          if [ -n "$ignored" ]; then
+            echo "::error::范围内的提交加入了被忽略文件，即使之后已删除也不得进入历史。"
+            echo "$ignored" | head -20
+            exit 1
+          fi
+          echo "OK: 范围内没有被忽略的新增文件"
       - name: 检查新增提交中的大文件
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
