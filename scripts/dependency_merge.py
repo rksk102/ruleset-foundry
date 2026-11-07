@@ -83,6 +83,17 @@ class MergeConfigError(ValueError):
     """dependency-merge 配置缺失或格式错误。"""
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _value_node in node.value:
+            key = key_node.value
+            if key in seen:
+                raise MergeConfigError(f"配置包含重复键 {key!r}（第 {key_node.start_mark.line + 1} 行）")
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 @dataclass(frozen=True)
 class OptionalCheck:
     name: str
@@ -192,7 +203,7 @@ def load_config(path=DEFAULT_CONFIG_PATH):
     except OSError as exc:
         raise MergeConfigError(f"无法读取配置 {config_path}: {exc}") from exc
     try:
-        data = yaml.safe_load(text)
+        data = yaml.load(text, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         raise MergeConfigError(f"配置 {config_path} 不是合法 YAML: {exc}") from exc
     return parse_config(data)

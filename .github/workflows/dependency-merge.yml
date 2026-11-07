@@ -13,7 +13,7 @@ on:  # zizmor: ignore[dangerous-triggers] 仅执行 main 代码并通过 App API
         required: false
         type: string
       head_sha:
-        description: "已验证的 HEAD SHA；留空则使用 PR 当前 HEAD"
+        description: "已验证的 HEAD SHA；仅可与 PR 编号一起使用，留空则使用 PR 当前 HEAD"
         required: false
         type: string
       dry_run:
@@ -67,6 +67,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RECONCILE" = "true" ]; then
+            if [ -n "${HEAD_SHA:-}" ]; then
+              echo "::error::提供 head_sha 时必须指定 pr_number"
+              exit 1
+            fi
             uv run python scripts/dependency_merge.py \
               --config .github/dependency-merge.yml \
               --reconcile \
