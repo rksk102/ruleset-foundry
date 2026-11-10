@@ -1,41 +1,82 @@
+# Python 构建与缓存
 __pycache__/
 *.py[cod]
+*.egg
 *.egg-info/
-dist/
-build/
+.eggs/
+__pypackages__/
 .venv/
 venv/
+build/
+dist/
+sdist/
+wheels/
 
-.cache/
-logs/
-*.log
-*.zip
-/SHA256SUMS
-*.tmp
-
-/rulesets/
-
-/merged-rules/
-/merged-rules-mrs/
-
-/mihomo
-
-.idea/
-
-.DS_Store
-Thumbs.db
-desktop.ini
-
+# 工具缓存
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.dmypy.json
+dmypy.json
+pytest-cache-files-*/
+
+# 测试覆盖率
 .coverage
 .coverage.*
 coverage.xml
 htmlcov/
-pytest-cache-files-*/
 
+# 本地运行产物与临时文件
+.cache/
+logs/
+*.log
+*.tmp
+*.zip
+/SHA256SUMS
+/mihomo
+
+# 生成产物目录（由 config.yaml 的 paths 派生）
+/rulesets/
+/merged-rules/
+/merged-rules-mrs/
+
+# 本地工具与临时工作区
 .tools/
+/work_dir/
 
+# 本地环境变量（示例文件可入库）
+.env
+.env.*
+!.env.example
 
+# 编辑器与操作系统
+.idea/
+.vscode/
+.history/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+._*
+
+# AI agent 本地配置
+.agents/
+.aider*
+.claude/
+.codex/
+.continue/
+.cursor/
+.gemini/
+.opencode/
+.windsurf/
+.zcode/
+
+# 项目约定：文档目录不入库
 docs/
