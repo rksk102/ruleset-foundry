@@ -5,15 +5,11 @@ import manifest
 import merger
 import pytest
 import utils
+from support import write_text as write
 
 
 def fake_manifest(*rels):
     return manifest.Manifest("test", {rel: "0" * 64 for rel in rels})
-
-
-def write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
 
 
 class TestDetectMode:
@@ -74,6 +70,12 @@ class TestAutoDiscoverFiles:
     def test_hidden_dir_skipped(self, tmp_path):
         write(tmp_path / ".hidden" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
         assert merger.auto_discover_files(str(tmp_path)) == []
+
+    def test_nested_inputs_rejected_instead_of_collapsing_output(self, tmp_path):
+        write(tmp_path / "block" / "domain" / "Owner" / "a.txt", "a.com\n")
+        write(tmp_path / "block" / "domain" / "Owner" / "sub" / "a.txt", "b.com\n")
+        with pytest.raises(ValueError, match="嵌套"):
+            merger.auto_discover_files(str(tmp_path))
 
     def test_missing_dir_returns_empty(self, tmp_path):
         assert merger.auto_discover_files(str(tmp_path / "nope")) == []
