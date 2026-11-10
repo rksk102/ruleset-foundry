@@ -14,10 +14,13 @@ def _reset(monkeypatch, *, ci=False):
     log._LOG_FILE = None
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(log, "_resolve_log_file", lambda: LOG_DIR / "run-test.log")
+    log_path = LOG_DIR / "run-test.log"
+    log_start = log_path.stat().st_size if log_path.exists() else 0
     if ci:
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
     else:
         monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    return log_start
 
 
 class TestEscapeData:
@@ -117,6 +120,33 @@ class TestCommandEscaping:
         assert "%25" not in out
 
 
+class TestControlSequenceEscaping:
+    def test_osc_csi_and_esc_sequences_are_escaped(self, monkeypatch, capsys):
+        _reset(monkeypatch, ci=True)
+        log.info("OSC:\x1b]52;payload\x07 CSI:\x1b[2J ESC:\x1bP")
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+        assert "\\x1b]52;payload\\x07" in out
+        assert "\\x1b[2J" in out
+        assert "\\x1bP" in out
+
+    def test_control_characters_escaped_in_log_file(self, monkeypatch):
+        start = _reset(monkeypatch, ci=True)
+        log.info("\x1b]52;payload\x07\x85")
+        logging.getLogger("mihomo-rules").handlers[1].flush()
+        with (LOG_DIR / "run-test.log").open(encoding="utf-8") as handle:
+            handle.seek(start)
+            content = handle.read()
+        assert "\x1b" not in content
+        assert "\x07" not in content
+        assert "\\x1b]52;payload\\x07\\x85" in content
+
+    def test_unicode_url_and_allowed_whitespace_preserved(self):
+        text = "中文 https://example.com/a%20b\n下一行\t缩进"
+        assert log._render(text) == text
+
+
 class TestConsoleReadability:
     def test_local_console_restores_newlines(self, monkeypatch, capsys):
         _reset(monkeypatch)
@@ -128,17 +158,21 @@ class TestConsoleReadability:
 
 class TestLogFile:
     def test_log_file_has_no_ansi_and_keeps_message(self, monkeypatch):
-        _reset(monkeypatch, ci=True)
+        start = _reset(monkeypatch, ci=True)
         log.warning("磁盘告警")
         logging.getLogger("mihomo-rules").handlers[1].flush()
-        content = (LOG_DIR / "run-test.log").read_text(encoding="utf-8")
+        with (LOG_DIR / "run-test.log").open(encoding="utf-8") as handle:
+            handle.seek(start)
+            content = handle.read()
         assert "磁盘告警" in content
         assert "\x1b" not in content
 
     def test_log_file_strips_ansi_from_message(self, monkeypatch):
-        _reset(monkeypatch, ci=True)
+        start = _reset(monkeypatch, ci=True)
         log.info("\x1b[31m红色\x1b[0m")
         logging.getLogger("mihomo-rules").handlers[1].flush()
-        content = (LOG_DIR / "run-test.log").read_text(encoding="utf-8")
+        with (LOG_DIR / "run-test.log").open(encoding="utf-8") as handle:
+            handle.seek(start)
+            content = handle.read()
         assert "红色" in content
         assert "\x1b" not in content

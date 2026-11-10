@@ -19,6 +19,7 @@ class Colors:
 LOG_KEEP_COUNT = 20
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_LOG_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _ESCAPE_RE = re.compile(r"[%\r\n]")
 _ESCAPE_MAP = {"%": "%25", "\r": "%0D", "\n": "%0A"}
 
@@ -39,7 +40,8 @@ def _defang_command_lines(text):
 
 
 def _render(msg):
-    return _defang_command_lines(str(msg))
+    text = _LOG_CONTROL_RE.sub(lambda match: f"\\x{ord(match.group(0)):02x}", str(msg))
+    return _defang_command_lines(text)
 
 
 class _StripAnsiFilter(logging.Filter):
