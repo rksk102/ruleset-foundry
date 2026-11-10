@@ -147,6 +147,18 @@ class TestDomainCleaning:
         assert self.clean(["example.com/ads/path"]) == ["example.com"]
         assert self.clean(["example.com:8080"]) == ["example.com"]
 
+    @pytest.mark.parametrize("rule", ["full:example.com/path", "domain:example.com/path", "DOMAIN,example.com/path"])
+    def test_explicit_path_rules_are_rejected(self, rule):
+        result, stats = processor.process_domain_detailed([rule])
+        assert result == []
+        assert stats["unrecognized"] == 1
+
+    def test_adblock_path_retains_dropped_path_count(self):
+        result, stats = processor.process_domain_detailed(["||example.com/path^"])
+        assert result == []
+        assert stats["dropped_path"] == 1
+        assert stats["unrecognized"] == 0
+
     def test_ip_literal_dropped(self):
         assert self.clean(["1.2.3.4", "10.0.0.1/32"]) == []
 
@@ -439,6 +451,13 @@ class TestParseLines:
         header = "\n".join(f"# comment {i}" for i in range(80))
         content = header + "\npayload:\n  - '+.example.com'\n"
         assert processor.parse_lines(content) == ["+.example.com"]
+
+    def test_single_base64_shaped_domain_is_not_rewritten(self):
+        assert processor.parse_lines("YWJjLmRlZmV4YW1wbGVz") == ["YWJjLmRlZmV4YW1wbGVz"]
+
+    def test_base64_yaml_payload_still_decoded(self):
+        encoded = base64.b64encode(b"payload:\n  - hidden.com\n").decode()
+        assert processor.parse_lines(encoded) == ["hidden.com"]
 
     def test_base64_payload_decoded(self):
         encoded = base64.b64encode(b"hidden.com\nanother.com").decode()
