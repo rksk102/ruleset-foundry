@@ -6,7 +6,7 @@
 - 只读查询使用 ``gh pr view`` / ``gh pr list``，合并使用
   ``gh pr merge --merge --match-head-commit <sha>``，绝不使用 ``--auto`` / ``--admin``；
 - 所有 gh 调用都经过可替换 runner，测试注入假 runner，不访问网络；
-- ``statusCheckRollup`` 与 ``headRefOid`` 取自同一次 PR 读取，判定与合并都用该 SHA，
+- ``statusCheckRollup`` 用于观察状态；必需 CI 另经 REST 核验 Actions App、精确 head 与同一 CI run，
   ``--match-head-commit`` 负责兜底读取与合并之间的 head 漂移；
 - 已 MERGED 视为幂等成功，不再合并/评论；合并后回读确认 MERGED，评论失败只告警。
 
@@ -72,6 +72,8 @@ IGNORED_AI_CHECKS = frozenset(
 )
 # 同名检查出现多条时取最严重状态，避免旧结果掩盖失败。
 CHECK_SEVERITY = {"success": 0, "neutral": 1, "skipped": 2, "pending": 3, "failure": 4}
+GITHUB_ACTIONS_APP_ID = 15368
+CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
 DECISION_LABELS = {MERGE_KIND: "合并", WAIT_KIND: "等待", BLOCK_KIND: "阻塞", ERROR_KIND: "错误"}
 
 
@@ -296,6 +298,26 @@ class Gh:
         comments = data.get("comments") if isinstance(data, dict) else None
         return [str(item.get("body") or "") for item in comments or [] if isinstance(item, dict)]
 
+    def trusted_check_runs(self, head_sha):
+        data = self._json(
+            [
+                "api",
+                f"repos/{self.repository}/commits/{head_sha}/check-runs",
+                "--method",
+                "GET",
+                "-f",
+                "per_page=100",
+            ]
+        )
+        checks = data.get("check_runs") if isinstance(data, dict) else None
+        if not isinstance(checks, list):
+            raise GhError("Checks API 输出缺少 check_runs 列表")
+        return [entry for entry in checks if isinstance(entry, dict)]
+
+    def workflow_run(self, run_id):
+        data = self._json(["api", f"repos/{self.repository}/actions/runs/{run_id}"])
+        return data if isinstance(data, dict) else {}
+
     def comment_pr(self, number, body):
         self._run(["pr", "comment", str(number), "--repo", self.repository, "--body", body])
 
@@ -414,13 +436,57 @@ def _same_repository(pr, repository):
     return True, ""
 
 
-def evaluate_pr(pr, config, expected_sha=None):
-    """纯判定：不调用 gh，不产生写操作。"""
+def _trusted_ci_run(gh, rollup, config, head_sha):
+    """必需 CI 只接受 Actions App 在同一 head、同一 CI run 产生的检查。"""
+    run_ids = set()
+    for name in config.required_checks:
+        candidates = [
+            entry for entry in rollup if _entry_name(entry) == name and _entry_state(entry) == "success"
+        ]
+        if not candidates:
+            return None, f"{name} 缺失"
+        reasons = set()
+        trusted_run_ids = set()
+        for entry in candidates:
+            if entry.get("head_sha") != head_sha:
+                reasons.add(f"{name} 不属于当前 head")
+                continue
+            if entry.get("__typename") == "StatusContext":
+                reasons.add(f"{name} 来源不可信")
+                continue
+            app = entry.get("app")
+            if not isinstance(app, dict) or app.get("id") != GITHUB_ACTIONS_APP_ID:
+                reasons.add(f"{name} 来源不可信")
+                continue
+            match = re.fullmatch(
+                rf"https://github\.com/{re.escape(config.repository)}/actions/runs/([1-9][0-9]*)/job/[1-9][0-9]*",
+                entry.get("details_url") or "",
+            )
+            if match is None:
+                reasons.add(f"{name} 缺少 Actions run 绑定")
+                continue
+            trusted_run_ids.add(int(match.group(1)))
+        if not trusted_run_ids:
+            return None, sorted(reasons)[0]
+        run_ids.update(trusted_run_ids)
+    if len(run_ids) != 1:
+        return None, "必需检查不属于同一 CI run"
+    run_id = run_ids.pop()
+    run = gh.workflow_run(run_id)
+    if run.get("id") != run_id or run.get("head_sha") != head_sha:
+        return None, "CI run 与当前 head 不匹配"
+    if run.get("path") != CI_WORKFLOW_PATH or run.get("name") != "CI":
+        return None, "必需检查不属于预期 CI 工作流"
+    return run_id, ""
+
+
+def evaluate_pr(pr, config, expected_sha=None, rollup=None, workflow_verifier=None):
+    """纯判定接受已核实的检查来源；真实 API 读取由 process_pr 注入。"""
     if not isinstance(pr, dict):
         raise GhError("gh 返回的 PR 数据不是对象")
     number = pr.get("number")
     head_sha = pr.get("headRefOid")
-    states = rollup_states(pr.get("statusCheckRollup"), config)
+    observed_states = rollup_states(pr.get("statusCheckRollup"), config)
 
     def decide(kind, reason, **kwargs):
         return Decision(
@@ -428,7 +494,7 @@ def evaluate_pr(pr, config, expected_sha=None):
             reason=reason,
             pr_number=number,
             head_sha=head_sha,
-            checks=dict(states),
+            checks=dict(observed_states),
             **kwargs,
         )
 
@@ -477,7 +543,12 @@ def evaluate_pr(pr, config, expected_sha=None):
             return decide(WAIT_KIND, "mergeable=UNKNOWN，等待 GitHub 计算合并状态")
         return decide(WAIT_KIND, f"mergeable={mergeable}，暂不能直接合并")
 
-    check_kind, check_reason = evaluate_checks(states, config)
+    verified_states = rollup_states(rollup, config) if rollup is not None else {}
+    check_kind, check_reason = evaluate_checks(verified_states, config)
+    if check_kind == PASS_KIND and workflow_verifier is not None:
+        source_reason = workflow_verifier()
+        if source_reason:
+            return decide(WAIT_KIND, source_reason)
     if check_kind != PASS_KIND:
         return decide(check_kind, check_reason)
     return decide(MERGE_KIND, f"满足合并条件（分支 {branch}，分组 {group}，head {head_sha}）")
@@ -505,7 +576,16 @@ def comment_merged(gh, decision):
 
 
 def process_pr(gh, config, pr, expected_sha=None, dry_run=False):
-    decision = evaluate_pr(pr, config, expected_sha=expected_sha)
+    head_sha = pr.get("headRefOid") if isinstance(pr, dict) else None
+    rollup = None
+    if isinstance(head_sha, str) and SHA_RE.fullmatch(head_sha):
+        rollup = gh.trusted_check_runs(head_sha)
+        source_reason = _trusted_ci_run(gh, rollup, config, head_sha)[1]
+    else:
+        source_reason = "head SHA 非法，无法读取可信检查"
+    decision = evaluate_pr(
+        pr, config, expected_sha=expected_sha, rollup=rollup, workflow_verifier=lambda: source_reason
+    )
     if decision.kind != MERGE_KIND or decision.already_merged:
         return decision
     if dry_run:
