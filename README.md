@@ -161,8 +161,8 @@ rules:
 > 需要固定版本或整包下载请使用 [Releases](https://github.com/rksk102/ruleset-foundry/releases)
 > （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
 
-Releases 仅适合**短期固定**：默认只保留最近 30 天，过期的 Release 与 tag 会在**后续成功发布**
-的收尾阶段清理（不是独立的每日定时任务）；需要长期使用时请跟随
+Releases 仅适合**短期固定**：默认只保留最近 30 天，过期的 Release 与 tag 会在**后续成功运行的发布收尾（包括无内容变化轮次）**
+中清理（不是独立的每日定时任务）；需要长期使用时请跟随
 [`latest`](https://github.com/rksk102/ruleset-foundry/releases/latest) 或自行镜像产物。
 
 ## 安全与许可
