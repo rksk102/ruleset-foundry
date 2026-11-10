@@ -1,4 +1,60 @@
+import ctypes
+import ctypes.util
 import json
+import struct
+from pathlib import Path
+
+import gen_readme
+
+
+def write_text(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def write_paired_product(root, rel, text=b"x"):
+    relative = root / "merged-rules" / rel
+    relative.parent.mkdir(parents=True, exist_ok=True)
+    relative.write_bytes(text)
+    mrs = root / "merged-rules-mrs" / Path(rel).with_suffix(".mrs")
+    mrs.parent.mkdir(parents=True, exist_ok=True)
+    mrs.write_bytes(valid_mrs_bytes("ipcidr" if "/ipcidr/" in rel else "domain"))
+
+
+def isolate_readme_paths(monkeypatch, root, readme, rules_rel="merged-rules", mrs_rel="merged-rules-mrs"):
+    monkeypatch.setattr(gen_readme, "REPO_ROOT", str(root))
+    monkeypatch.setattr(gen_readme, "README_FILE", str(readme))
+    monkeypatch.setattr(gen_readme, "DIR_RULES", str(root / rules_rel))
+    monkeypatch.setattr(gen_readme, "DIR_MRS", str(root / mrs_rel))
+
+
+def write_quickstart_mrs_placeholders(root):
+    for task in gen_readme.quickstart_merge_tasks():
+        path = root / gen_readme.quickstart_mrs_relpath(task)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"MRS fixture")
+
+
+def valid_mrs_bytes(behavior="domain"):
+    return compress_zstd(b"MRS\x01" + bytes([0 if behavior == "domain" else 1]) + struct.pack(">qq", 1, 0) + b"rules")
+
+
+def compress_zstd(payload):
+    lib = ctypes.CDLL(ctypes.util.find_library("zstd") or "libzstd.so.1")
+    lib.ZSTD_compressBound.argtypes = (ctypes.c_size_t,)
+    lib.ZSTD_compressBound.restype = ctypes.c_size_t
+    lib.ZSTD_compress.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+    )
+    lib.ZSTD_compress.restype = ctypes.c_size_t
+    target = ctypes.create_string_buffer(lib.ZSTD_compressBound(len(payload)))
+    size = lib.ZSTD_compress(target, len(target), payload, len(payload), 1)
+    assert size < len(target)
+    return target.raw[:size]
 
 
 class GhStub:

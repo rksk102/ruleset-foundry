@@ -3,11 +3,7 @@ from typing import ClassVar
 import main
 import pytest
 import utils
-
-
-def write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+from support import write_text as write
 
 
 def key(path):
@@ -793,31 +789,21 @@ class TestCombinedDropGate:
             + [f"1.{i}.0.0/24" for i in range(valid)]
         )
 
-    def test_domain_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
-        count, errors, writes = self.run_group(
-            self.DOMAIN_GROUP, self.domain_lines(19, 19, 62), monkeypatch
-        )
+    @pytest.mark.parametrize("kind", ["domain", "ipcidr"])
+    def test_two_drop_kinds_summed_fail_gate_without_writing(self, kind, monkeypatch):
+        group = self.DOMAIN_GROUP if kind == "domain" else self.IP_GROUP
+        lines = self.domain_lines(19, 19, 62) if kind == "domain" else self.ip_lines(19, 19, 62)
+        count, errors, writes = self.run_group(group, lines, monkeypatch)
 
         assert count is None
         assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
 
-    def test_ipcidr_two_drop_kinds_summed_fail_gate_without_writing(self, monkeypatch):
-        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(19, 19, 62), monkeypatch)
-
-        assert count is None
-        assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
-        assert writes == []
-
-    def test_domain_small_mixed_noise_passes(self, monkeypatch):
-        count, errors, writes = self.run_group(self.DOMAIN_GROUP, self.domain_lines(4, 4, 92), monkeypatch)
-
-        assert count == 92
-        assert errors["parse"] == []
-        assert len(writes) == 1
-
-    def test_ipcidr_small_mixed_noise_passes(self, monkeypatch):
-        count, errors, writes = self.run_group(self.IP_GROUP, self.ip_lines(4, 4, 92), monkeypatch)
+    @pytest.mark.parametrize("kind", ["domain", "ipcidr"])
+    def test_small_mixed_noise_passes(self, kind, monkeypatch):
+        group = self.DOMAIN_GROUP if kind == "domain" else self.IP_GROUP
+        lines = self.domain_lines(4, 4, 92) if kind == "domain" else self.ip_lines(4, 4, 92)
+        count, errors, writes = self.run_group(group, lines, monkeypatch)
 
         assert count == 92
         assert errors["parse"] == []
