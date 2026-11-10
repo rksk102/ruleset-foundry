@@ -1,7 +1,9 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import main
 import pytest
+from support import write_text as write
 
 SOURCE_URL = "https://github.com/o/r/raw/m/x.txt"
 
@@ -16,6 +18,67 @@ def load_sources(monkeypatch, work_dir, content):
 
 def single_task(monkeypatch, work_dir, content):
     return load_sources(monkeypatch, work_dir, content)[0]
+
+
+class TestStagedCommit:
+    def prepare(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        staging = root / ".staging-test"
+        for name in ("a.txt", "b.txt"):
+            write(root / name, f"old-{name}")
+            write(staging / name, f"new-{name}")
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
+        return root, staging, [root / "a.txt", root / "b.txt"]
+
+    def test_second_replace_failure_restores_previous_generation(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        real_replace = main.os.replace
+        target_calls = 0
+
+        def fail_second(src, dst):
+            nonlocal target_calls
+            if Path(src).parent == staging:
+                target_calls += 1
+                if target_calls == 2:
+                    raise OSError("injected replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=fail_second), pytest.raises(
+            OSError, match="injected replace failure"
+        ):
+            main.commit_staged_products(staging, files)
+
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+        assert not list(root.glob(".rollback-*"))
+
+    def test_new_file_is_removed_when_later_replace_fails(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        new_file = root / "new.txt"
+        write(staging / "new.txt", "new")
+        files.insert(1, new_file)
+        real_replace = main.os.replace
+        calls = 0
+
+        def fail_last(src, dst):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("injected replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=fail_last), pytest.raises(OSError):
+            main.commit_staged_products(staging, files)
+
+        assert not new_file.exists()
+        assert [path.read_text(encoding="utf-8") for path in (root / "a.txt", root / "b.txt")] == [
+            "old-a.txt", "old-b.txt"
+        ]
+
+    def test_success_commits_all_files_without_rollback_artifacts(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        main.commit_staged_products(staging, files)
+        assert [path.read_text(encoding="utf-8") for path in files] == ["new-a.txt", "new-b.txt"]
+        assert not list(root.glob(".rollback-*"))
 
 
 class TestMarkerWhitelistRejected:

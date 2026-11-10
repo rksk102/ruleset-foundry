@@ -377,9 +377,31 @@ def commit_staged_products(staging_root, expected_files):
         if not staged.is_file():
             raise FileNotFoundError(f"暂存产物缺失: {staged}")
         moves.append((staged, final))
-    for staged, final in moves:
+    for _staged, final in moves:
         final.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staged, final)
+    rollback_root = Path(tempfile.mkdtemp(prefix=".rollback-", dir=Path(staging_root).parent))
+    applied = []
+    try:
+        for staged, final in moves:
+            backup = rollback_root / str(len(applied))
+            if final.exists():
+                if not final.is_file() or final.is_symlink():
+                    raise OSError(f"旧产物不是普通文件，拒绝替换: {final}")
+                os.replace(final, backup)
+            applied.append((final, backup))
+            os.replace(staged, final)
+    except Exception:
+        for final, backup in reversed(applied):
+            try:
+                if backup.exists():
+                    os.replace(backup, final)
+                else:
+                    final.unlink(missing_ok=True)
+            except OSError as e:
+                gh_error(f"暂存提交失败后的旧产物恢复失败: {final}（{e}）")
+        raise
+    finally:
+        shutil.rmtree(rollback_root, ignore_errors=True)
 
 
 def _base_rel_path(task):
