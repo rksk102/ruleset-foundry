@@ -29,6 +29,18 @@ class TestMrsFormat:
         with pytest.raises(mrs_format.MrsFormatError):
             mrs_format.validate_mrs(path, "domain")
 
+    def test_valid_header_with_truncated_body_rejected(self, work_dir):
+        path = work_dir / "body-truncated.mrs"
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + b"\x01\x00"))
+        with pytest.raises(mrs_format.MrsFormatError):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_trailing_compressed_data_rejected(self, work_dir):
+        path = work_dir / "trailing.mrs"
+        path.write_bytes(valid_mrs_bytes() + b"junk")
+        with pytest.raises(mrs_format.MrsFormatError):
+            mrs_format.validate_mrs(path, "domain")
+
     def test_wrong_behavior_rejected(self, work_dir):
         path = work_dir / "wrong.mrs"
         valid_mrs(path, "domain")

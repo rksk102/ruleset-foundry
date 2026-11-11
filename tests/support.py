@@ -36,7 +36,21 @@ def write_quickstart_mrs_placeholders(root):
 
 
 def valid_mrs_bytes(behavior="domain"):
-    return compress_zstd(b"MRS\x01" + bytes([0 if behavior == "domain" else 1]) + struct.pack(">qq", 1, 0) + b"rules")
+    if behavior == "domain":
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\0" * 8
+            + struct.pack(">q", 1)
+            + b"\0" * 8
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+    elif behavior == "ipcidr":
+        body = b"\x01" + struct.pack(">q", 1) + b"\0" * 32
+    else:
+        raise ValueError(f"unsupported behavior: {behavior}")
+    return compress_zstd(b"MRS\x01" + bytes([0 if behavior == "domain" else 1]) + struct.pack(">qq", 1, 0) + body)
 
 
 def compress_zstd(payload):
