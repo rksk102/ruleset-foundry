@@ -1041,7 +1041,7 @@ class TestProcessGroupIpUnrecognizedGate:
         assert not any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
 
 
-class _Boom(BaseException):
+class _Boom(Exception):
     pass
 
 
@@ -1056,6 +1056,14 @@ class TestDownloadAll:
         results = asyncio.run(main.download_all(tasks))
 
         assert results == [(tasks[0], b"ok", None), (tasks[1], b"ok", None)]
+
+    def test_keyboard_interrupt_is_not_normalized(self, monkeypatch):
+        async def fake_download_one(_session, _task):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(main, "download_one", fake_download_one)
+        with pytest.raises(KeyboardInterrupt):
+            asyncio.run(main.download_all([{"url": "https://example.com/a.txt"}]))
 
     def test_base_exception_is_normalized(self, monkeypatch):
         async def fake_download_one(_session, task):
