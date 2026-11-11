@@ -307,12 +307,19 @@ class Gh:
                 "GET",
                 "-f",
                 "per_page=100",
+                "--paginate",
+                "--slurp",
             ]
         )
-        checks = data.get("check_runs") if isinstance(data, dict) else None
-        if not isinstance(checks, list):
-            raise GhError("Checks API 输出缺少 check_runs 列表")
-        return [entry for entry in checks if isinstance(entry, dict)]
+        if not isinstance(data, list):
+            raise GhError("Checks API 分页输出不是页列表")
+        checks = []
+        for page in data:
+            entries = page.get("check_runs") if isinstance(page, dict) else None
+            if not isinstance(entries, list):
+                raise GhError("Checks API 分页输出缺少 check_runs 列表")
+            checks.extend(entry for entry in entries if isinstance(entry, dict))
+        return checks
 
     def workflow_run(self, run_id):
         data = self._json(["api", f"repos/{self.repository}/actions/runs/{run_id}"])
@@ -436,48 +443,67 @@ def _same_repository(pr, repository):
     return True, ""
 
 
+def _actions_run_id(entry, repository):
+    match = re.fullmatch(
+        rf"https://github\.com/{re.escape(repository)}/actions/runs/([1-9][0-9]*)/job/[1-9][0-9]*",
+        entry.get("details_url") or "",
+    )
+    return int(match.group(1)) if match else None
+
+
 def _trusted_ci_run(gh, rollup, config, head_sha):
-    """必需 CI 只接受 Actions App 在同一 head、同一 CI run 产生的检查。"""
-    run_ids = set()
-    for name in config.required_checks:
-        candidates = [
-            entry for entry in rollup if _entry_name(entry) == name and _entry_state(entry) == "success"
-        ]
-        if not candidates:
-            return None, f"{name} 缺失"
-        reasons = set()
-        trusted_run_ids = set()
-        for entry in candidates:
-            if entry.get("head_sha") != head_sha:
-                reasons.add(f"{name} 不属于当前 head")
-                continue
-            if entry.get("__typename") == "StatusContext":
-                reasons.add(f"{name} 来源不可信")
-                continue
-            app = entry.get("app")
-            if not isinstance(app, dict) or app.get("id") != GITHUB_ACTIONS_APP_ID:
-                reasons.add(f"{name} 来源不可信")
-                continue
-            match = re.fullmatch(
-                rf"https://github\.com/{re.escape(config.repository)}/actions/runs/([1-9][0-9]*)/job/[1-9][0-9]*",
-                entry.get("details_url") or "",
-            )
-            if match is None:
-                reasons.add(f"{name} 缺少 Actions run 绑定")
-                continue
-            trusted_run_ids.add(int(match.group(1)))
-        if not trusted_run_ids:
-            return None, sorted(reasons)[0]
-        run_ids.update(trusted_run_ids)
-    if len(run_ids) != 1:
-        return None, "必需检查不属于同一 CI run"
-    run_id = run_ids.pop()
+    """选择同一 head 上包含全部成功必需检查的最新可信 CI run。"""
+    runs = {}
+    reasons = set()
+    for entry in rollup:
+        name = _entry_name(entry)
+        if name not in config.required_checks:
+            continue
+        if entry.get("head_sha") != head_sha:
+            reasons.add(f"{name} 不属于当前 head")
+            continue
+        app = entry.get("app")
+        if (
+            entry.get("__typename") == "StatusContext"
+            or not isinstance(app, dict)
+            or app.get("id") != GITHUB_ACTIONS_APP_ID
+        ):
+            reasons.add(f"{name} 来源不可信")
+            continue
+        run_id = _actions_run_id(entry, config.repository)
+        if run_id is None:
+            reasons.add(f"{name} 缺少 Actions run 绑定")
+            continue
+        runs.setdefault(run_id, []).append(entry)
+    if not runs:
+        return None, sorted(reasons)[0] if reasons else "必需检查缺失"
+    run_id = max(runs)
     run = gh.workflow_run(run_id)
     if run.get("id") != run_id or run.get("head_sha") != head_sha:
         return None, "CI run 与当前 head 不匹配"
     if run.get("path") != CI_WORKFLOW_PATH or run.get("name") != "CI":
         return None, "必需检查不属于预期 CI 工作流"
+    if _entry_state_check(run_id, runs[run_id], config) != PASS_KIND:
+        if reasons:
+            return None, sorted(reasons)[0]
+        if len(runs) > 1 or any(
+            _entry_state_check(candidate, entries, config) == PASS_KIND
+            for candidate, entries in runs.items()
+        ):
+            return None, "必需检查不属于同一 CI run"
+        return None, "最新可信 CI run 的必需检查未全部通过"
     return run_id, ""
+
+
+def _entry_state_check(run_id, entries, config):
+    states = {}
+    for entry in entries:
+        name = _entry_name(entry)
+        state = _entry_state(entry)
+        if name in states and CHECK_SEVERITY[state] < CHECK_SEVERITY[states[name]]:
+            continue
+        states[name] = state
+    return evaluate_checks(states, config)[0]
 
 
 def evaluate_pr(pr, config, expected_sha=None, rollup=None, workflow_verifier=None):
@@ -576,11 +602,17 @@ def comment_merged(gh, decision):
 
 
 def process_pr(gh, config, pr, expected_sha=None, dry_run=False):
-    head_sha = pr.get("headRefOid") if isinstance(pr, dict) else None
+    if not isinstance(pr, dict):
+        raise GhError("gh 返回的 PR 数据不是对象")
+    if pr.get("state") == "MERGED":
+        return evaluate_pr(pr, config, expected_sha=expected_sha)
+    head_sha = pr.get("headRefOid")
     rollup = None
     if isinstance(head_sha, str) and SHA_RE.fullmatch(head_sha):
         rollup = gh.trusted_check_runs(head_sha)
-        source_reason = _trusted_ci_run(gh, rollup, config, head_sha)[1]
+        run_id, source_reason = _trusted_ci_run(gh, rollup, config, head_sha)
+        if run_id is not None:
+            rollup = [entry for entry in rollup if _actions_run_id(entry, config.repository) == run_id]
     else:
         source_reason = "head SHA 非法，无法读取可信检查"
     decision = evaluate_pr(
@@ -618,7 +650,7 @@ def run_reconcile(gh, config, dry_run=False):
     for pr in gh.list_open_prs():
         try:
             decisions.append(process_pr(gh, config, pr, expected_sha=None, dry_run=dry_run))
-        except GhError as exc:
+        except Exception as exc:
             decisions.append(
                 Decision(
                     kind=ERROR_KIND,

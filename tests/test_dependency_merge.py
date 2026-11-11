@@ -111,8 +111,9 @@ def _flag(cmd, flag):
 class FakeGh:
     """gh 命令边界替身；只实现本模块用到的调用，不访问网络。"""
 
-    def __init__(self, prs=(), comments=None):
+    def __init__(self, prs=(), comments=None, check_pages=None):
         self.prs = {int(pr["number"]): copy.deepcopy(pr) for pr in prs}
+        self.check_pages = check_pages
         self.comments = {int(number): list(bodies) for number, bodies in (comments or {}).items()}
         self.calls = []
         self.failures = []
@@ -143,7 +144,8 @@ class FakeGh:
         if "/commits/" in endpoint and endpoint.endswith("/check-runs"):
             pr = next((pr for pr in self.prs.values() if f"/{pr['headRefOid']}/" in endpoint), None)
             checks = pr["statusCheckRollup"] if pr is not None else []
-            return json.dumps({"total_count": len(checks), "check_runs": checks})
+            pages = self.check_pages if self.check_pages is not None else [checks]
+            return json.dumps([{"total_count": len(checks), "check_runs": page} for page in pages])
         if "/actions/runs/" in endpoint:
             run_id = int(endpoint.rsplit("/", 1)[1])
             pr = next(
@@ -319,6 +321,53 @@ def test_required_checks_must_belong_to_the_same_ci_run():
     assert "必需检查不属于同一 CI run" in decision.reason
 
 
+def test_latest_complete_successful_run_is_selected():
+    pr = make_pr()
+    # 默认完整成功 run 140 之外，再添加完整成功 run 139。
+    pr["statusCheckRollup"].extend(
+        check(name, run_id=139, job_id=13901 + i) for i, name in enumerate(CONFIG.required_checks)
+    )
+
+    decision, fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+    assert any(call[1].endswith("/actions/runs/140") for call in fake.calls if call[0] == "api")
+
+
+def test_old_failure_does_not_block_new_successful_run():
+    pr = make_pr()
+    pr["statusCheckRollup"].append(check("test", conclusion="FAILURE", run_id=139, job_id=13999))
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+
+
+def test_new_failure_cannot_be_hidden_by_old_success():
+    pr = make_pr()
+    replace_check(pr, "test", check("test", conclusion="FAILURE"))
+    pr["statusCheckRollup"].extend(
+        check(name, run_id=139, job_id=13901 + i) for i, name in enumerate(CONFIG.required_checks)
+    )
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.BLOCK_KIND
+    assert "test failure" in decision.reason
+
+
+def test_checks_are_read_from_all_paginated_pages():
+    pr = make_pr()
+    checks = pr["statusCheckRollup"]
+    fake = FakeGh([pr], check_pages=[[check("lint")], [entry for entry in checks if entry["name"] != "lint"]])
+
+    decision, fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+    command = next(call for call in fake.calls if call[0] == "api" and "/check-runs" in call[1])
+    assert "--paginate" in command and "--slurp" in command
+
+
 def test_unexpected_workflow_cannot_satisfy_required_checks():
     pr = make_pr()
     fake = FakeGh([pr])
@@ -374,11 +423,16 @@ def test_required_check_boundaries(replacement, expected_kind, needle):
         ("Analyze (python)", None, dm.MERGE_KIND, ""),
         (
             "Analyze (actions)",
-            check("Analyze (actions)", status="IN_PROGRESS", conclusion=None),
+            check("Analyze (actions)", status="IN_PROGRESS", conclusion=None, run_id=140, job_id=14098),
             dm.WAIT_KIND,
             "Analyze (actions) pending",
         ),
-        ("Analyze (python)", check("Analyze (python)", conclusion="SKIPPED"), dm.BLOCK_KIND, "skipped"),
+        (
+            "Analyze (python)",
+            check("Analyze (python)", conclusion="SKIPPED", run_id=140, job_id=14099),
+            dm.BLOCK_KIND,
+            "skipped",
+        ),
         ("CodeQL", check("CodeQL", conclusion="NEUTRAL"), dm.MERGE_KIND, ""),
     ],
     ids=["absent", "pending", "unallowed-skipped", "codeql-neutral"],
@@ -521,6 +575,35 @@ def test_already_merged_pr_is_idempotent_success():
     assert decision.merged is False
     assert merge_calls(fake) == []
     assert comment_calls(fake) == []
+
+
+def test_already_merged_pr_skips_checks_even_when_api_fails():
+    fake = FakeGh([make_pr(state="MERGED")])
+    fake.fail_when(lambda cmd: cmd[0] == "api")
+    gh = dm.Gh(REPO, runner=fake)
+
+    decision = dm.run_single(gh, CONFIG, pr_number=40)
+
+    assert decision.already_merged is True
+    assert not [call for call in fake.calls if call[0] == "api"]
+    assert merge_calls(fake) == [] and comment_calls(fake) == []
+
+
+def test_reconcile_isolates_non_gh_error_per_pr(monkeypatch):
+    fake = FakeGh([make_pr(40), make_pr(41), make_pr(42)])
+    gh = dm.Gh(REPO, runner=fake)
+    original = dm.process_pr
+
+    def fail_one(gh, config, pr, **kwargs):
+        if pr["number"] == 41:
+            raise RuntimeError("boom")
+        return original(gh, config, pr, **kwargs)
+
+    monkeypatch.setattr(dm, "process_pr", fail_one)
+    decisions = dm.run_reconcile(gh, CONFIG, dry_run=True)
+
+    assert [decision.kind for decision in decisions] == [dm.MERGE_KIND, dm.ERROR_KIND, dm.MERGE_KIND]
+    assert decisions[1].pr_number == 41
 
 
 def test_head_branch_lookup_requires_unique_open_pr():
