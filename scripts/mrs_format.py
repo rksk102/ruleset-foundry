@@ -126,8 +126,7 @@ def _int64(reader):
 def _records(reader, count, width):
     if count < 1 or count > MAX_DECOMPRESSED_BYTES // width:
         raise MrsFormatError("MRS 主体记录数非法")
-    for _ in range(count):
-        reader.read_exact(width)
+    return b"".join(reader.read_exact(width) for _ in range(count))
 
 
 def _validate_body(reader, behavior):
@@ -136,14 +135,21 @@ def _validate_body(reader, behavior):
     if behavior == "ipcidr":
         _records(reader, _int64(reader), 32)
         return
-    leaves = _int64(reader)
-    _records(reader, leaves, 8)
-    bitmap = _int64(reader)
-    _records(reader, bitmap, 8)
-    labels = _int64(reader)
-    if labels < 1 or labels > MAX_DECOMPRESSED_BYTES:
+    leaves = _records(reader, _int64(reader), 8)
+    bitmap = _records(reader, _int64(reader), 8)
+    labels_length = _int64(reader)
+    if labels_length < 1 or labels_length > MAX_DECOMPRESSED_BYTES:
         raise MrsFormatError("MRS 标签长度非法")
-    reader.read_exact(labels)
+    labels = reader.read_exact(labels_length)
+    if not bitmap:
+        raise MrsFormatError("MRS 标签位图为空")
+    leaf_count = sum(value.bit_count() for value in struct.unpack(f">{len(leaves) // 8}Q", leaves))
+    if leaf_count == 0:
+        raise MrsFormatError("MRS 没有有效叶节点")
+    words = struct.unpack(f">{len(bitmap) // 8}Q", bitmap)
+    if sum(value.bit_count() for value in words) != len(labels) + 1:
+        raise MrsFormatError("MRS 标签位图与标签内容长度不一致")
+        raise MrsFormatError("MRS 标签位图与标签内容长度不一致")
 
 
 def validate_mrs(path, behavior):

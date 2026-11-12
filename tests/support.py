@@ -40,9 +40,9 @@ def valid_mrs_bytes(behavior="domain"):
         body = (
             b"\x01"
             + struct.pack(">q", 1)
-            + b"\0" * 8
+            + b"\xc0" + b"\0" * 7
             + struct.pack(">q", 1)
-            + b"\0" * 8
+            + b"\xc0" + b"\0" * 7
             + struct.pack(">q", 1)
             + b"x"
         )

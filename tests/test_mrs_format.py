@@ -41,6 +41,36 @@ class TestMrsFormat:
         with pytest.raises(mrs_format.MrsFormatError):
             mrs_format.validate_mrs(path, "domain")
 
+    def test_zero_leaves_cannot_claim_a_rule(self, work_dir):
+        path = work_dir / "empty-leaves.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\0" * 8
+            + struct.pack(">q", 1)
+            + b"\xc0" + b"\0" * 7
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="有效叶节点"):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_label_bitmap_must_match_labels(self, work_dir):
+        path = work_dir / "bad-labels.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\0" * 7 + b"\x01"
+            + struct.pack(">q", 2)
+            + b"\0" * 16
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="标签位图"):
+            mrs_format.validate_mrs(path, "domain")
+
     def test_wrong_behavior_rejected(self, work_dir):
         path = work_dir / "wrong.mrs"
         valid_mrs(path, "domain")
