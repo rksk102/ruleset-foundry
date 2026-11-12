@@ -927,6 +927,7 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             title,
             "--notes",
             notes,
+            "--latest=false",
         ]
     )
 

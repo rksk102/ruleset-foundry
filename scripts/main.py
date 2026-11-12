@@ -443,6 +443,9 @@ def _recover_stale_transactions(root):
     for rollback_root in sorted(root.glob(".rollback-*")):
         if not rollback_root.is_dir() or rollback_root.is_symlink():
             raise ValueError(f"恢复事务不是普通目录: {rollback_root}")
+        if not (rollback_root / _ROLLBACK_MANIFEST).exists() and not any(rollback_root.iterdir()):
+            shutil.rmtree(rollback_root)
+            continue
         staging, committed, entries = _read_rollback_manifest(root, rollback_root)
         if not committed and not _restore_entries(entries):
             raise RuntimeError(f"旧产物恢复未完成，保留事务现场: {rollback_root}")
@@ -470,7 +473,11 @@ def commit_staged_products(staging_root, expected_files):
     for _staged, final in moves:
         final.parent.mkdir(parents=True, exist_ok=True)
     rollback_root = Path(tempfile.mkdtemp(prefix=".rollback-", dir=root))
-    _write_rollback_manifest(rollback_root, staging_root, entries)
+    try:
+        _write_rollback_manifest(rollback_root, staging_root, entries)
+    except BaseException:
+        shutil.rmtree(rollback_root, ignore_errors=True)
+        raise
     try:
         for (staged, final), entry in zip(moves, entries, strict=True):
             backup = rollback_root / entry["backup"]

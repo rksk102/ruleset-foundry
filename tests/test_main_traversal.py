@@ -30,6 +30,29 @@ class TestStagedCommit:
         monkeypatch.setattr(main, "RULESETS_DIR", root)
         return root, staging, [root / "a.txt", root / "b.txt"]
 
+    def test_first_manifest_write_failure_removes_empty_transaction(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        with patch.object(main, "_write_rollback_manifest", side_effect=OSError("disk full")), pytest.raises(OSError):
+            main.commit_staged_products(staging, files)
+        assert not list(root.glob(".rollback-*"))
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+
+    def test_empty_pre_manifest_transaction_is_safe_to_clean(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        empty = root / ".rollback-empty"
+        empty.mkdir(parents=True)
+        main._recover_stale_transactions(root)
+        assert not empty.exists()
+
+    def test_partial_manifest_directory_is_preserved(self, work_dir):
+        root = work_dir / "rulesets"
+        partial = root / ".rollback-partial"
+        partial.mkdir(parents=True)
+        (partial / "transaction.json").write_text("{")
+        with pytest.raises(ValueError, match="无法读取恢复事务"):
+            main._recover_stale_transactions(root)
+        assert (partial / "transaction.json").is_file()
+
     def test_second_replace_failure_restores_previous_generation(self, work_dir, monkeypatch):
         root, staging, files = self.prepare(work_dir, monkeypatch)
         real_replace = main.os.replace

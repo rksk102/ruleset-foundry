@@ -188,7 +188,7 @@ class TestReleaseReusable:
 
     def test_rejects_wrong_file_hash(self, publish_workspace, monkeypatch):
         stub, _zip = remote_release_stub(
-            publish_workspace, "abc123abc123", corrupt_file="merged-rules/A/x.txt"
+            publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
@@ -212,7 +212,7 @@ class TestReleaseReusable:
 
     def test_rejects_missing_digest(self, publish_workspace, monkeypatch):
         stub, zip_name = remote_release_stub(
-            publish_workspace, "abc123abc123", corrupt_file="merged-rules/A/x.txt"
+            publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
         stub.asset_digests[zip_name] = ""
         patch_remote_release(monkeypatch, stub)
@@ -584,6 +584,7 @@ class TestPublishRelease:
         assert len(stub.calls) == 1
         assert stub.calls[0][:4] == ["release", "create", "rules-2026-10-05", ZIP]
         assert "--latest" not in stub.calls[0]
+        assert "--latest=false" in stub.calls[0]
 
     def test_upload_failure_skips_edit(self):
         stub = GhStub(fail_when=lambda cmd: cmd[1] == "upload")
