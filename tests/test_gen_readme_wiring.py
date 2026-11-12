@@ -4,15 +4,13 @@ from pathlib import Path
 
 import gen_readme
 import pytest
+from support import isolate_readme_paths, write_quickstart_mrs_placeholders
 
 REPO = Path(__file__).resolve().parent.parent
 
 
 def isolate(work_dir, monkeypatch, readme):
-    monkeypatch.setattr(gen_readme, "REPO_ROOT", str(work_dir))
-    monkeypatch.setattr(gen_readme, "README_FILE", str(readme))
-    monkeypatch.setattr(gen_readme, "DIR_RULES", str(work_dir / "merged-rules"))
-    monkeypatch.setattr(gen_readme, "DIR_MRS", str(work_dir / "merged-rules-mrs"))
+    isolate_readme_paths(monkeypatch, work_dir, readme)
 
 
 class TestReadmeWiring:
@@ -23,6 +21,7 @@ class TestReadmeWiring:
         readme = work_dir / "out" / "README.md"
         isolate(work_dir, monkeypatch, readme)
         monkeypatch.chdir(work_dir)
+        write_quickstart_mrs_placeholders(work_dir)
 
         gen_readme.main(["--allow-placeholder", "--allow-empty"])
 

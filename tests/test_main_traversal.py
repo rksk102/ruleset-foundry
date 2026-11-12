@@ -1,7 +1,9 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import main
 import pytest
+from support import write_text as write
 
 SOURCE_URL = "https://github.com/o/r/raw/m/x.txt"
 
@@ -16,6 +18,188 @@ def load_sources(monkeypatch, work_dir, content):
 
 def single_task(monkeypatch, work_dir, content):
     return load_sources(monkeypatch, work_dir, content)[0]
+
+
+class TestStagedCommit:
+    def prepare(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        staging = root / ".staging-test"
+        for name in ("a.txt", "b.txt"):
+            write(root / name, f"old-{name}")
+            write(staging / name, f"new-{name}")
+        monkeypatch.setattr(main, "RULESETS_DIR", root)
+        return root, staging, [root / "a.txt", root / "b.txt"]
+
+    def test_first_manifest_write_failure_removes_empty_transaction(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        with patch.object(main, "_write_rollback_manifest", side_effect=OSError("disk full")), pytest.raises(OSError):
+            main.commit_staged_products(staging, files)
+        assert not list(root.glob(".rollback-*"))
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+
+    def test_empty_pre_manifest_transaction_is_safe_to_clean(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        empty = root / ".rollback-empty"
+        empty.mkdir(parents=True)
+        main._recover_stale_transactions(root)
+        assert not empty.exists()
+
+    def test_partial_manifest_directory_is_preserved(self, work_dir):
+        root = work_dir / "rulesets"
+        partial = root / ".rollback-partial"
+        partial.mkdir(parents=True)
+        (partial / "transaction.json").write_text("{")
+        with pytest.raises(ValueError, match="无法读取恢复事务"):
+            main._recover_stale_transactions(root)
+        assert (partial / "transaction.json").is_file()
+
+    def test_second_replace_failure_restores_previous_generation(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        real_replace = main.os.replace
+        target_calls = 0
+
+        def fail_second(src, dst):
+            nonlocal target_calls
+            if Path(src).parent == staging:
+                target_calls += 1
+                if target_calls == 2:
+                    raise OSError("injected replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=fail_second), pytest.raises(
+            OSError, match="injected replace failure"
+        ):
+            main.commit_staged_products(staging, files)
+
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+        assert not list(root.glob(".rollback-*"))
+
+    def test_new_file_is_removed_when_later_replace_fails(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        new_file = root / "new.txt"
+        write(staging / "new.txt", "new")
+        files.insert(1, new_file)
+        real_replace = main.os.replace
+        target_calls = 0
+
+        def fail_last(src, dst):
+            nonlocal target_calls
+            if Path(src).parent == staging:
+                target_calls += 1
+                if target_calls == 3:
+                    raise OSError("injected replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=fail_last), pytest.raises(OSError):
+            main.commit_staged_products(staging, files)
+
+        assert not new_file.exists()
+        assert [path.read_text(encoding="utf-8") for path in (root / "a.txt", root / "b.txt")] == [
+            "old-a.txt", "old-b.txt"
+        ]
+
+    def test_failed_restore_preserves_backups_and_manifest(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        real_replace = main.os.replace
+        target_calls = 0
+
+        def fail_commit_and_restore(src, dst):
+            nonlocal target_calls
+            if Path(src).parent == staging:
+                target_calls += 1
+                if target_calls == 2:
+                    raise OSError("injected replace failure")
+            if Path(src).parent.name.startswith(".rollback-") and Path(src).name.isdigit():
+                raise OSError("injected restore failure")
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=fail_commit_and_restore), pytest.raises(OSError):
+            main.commit_staged_products(staging, files)
+
+        backups = list(root.glob(".rollback-*"))
+        assert len(backups) == 1
+        assert (backups[0] / "transaction.json").is_file()
+        assert (backups[0] / "0").read_text(encoding="utf-8") == "old-a.txt"
+
+    def test_keyboard_interrupt_restores_previous_products(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        real_replace = main.os.replace
+        target_calls = 0
+
+        def interrupt(src, dst):
+            nonlocal target_calls
+            if Path(src).parent == staging:
+                target_calls += 1
+                if target_calls == 2:
+                    raise KeyboardInterrupt
+            return real_replace(src, dst)
+
+        with patch.object(main.os, "replace", side_effect=interrupt), pytest.raises(KeyboardInterrupt):
+            main.commit_staged_products(staging, files)
+
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+        assert not list(root.glob(".rollback-*"))
+
+    def test_startup_recovers_interrupted_generation(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-interrupted"
+        rollback.mkdir()
+        write(root / "a.txt", "partial-new-a")
+        write(rollback / "0", "old-a.txt")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+            {"path": "b.txt", "backup": "1", "existed": True},
+        ])
+        write(rollback / "1", "old-b.txt")
+
+        main._recover_stale_transactions(root)
+
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+        assert not rollback.exists()
+
+    def test_startup_restore_failure_keeps_transaction(self, work_dir, monkeypatch):
+        root, staging, _files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-failed"
+        rollback.mkdir()
+        write(rollback / "0", "old-a.txt")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+        ])
+        with patch.object(main.os, "replace", side_effect=OSError("restore failed")), pytest.raises(
+            RuntimeError, match="恢复未完成"
+        ):
+            main._recover_stale_transactions(root)
+        assert (rollback / "0").is_file()
+        assert (rollback / "transaction.json").is_file()
+        assert staging.exists()
+
+    def test_sync_lock_rejects_second_writer(self, work_dir, monkeypatch):
+        root = work_dir / "rulesets"
+        root.mkdir()
+        with main._sync_lock(root), pytest.raises(RuntimeError, match="另一个同步进程"), main._sync_lock(root):
+            pass
+        with main._sync_lock(root):
+            assert (root / ".sync.lock").is_file()
+
+    def test_startup_keeps_fully_committed_generation(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-complete"
+        rollback.mkdir()
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+        ], committed=True)
+
+        main._recover_stale_transactions(root)
+
+        assert not rollback.exists()
+        assert files[0].read_text(encoding="utf-8") == "old-a.txt"
+
+
+    def test_success_commits_all_files_without_rollback_artifacts(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        main.commit_staged_products(staging, files)
+        assert [path.read_text(encoding="utf-8") for path in files] == ["new-a.txt", "new-b.txt"]
+        assert not list(root.glob(".rollback-*"))
 
 
 class TestMarkerWhitelistRejected:

@@ -287,6 +287,8 @@ def _validate_merges(merges):
                 raise ConfigError(
                     f"merges[{idx}].{field} 不能使用 Windows 保留设备名: {task[field]!r}"
                 )
+        if not task["filename"].endswith(".txt"):
+            raise ConfigError(f"merges[{idx}].filename 必须以 .txt 结尾: {task['filename']!r}")
         output = tuple(task[field].strip().casefold() for field in ("strategy", "type", "owner", "filename"))
         if output in seen_outputs:
             raise ConfigError(f"merges[{idx}] 与其他任务输出同一路径: {'/'.join(output)}")

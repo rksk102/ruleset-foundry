@@ -218,6 +218,8 @@ def auto_discover_files(source_dir=None):
             parts = Path(rel_path_norm).parent.parts
             if len(parts) < 3:
                 continue
+            if len(parts) > 3:
+                raise ValueError(f"自动透传不支持嵌套输入路径: {rel_path_norm}")
 
             discovered_tasks.append(
                 {

@@ -1,16 +1,13 @@
 import os
+from pathlib import Path
 
 import main
 import manifest
 import merger
 import pytest
 import release_handler
-from support import GhStub
-
-
-def write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+from support import GhStub, valid_mrs_bytes
+from support import write_text as write
 
 
 def mrs_of(entries):
@@ -45,7 +42,9 @@ def build_products(
     for rel in txt_entries:
         write(root / "merged-rules" / rel, "rule.example\n")
     for rel in mrs_of(txt_entries) if mrs_entries is None else mrs_entries:
-        write(root / "merged-rules-mrs" / rel, "MRS")
+        target = root / "merged-rules-mrs" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(valid_mrs_bytes("ipcidr" if Path(rel).parts[1] == "ipcidr" else "domain"))
     write_v2_manifest(root / "merged-rules")
     if not rulesets_dir:
         return

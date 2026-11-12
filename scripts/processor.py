@@ -165,7 +165,12 @@ def explicit_base64_decode(text):
     try:
         decoded_bytes = base64.b64decode(s, validate=True)
         decoded_str = safe_decode(decoded_bytes)
-        if is_text_data(decoded_str):
+        if is_text_data(decoded_str) and (
+            "\n" in decoded_str
+            or _yaml_payload_lines(decoded_str) is not None
+            or _split_semantic_prefix(decoded_str)[0] is not None
+            or classify_rule_line(decoded_str)[0] in ("suffix", "exact")
+        ):
             return decoded_str
     except binascii.Error, ValueError:
         pass
@@ -418,6 +423,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             continue
 
         semantic, s = _split_semantic_prefix(s)
+        explicit_semantic = semantic is not None
 
         if semantic is None:
             if lowered.startswith("+."):
@@ -488,6 +494,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             semantic = "suffix"
             s = s[2:]
         if "/" in s:
+            if explicit_semantic or kind in ("suffix", "exact"):
+                stats["unrecognized"] += 1
+                continue
             s = s.split("/")[0]
         s = s.strip("[]")
         if ":" in s:

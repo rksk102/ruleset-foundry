@@ -5,11 +5,8 @@ import re
 import gen_readme
 import pytest
 from config_loader import ConfigError
-
-
-def write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+from support import isolate_readme_paths, write_quickstart_mrs_placeholders
+from support import write_text as write
 
 
 class TestFormatSize:
@@ -192,6 +189,20 @@ class TestWriteTableRows:
         row = self.render(tmp_path, "policy/domain/MetaCubeX/category-ai-!cn.txt")
         assert "category-ai-!cn.txt" in row
         assert "%21" not in row
+
+
+class TestQuickstartProducts:
+    def test_missing_quickstart_mrs_rejected(self):
+        tasks = gen_readme.quickstart_merge_tasks()
+        paths = [gen_readme.quickstart_mrs_relpath(task) for task in tasks]
+        with pytest.raises(ConfigError, match="快速开始"):
+            gen_readme.validate_quickstart_products(set(paths[1:]))
+
+    def test_complete_quickstart_mrs_accepted(self):
+        paths = {
+            gen_readme.quickstart_mrs_relpath(task) for task in gen_readme.quickstart_merge_tasks()
+        }
+        gen_readme.validate_quickstart_products(paths)
 
 
 class TestMakeSection:
@@ -472,12 +483,10 @@ class TestMakePageHeader:
 class TestMain:
     def run_main(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
-        monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
-        monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
-        monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
+        isolate_readme_paths(monkeypatch, tmp_path, tmp_path / "README.md")
         write(tmp_path / "merged-rules" / "block" / "A" / "a.txt", "a.com\n")
         write(tmp_path / "merged-rules-mrs" / "block" / "A" / "a.mrs", "MRS!")
+        write_quickstart_mrs_placeholders(tmp_path)
         gen_readme.main([])
         return (tmp_path / "README.md").read_text(encoding="utf-8")
 
@@ -516,10 +525,7 @@ class TestMain:
 
 class TestPreflight:
     def isolate(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gen_readme, "REPO_ROOT", str(tmp_path))
-        monkeypatch.setattr(gen_readme, "DIR_RULES", str(tmp_path / "merged-rules"))
-        monkeypatch.setattr(gen_readme, "DIR_MRS", str(tmp_path / "merged-rules-mrs"))
-        monkeypatch.setattr(gen_readme, "README_FILE", str(tmp_path / "README.md"))
+        isolate_readme_paths(monkeypatch, tmp_path, tmp_path / "README.md")
 
     def test_missing_repo_env_refuses_write(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
@@ -562,15 +568,15 @@ class TestPreflight:
         assert exc.value.code != 0
         assert readme.read_text(encoding="utf-8") == "旧内容\n"
 
-    def test_allow_flags_permit_placeholder_preview(self, tmp_path, monkeypatch):
+    def test_empty_preview_does_not_publish_missing_quickstart_links(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
         self.isolate(tmp_path, monkeypatch)
-        gen_readme.main(["--allow-placeholder", "--allow-empty"])
         readme = tmp_path / "README.md"
-        assert readme.exists()
-        text = readme.read_text(encoding="utf-8")
-        assert gen_readme.REPO_NAME in text, "预览应包含占位/当前仓库链接"
-        assert "0 个文件" in text, "空产物预览应渲染 0 文件清单"
+        readme.write_text("旧内容\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            gen_readme.main(["--allow-placeholder", "--allow-empty"])
+        assert exc.value.code == 1
+        assert readme.read_text(encoding="utf-8") == "旧内容\n"
 
     def test_missing_quickstart_merge_refuses_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")

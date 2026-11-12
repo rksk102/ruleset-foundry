@@ -7,15 +7,20 @@ import manifest
 import pytest
 import release_handler
 import utils
+from support import write_paired_product
 
 REPO = Path(__file__).resolve().parent.parent
 
 
+def patch_dirs(monkeypatch, work_dir, rulesets="rulesets"):
+    monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / rulesets))
+    monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
+    monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+
+
 class TestVerifyFailsClosed:
     def test_no_products_at_all_is_a_failure(self, work_dir, monkeypatch):
-        monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / "rulesets"))
-        monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
-        monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+        patch_dirs(monkeypatch, work_dir)
 
         with pytest.raises(manifest.ManifestError):
             release_handler.verify_products()
@@ -25,20 +30,14 @@ class TestVerifyFailsClosed:
         (work_dir / "merged-rules" / "block" / "domain" / "Owner" / "a.txt").write_text(
             "+.example.com\n", encoding="utf-8"
         )
-        monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / "rulesets"))
-        monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
-        monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+        patch_dirs(monkeypatch, work_dir)
 
         with pytest.raises(manifest.ManifestError):
             release_handler.verify_products()
 
     def test_paired_products_without_baseline_skip_the_absolute_check(self, work_dir, monkeypatch):
-        for folder, suffix in ((work_dir / "merged-rules", ".txt"), (work_dir / "merged-rules-mrs", ".mrs")):
-            (folder / "block" / "domain" / "Owner").mkdir(parents=True)
-            (folder / "block" / "domain" / "Owner" / f"a{suffix}").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / "rulesets"))
-        monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
-        monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+        write_paired_product(work_dir, "block/domain/Owner/a.txt")
+        patch_dirs(monkeypatch, work_dir)
 
         assert release_handler.verify_products() is None
 
@@ -47,14 +46,10 @@ class TestBaselineRequirement:
     """ISS-16：显式 require_baseline 时，自定义 rulesets_dir 缺失不得静默降级为告警。"""
 
     def paired_products(self, work_dir):
-        for folder, suffix in ((work_dir / "merged-rules", ".txt"), (work_dir / "merged-rules-mrs", ".mrs")):
-            (folder / "block" / "domain" / "Owner").mkdir(parents=True, exist_ok=True)
-            (folder / "block" / "domain" / "Owner" / f"a{suffix}").write_text("x", encoding="utf-8")
+        write_paired_product(work_dir, "block/domain/Owner/a.txt")
 
     def patch_dirs(self, monkeypatch, work_dir, rulesets="custom-rulesets"):
-        monkeypatch.setattr(release_handler, "RULESETS_DIR", str(work_dir / rulesets))
-        monkeypatch.setattr(release_handler, "MERGED_DIR", str(work_dir / "merged-rules"))
-        monkeypatch.setattr(release_handler, "MRS_DIR", str(work_dir / "merged-rules-mrs"))
+        patch_dirs(monkeypatch, work_dir, rulesets)
 
     def test_missing_custom_rulesets_dir_is_fatal_when_required(self, work_dir, monkeypatch):
         self.paired_products(work_dir)

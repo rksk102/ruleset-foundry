@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import config_loader
+import mrs_format
 from config_loader import ConfigError, get
 from logger import error, gh_error, group_end, group_start, info, success, warning
 from utils import (
@@ -541,11 +542,13 @@ def _smoke_convert(kernel_bin=None):
             timeout=60,
         )
         produced = dst.exists() and dst.stat().st_size > 0
+        if produced:
+            mrs_format.validate_mrs(dst, "domain")
     except subprocess.CalledProcessError as e:
         error(f"  内核冒烟转换失败: {(e.stderr or '').strip()}")
         sys.exit(1)
-    except UnicodeError as e:
-        error(f"  内核冒烟转换输出解码失败（非 UTF-8）: {e}")
+    except (UnicodeError, mrs_format.MrsFormatError) as e:
+        error(f"  内核冒烟转换输出校验失败: {e}")
         sys.exit(1)
     finally:
         for path in (src, dst):
@@ -745,6 +748,13 @@ def main():
             if not output_valid:
                 error(f"  {prefix} {rel_path}")
                 error("      L 转换未产出非空普通文件")
+                stats["failed"] += 1
+                continue
+            try:
+                mrs_format.validate_mrs(temp_path, rule_type)
+            except mrs_format.MrsFormatError as e:
+                error(f"  {prefix} {rel_path}")
+                error(f"      L MRS 格式校验失败: {e}")
                 stats["failed"] += 1
                 continue
             os.replace(temp_path, dst_path)

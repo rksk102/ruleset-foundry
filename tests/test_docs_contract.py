@@ -63,14 +63,14 @@ class TestReleaseRetentionContract:
         text = gen_readme.make_static_sections()
         assert "短期固定" in text
         assert f"保留最近 {keep_days} 天" in text
-        assert "后续成功发布" in text
+        assert "后续成功运行的发布收尾（包括无内容变化轮次）" in text
         assert "latest" in text
 
     def test_readme_discloses_same_retention_window(self):
         keep_days = gen_readme.get("behavior", "release_keep_days", default=3)
         text = README.read_text(encoding="utf-8")
         assert f"保留最近 {keep_days} 天" in text
-        assert "后续成功发布" in text
+        assert "后续成功运行的发布收尾（包括无内容变化轮次）" in text
 
 
 class TestSecurityPolicy:

@@ -12,7 +12,7 @@ import zipfile
 import manifest
 import pytest
 import release_handler
-from support import GhStub
+from support import GhStub, valid_mrs_bytes, write_paired_product
 
 
 def release_listing(*releases):
@@ -33,40 +33,23 @@ NOTES = "## notes"
 
 
 class TestShouldPublish:
-    def test_disabled_always_publishes(self):
-        publish, why = release_handler.should_publish("h", "h", False)
-        assert publish is True
-        assert "关闭" in why
-
-    def test_first_publish_when_no_last_hash(self):
-        publish, why = release_handler.should_publish("h", None, True)
-        assert publish is True
-        assert "首次" in why
-
-    def test_empty_string_last_hash_treated_as_first(self):
-        publish, why = release_handler.should_publish("h", "", True)
-        assert publish is True
-        assert "首次" in why
-
-    def test_changed_hash_publishes(self):
-        publish, why = release_handler.should_publish("new", "old", True)
-        assert publish is True
-        assert "变化" in why
-
-    def test_same_hash_skips(self):
-        publish, why = release_handler.should_publish("same", "same", True)
-        assert publish is False
-        assert "无变化" in why
-
-    def test_force_overrides_same_hash(self):
-        publish, why = release_handler.should_publish("same", "same", True, force=True)
-        assert publish is True
-        assert "强制" in why
-
-    def test_force_overrides_disabled_detection(self):
-        publish, why = release_handler.should_publish("same", "same", False, force=True)
-        assert publish is True
-        assert "强制" in why
+    @pytest.mark.parametrize(
+        ("current", "last", "enabled", "force", "expected", "reason"),
+        [
+            ("h", "h", False, False, True, "关闭"),
+            ("h", None, True, False, True, "首次"),
+            ("h", "", True, False, True, "首次"),
+            ("new", "old", True, False, True, "变化"),
+            ("same", "same", True, False, False, "无变化"),
+            ("same", "same", True, True, True, "强制"),
+            ("same", "same", False, True, True, "强制"),
+        ],
+        ids=["disabled", "first", "empty-last", "changed", "same", "force-same", "force-disabled"],
+    )
+    def test_publish_decision(self, current, last, enabled, force, expected, reason):
+        publish, why = release_handler.should_publish(current, last, enabled, force=force)
+        assert publish is expected
+        assert reason in why
 
 
 class TestLatestRulesRelease:
@@ -205,7 +188,7 @@ class TestReleaseReusable:
 
     def test_rejects_wrong_file_hash(self, publish_workspace, monkeypatch):
         stub, _zip = remote_release_stub(
-            publish_workspace, "abc123abc123", corrupt_file="merged-rules/A/x.txt"
+            publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
@@ -229,7 +212,7 @@ class TestReleaseReusable:
 
     def test_rejects_missing_digest(self, publish_workspace, monkeypatch):
         stub, zip_name = remote_release_stub(
-            publish_workspace, "abc123abc123", corrupt_file="merged-rules/A/x.txt"
+            publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
         stub.asset_digests[zip_name] = ""
         patch_remote_release(monkeypatch, stub)
@@ -276,7 +259,7 @@ class TestReleaseReusable:
 
     def test_rejects_duplicate_zip_entries(self, publish_workspace, monkeypatch):
         entries = list(workspace_product_bytes(publish_workspace).items())
-        entries.append(("merged-rules/A/x.txt", b"x"))
+        entries.append(("merged-rules/block/domain/A/x.txt", b"x"))
         with pytest.warns(UserWarning, match="Duplicate name"):
             stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", zip_entries=entries)
         patch_remote_release(monkeypatch, stub)
@@ -567,7 +550,6 @@ class TestPublishRelease:
             "title",
             "--notes",
             NOTES,
-            "--latest",
         ]
         assert len(stub.calls) == 2
 
@@ -601,7 +583,8 @@ class TestPublishRelease:
         assert result == "ok"
         assert len(stub.calls) == 1
         assert stub.calls[0][:4] == ["release", "create", "rules-2026-10-05", ZIP]
-        assert stub.calls[0][-1] == "--latest"
+        assert "--latest" not in stub.calls[0]
+        assert "--latest=false" in stub.calls[0]
 
     def test_upload_failure_skips_edit(self):
         stub = GhStub(fail_when=lambda cmd: cmd[1] == "upload")
@@ -636,10 +619,7 @@ def publish_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "TARGET_CONFIG", {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"})
     monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
     monkeypatch.setattr(release_handler, "KEEP_DAYS", 3)
-    (work_dir / "merged-rules" / "A").mkdir(parents=True)
-    (work_dir / "merged-rules" / "A" / "x.txt").write_text("x", encoding="utf-8")
-    (work_dir / "merged-rules-mrs" / "A").mkdir(parents=True)
-    (work_dir / "merged-rules-mrs" / "A" / "x.mrs").write_text("y", encoding="utf-8")
+    write_paired_product(work_dir, "block/domain/A/x.txt")
     monkeypatch.chdir(work_dir)
     return work_dir
 
@@ -738,6 +718,30 @@ class TestMainOrchestration:
         actions = stub.release_actions()
         assert "upload" in actions and "create" not in actions
         assert saved == [product_hash]
+
+    def test_content_confirmation_failure_does_not_mark_latest(self, publish_workspace, monkeypatch):
+        saved = []
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: (False, "bad content"))
+
+        stub = GhStub()
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(stub, release_handler.main)
+
+        assert exc.value.code == 1
+        assert not any("--latest" in call for call in stub.calls)
+        assert saved == []
+
+    def test_latest_failure_after_new_release_does_not_save_hash(self, publish_workspace, monkeypatch):
+        saved = []
+        stub = GhStub(fail_when=lambda cmd: cmd[1] == "edit" and "--latest" in cmd)
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(stub, release_handler.main)
+
+        assert exc.value.code == 1
+        assert saved == []
 
     def test_force_release_reuses_complete_release_without_duplicate(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
@@ -1355,7 +1359,7 @@ def verify_workspace(work_dir, monkeypatch):
     )
     mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
     mrs_dir.mkdir(parents=True)
-    (mrs_dir / "x.mrs").write_text("y", encoding="utf-8")
+    (mrs_dir / "x.mrs").write_bytes(valid_mrs_bytes())
     monkeypatch.chdir(work_dir)
     return work_dir
 
@@ -1373,6 +1377,12 @@ class TestVerifyOnly:
             run_with_stub(stub, release_handler.verify_only)
         assert exc.value.code == 1
         assert stub.calls == []
+
+    def test_nonempty_garbage_mrs_exits_nonzero(self, verify_workspace):
+        (verify_workspace / "merged-rules-mrs/block/domain/A/x.mrs").write_bytes(b"not an mrs\n")
+        with pytest.raises(SystemExit) as exc:
+            release_handler.verify_only()
+        assert exc.value.code == 1
 
     def test_empty_mrs_exits_nonzero(self, verify_workspace):
         (verify_workspace / "merged-rules-mrs/block/domain/A/x.mrs").write_bytes(b"")

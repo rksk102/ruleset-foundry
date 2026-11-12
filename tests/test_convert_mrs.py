@@ -8,6 +8,7 @@ from pathlib import Path
 import config_loader
 import convert_mrs
 import pytest
+from support import valid_mrs_bytes
 
 API_LATEST = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 
@@ -1168,8 +1169,8 @@ class TestConvertOutput:
             convert_mrs.main()
         assert exc.value.code == 1
 
-    def test_zero_exit_with_nonempty_file_succeeds(self, monkeypatch, work_dir):
-        self.run_conversion(monkeypatch, work_dir, b"valid-mrs")
+    def test_zero_exit_with_valid_mrs_file_succeeds(self, monkeypatch, work_dir):
+        self.run_conversion(monkeypatch, work_dir, valid_mrs_bytes())
         with pytest.raises(SystemExit) as exc:
             convert_mrs.main()
         assert exc.value.code == 0
@@ -1246,7 +1247,7 @@ class TestSmokeConvert:
         self.prepare(monkeypatch, work_dir)
 
         def fake_run(cmd, **_kwargs):
-            Path(cmd[-1]).write_text("mrs", encoding="utf-8")
+            Path(cmd[-1]).write_bytes(valid_mrs_bytes())
 
         monkeypatch.setattr(convert_mrs.subprocess, "run", fake_run)
 
@@ -1451,17 +1452,9 @@ class TestBumpConfigRecomputesSameTag:
         assert stat.S_IMODE(cfg.stat().st_mode) == 0o400
         assert not list(work_dir.glob(".config.yaml.*")), "原子写入不得残留临时文件"
 
-    def test_drifted_amd64_hash_is_rejected(self, monkeypatch, work_dir):
-        text = self.config_text(amd64="0" * 64)
-        with pytest.raises(SystemExit) as exc:
-            self.run_bump(monkeypatch, work_dir, text)
-
-        assert exc.value.code == 1
-        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
-        assert not (work_dir / "gh_output.txt").exists()
-
-    def test_drifted_arm64_hash_is_rejected(self, monkeypatch, work_dir):
-        text = self.config_text(arm64="1" * 64)
+    @pytest.mark.parametrize(("arch", "value"), [("amd64", "0"), ("arm64", "1")])
+    def test_drifted_hash_is_rejected(self, arch, value, monkeypatch, work_dir):
+        text = self.config_text(**{arch: value * 64})
         with pytest.raises(SystemExit) as exc:
             self.run_bump(monkeypatch, work_dir, text)
 
@@ -1476,22 +1469,12 @@ class TestBumpConfigRecomputesSameTag:
         assert cfg.read_text(encoding="utf-8") == self.config_text()
         assert gh_output.read_text(encoding="utf-8") == f"changed=true\ntag={self.TAG}\n"
 
-    def test_same_tag_missing_arm64_asset_fails_closed(self, monkeypatch, work_dir):
+    @pytest.mark.parametrize("missing", ["arm64-asset", "arm64-digest"])
+    def test_same_tag_missing_requirements_fail_closed(self, missing, monkeypatch, work_dir):
         text = self.config_text()
         assets = [asset(f"mihomo-linux-amd64-{self.TAG}.gz", "sha256:" + "a" * 64)]
-        with pytest.raises(SystemExit) as exc:
-            self.run_bump(monkeypatch, work_dir, text, assets=assets)
-
-        assert exc.value.code == 1
-        assert (work_dir / "config.yaml").read_text(encoding="utf-8") == text
-        assert not (work_dir / "gh_output.txt").exists()
-
-    def test_same_tag_missing_digest_fails_closed(self, monkeypatch, work_dir):
-        text = self.config_text()
-        assets = [
-            asset(f"mihomo-linux-amd64-{self.TAG}.gz", "sha256:" + "a" * 64),
-            asset(f"mihomo-linux-arm64-{self.TAG}.gz", digest=""),
-        ]
+        if missing == "arm64-digest":
+            assets.append(asset(f"mihomo-linux-arm64-{self.TAG}.gz", digest=""))
         with pytest.raises(SystemExit) as exc:
             self.run_bump(monkeypatch, work_dir, text, assets=assets)
 

@@ -309,7 +309,7 @@ def _dependency_policy():
     return yaml.safe_load((REPO / ".github" / "dependency-merge.yml").read_text(encoding="utf-8"))
 
 
-def test_dependency_merge_group_whitelist_matches_dependabot_config():
+def test_dependency_merge_group_whitelist_is_subset_of_non_major_dependabot_groups():
     allowed = set(_dependency_policy()["allowed_groups"])
     config = yaml.safe_load((REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
     non_major = set()
@@ -322,7 +322,8 @@ def test_dependency_merge_group_whitelist_matches_dependabot_config():
                 major.add(name)
             else:
                 non_major.add(name)
-    assert allowed == non_major
+    assert allowed <= non_major
+    assert "github-actions" not in allowed
     assert not allowed & major
 
 
@@ -356,7 +357,7 @@ def test_dependency_merge_app_permissions_match_registration_manifest():
         key.replace("_", "-"): value for key, value in manifest_permissions.items() if key != "metadata"
     }
     assert token_permissions == normalized_manifest_permissions
-    assert set(token_permissions) == {"contents", "pull-requests", "checks"}
+    assert set(token_permissions) == {"contents", "pull-requests", "checks", "actions"}
     assert registration["public"] is False
     assert registration["default_events"] == []
     assert registration["redirect_url"] == "https://github.com/rksk102/ruleset-foundry"

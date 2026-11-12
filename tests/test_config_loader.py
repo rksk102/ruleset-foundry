@@ -138,6 +138,18 @@ class TestLoadConfig:
             reset_config()
 
 
+class TestMergeFilename:
+    def test_non_txt_filename_rejected_at_load_time(self):
+        with pytest.raises(config_loader.ConfigError, match=r"\.txt"):
+            config_loader._validate_merges([{
+                "strategy": "block", "type": "domain", "owner": "o",
+                "filename": "all.rules", "inputs": ["block/domain/o/x.txt"],
+            }])
+
+    def test_current_config_merges_remain_valid(self):
+        config_loader._validate_merges(config_loader.load_config()["merges"])
+
+
 class TestGet:
     def test_single_key(self, work_dir):
         use_config(work_dir)

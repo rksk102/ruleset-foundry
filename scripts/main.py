@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -363,23 +365,138 @@ def _staging_output_path(staging_root, final_path):
 
 
 def _cleanup_stale_staging(root):
+    _recover_stale_transactions(root)
     for path in root.iterdir():
         if path.name.startswith(_STAGING_PREFIX) and path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 
 
+@contextlib.contextmanager
+def _sync_lock(root):
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("本地同步锁当前仅支持 Linux，拒绝无保护地并发写入")
+    import fcntl
+
+    lock_path = root / ".sync.lock"
+    root.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"另一个同步进程正在写入 {root}，本轮拒绝并发提交") from exc
+        yield
+
+
+_ROLLBACK_MANIFEST = "transaction.json"
+
+
+def _write_rollback_manifest(rollback_root, staging_root, entries, committed=False):
+    payload = {
+        "version": 1,
+        "staging": str(Path(staging_root)),
+        "committed": committed,
+        "entries": entries,
+    }
+    atomic_write(rollback_root / _ROLLBACK_MANIFEST, json.dumps(payload, ensure_ascii=False))
+
+
+def _read_rollback_manifest(root, rollback_root):
+    try:
+        data = json.loads((rollback_root / _ROLLBACK_MANIFEST).read_text(encoding="utf-8"))
+        if data.get("version") != 1 or not isinstance(data.get("entries"), list):
+            raise ValueError("事务清单结构无效")
+        staging = Path(data["staging"])
+        ensure_within_rulesets(staging)
+        if staging.parent != root or not staging.name.startswith(_STAGING_PREFIX):
+            raise ValueError("事务暂存目录无效")
+        entries = []
+        seen = set()
+        for item in data["entries"]:
+            final = ensure_within_rulesets(root / item["path"])
+            backup_name = item["backup"]
+            if not isinstance(backup_name, str) or not backup_name.isdigit() or final in seen:
+                raise ValueError("事务备份名或目标路径无效")
+            if not isinstance(item["existed"], bool):
+                raise ValueError("事务原文件状态无效")
+            seen.add(final)
+            entries.append((final, rollback_root / backup_name, item["existed"]))
+        return staging, bool(data["committed"]), entries
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取恢复事务 {rollback_root}: {exc}") from exc
+
+
+def _restore_entries(entries):
+    failed = False
+    for final, backup, existed in reversed(entries):
+        try:
+            if backup.is_file() and not backup.is_symlink():
+                os.replace(backup, final)
+            elif not existed:
+                final.unlink(missing_ok=True)
+        except OSError as exc:
+            failed = True
+            gh_error(f"旧产物恢复失败: {final}（{exc}）")
+    return not failed
+
+
+def _recover_stale_transactions(root):
+    for rollback_root in sorted(root.glob(".rollback-*")):
+        if not rollback_root.is_dir() or rollback_root.is_symlink():
+            raise ValueError(f"恢复事务不是普通目录: {rollback_root}")
+        if not (rollback_root / _ROLLBACK_MANIFEST).exists() and not any(rollback_root.iterdir()):
+            shutil.rmtree(rollback_root)
+            continue
+        staging, committed, entries = _read_rollback_manifest(root, rollback_root)
+        if not committed and not _restore_entries(entries):
+            raise RuntimeError(f"旧产物恢复未完成，保留事务现场: {rollback_root}")
+        shutil.rmtree(rollback_root)
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
 def commit_staged_products(staging_root, expected_files):
     root = _resolved_rulesets_dir()
     moves = []
+    entries = []
     for expected in expected_files:
         final = ensure_within_rulesets(expected)
         staged = ensure_within_rulesets(Path(staging_root) / final.relative_to(root))
         if not staged.is_file():
             raise FileNotFoundError(f"暂存产物缺失: {staged}")
         moves.append((staged, final))
-    for staged, final in moves:
+        entries.append({
+            "path": final.relative_to(root).as_posix(),
+            "backup": str(len(entries)),
+            "existed": final.exists(),
+            "sha256": file_sha256(final) if final.is_file() and not final.is_symlink() else None,
+        })
+    for _staged, final in moves:
         final.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staged, final)
+    rollback_root = Path(tempfile.mkdtemp(prefix=".rollback-", dir=root))
+    try:
+        _write_rollback_manifest(rollback_root, staging_root, entries)
+    except BaseException:
+        shutil.rmtree(rollback_root, ignore_errors=True)
+        raise
+    try:
+        for (staged, final), entry in zip(moves, entries, strict=True):
+            backup = rollback_root / entry["backup"]
+            if entry["existed"]:
+                if not final.is_file() or final.is_symlink():
+                    raise OSError(f"旧产物不是普通文件，拒绝替换: {final}")
+                os.replace(final, backup)
+            os.replace(staged, final)
+        _write_rollback_manifest(rollback_root, staging_root, entries, committed=True)
+    except BaseException:
+        if not _restore_entries([
+            (final, rollback_root / entry["backup"], entry["existed"])
+            for final, entry in zip((final for _staged, final in moves), entries, strict=True)
+        ]):
+            gh_error(f"恢复未完成，保留旧产物备份与事务清单: {rollback_root}")
+            raise
+        shutil.rmtree(rollback_root)
+        raise
+    shutil.rmtree(rollback_root)
 
 
 def _base_rel_path(task):
@@ -959,7 +1076,9 @@ async def download_all(tasks):
 
     normalized = []
     for task, result in zip(tasks, results, strict=True):
-        if isinstance(result, BaseException):
+        if isinstance(result, (KeyboardInterrupt, SystemExit)):
+            raise result
+        if isinstance(result, Exception):
             normalized.append((task, None, f"{type(result).__name__}: {result}"))
         else:
             normalized.append(result)
@@ -1072,6 +1191,11 @@ def generate_summary(stats, degraded_reasons=None):
 
 
 def main():
+    with _sync_lock(_resolved_rulesets_dir()):
+        _main_locked()
+
+
+def _main_locked():
     stats = SyncStats()
 
     group_start("初始化")
@@ -1170,7 +1294,7 @@ def main():
         finalize_products(expected_files)
         generate_summary(stats)
     finally:
-        if staging.exists():
+        if staging.exists() and not list(root.glob(".rollback-*")):
             shutil.rmtree(staging, ignore_errors=True)
 
     info(

@@ -17,6 +17,7 @@ import zlib
 from pathlib import Path
 
 import manifest
+import mrs_format
 from config_loader import ConfigError, get
 from logger import (
     error,
@@ -562,6 +563,12 @@ def validate_product_files(txt_dir, mrs_dir):
                 raise manifest.ManifestError(f"非普通文件产物: {path}")
             if suffix == ".mrs" and path.stat().st_size == 0:
                 raise manifest.ManifestError(f"零字节 MRS 产物: {path}")
+            if suffix == ".mrs":
+                behavior = rel.parts[1] if len(rel.parts) > 2 else ""
+                try:
+                    mrs_format.validate_mrs(path, behavior)
+                except mrs_format.MrsFormatError as exc:
+                    raise manifest.ManifestError(f"MRS 格式校验失败: {exc}") from exc
 
 
 def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):
@@ -907,7 +914,6 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
                 title,
                 "--notes",
                 notes,
-                "--latest",
             ]
         )
 
@@ -921,7 +927,7 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             title,
             "--notes",
             notes,
-            "--latest",
+            "--latest=false",
         ]
     )
 
@@ -1055,10 +1061,6 @@ def main():
         reusable, why = verify_release_reusable(release_tag, tag_id)
         if reusable:
             info(f"  Release {release_tag} 已存在且资产摘要与当前内容一致，复用")
-            if run_gh(["release", "edit", release_tag, "--latest"]) is None:
-                error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
-                gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
-                sys.exit(1)
         else:
             info(f"  Release {release_tag} 资产不可复用（{why}），重新打包上传")
     if not reusable:
@@ -1099,6 +1101,14 @@ def main():
                     os.unlink(artifact)
             sys.exit(1)
         info(f"  已确认 Release 资产: {sorted(asset_names)}")
+
+    if run_gh(["release", "edit", release_tag, "--latest"]) is None:
+        error(f"  无法将 {release_tag} 标记为 latest，本轮发布失败")
+        gh_error(f"无法将 {release_tag} 标记为 latest，下次运行将重试")
+        for artifact in (zip_file, sums_file):
+            if artifact and os.path.exists(artifact):
+                os.unlink(artifact)
+        sys.exit(1)
 
     if CHANGE_DETECTION:
         save_last_hash(combined_hash)

@@ -8,14 +8,14 @@ import yaml
 REPO = "rksk102/ruleset-foundry"
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
-NESTED_BRANCH = "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-1234abcd"
-MAJOR_BRANCH = "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-major-1234abcd"
+NESTED_BRANCH = "dependabot/uv/project/python-dependencies-1234abcd"
+MAJOR_BRANCH = "dependabot/uv/project/python-dependencies-major-1234abcd"
 
 CONFIG_DATA = {
     "repository": REPO,
     "base_branch": "main",
     "allowed_authors": ["app/dependabot", "dependabot[bot]"],
-    "allowed_groups": ["python-dependencies", "github-actions"],
+    "allowed_groups": ["python-dependencies"],
     "required_checks": [
         "lint",
         "test",
@@ -33,8 +33,20 @@ CONFIG_DATA = {
 CONFIG = dm.parse_config(CONFIG_DATA)
 
 
-def check(name, conclusion="SUCCESS", status="COMPLETED"):
-    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
+def check(name, conclusion="SUCCESS", status="COMPLETED", app_id=15368, run_id=101, job_id=1001):
+    if job_id == 1001 and run_id is not None:
+        job_id += (run_id - 101) * 100
+    entry = {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "head_sha": SHA,
+        "app": {"id": app_id} if app_id is not None else None,
+    }
+    if run_id is not None and job_id is not None:
+        entry["details_url"] = f"https://github.com/{REPO}/actions/runs/{run_id}/job/{job_id}"
+    return entry
 
 
 def status_context(name, state):
@@ -65,7 +77,19 @@ def make_pr(number=40, **overrides):
         "autoMergeRequest": None,
         "mergeable": "MERGEABLE",
         "reviewDecision": None,
-        "statusCheckRollup": default_checks(),
+        "statusCheckRollup": [
+            {
+                **check(
+                    item["name"],
+                    conclusion=item.get("conclusion"),
+                    status=item.get("status"),
+                    run_id=100 + number,
+                    job_id=1000 + number * 100 + index,
+                ),
+                "head_sha": overrides.get("headRefOid", SHA),
+            }
+            for index, item in enumerate(default_checks())
+        ],
         "url": f"https://github.com/{REPO}/pull/{number}",
     }
     pr.update(overrides)
@@ -87,8 +111,9 @@ def _flag(cmd, flag):
 class FakeGh:
     """gh 命令边界替身；只实现本模块用到的调用，不访问网络。"""
 
-    def __init__(self, prs=(), comments=None):
+    def __init__(self, prs=(), comments=None, check_pages=None):
         self.prs = {int(pr["number"]): copy.deepcopy(pr) for pr in prs}
+        self.check_pages = check_pages
         self.comments = {int(number): list(bodies) for number, bodies in (comments or {}).items()}
         self.calls = []
         self.failures = []
@@ -110,7 +135,42 @@ class FakeGh:
             return self._merge(cmd)
         if cmd[:2] == ["pr", "comment"]:
             return self._comment(cmd)
+        if cmd[0] == "api":
+            return self._api(cmd)
         raise AssertionError(f"未预期的 gh 调用: {cmd}")
+
+    def _api(self, cmd):
+        endpoint = cmd[1]
+        if "/commits/" in endpoint and endpoint.endswith("/check-runs"):
+            pr = next((pr for pr in self.prs.values() if f"/{pr['headRefOid']}/" in endpoint), None)
+            checks = pr["statusCheckRollup"] if pr is not None else []
+            pages = self.check_pages if self.check_pages is not None else [checks]
+            rest_pages = [
+                [
+                    {
+                        **entry,
+                        "status": entry.get("status", "completed").lower(),
+                        "conclusion": (entry.get("conclusion") or entry.get("state") or "").lower() or None,
+                    }
+                    for entry in page
+                ]
+                for page in pages
+            ]
+            return json.dumps([{"total_count": len(checks), "check_runs": page} for page in rest_pages])
+        if "/actions/runs/" in endpoint:
+            run_id = int(endpoint.rsplit("/", 1)[1])
+            pr = next(
+                (pr for pr in self.prs.values() if f"actions/runs/{run_id}/" in str(pr["statusCheckRollup"])),
+                None,
+            )
+            return json.dumps({
+                "id": run_id,
+                "head_sha": pr["headRefOid"] if pr is not None else SHA,
+                "path": ".github/workflows/ci.yml",
+                "name": "CI",
+                "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}",
+            })
+        raise AssertionError(f"未预期的 API 调用: {cmd}")
 
     def _view(self, cmd):
         number = int(cmd[2])
@@ -241,6 +301,113 @@ def test_comment_failure_only_warns_after_confirmed_merge():
     assert fake.prs[40]["state"] == "MERGED"
 
 
+def test_foreign_check_run_cannot_satisfy_required_check():
+    pr = make_pr()
+    replace_check(pr, "test", check("test", app_id=999))
+
+    decision, fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "test 来源不可信" in decision.reason
+    assert merge_calls(fake) == []
+
+
+def test_checks_from_other_head_cannot_satisfy_current_pr():
+    pr = make_pr()
+    replace_check(pr, "test", {**check("test"), "head_sha": OTHER_SHA})
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "test 不属于当前 head" in decision.reason
+
+
+def test_required_checks_must_belong_to_the_same_ci_run():
+    pr = make_pr()
+    replace_check(pr, "test", check("test", run_id=102, job_id=2002))
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "必需检查不属于同一 CI run" in decision.reason
+
+
+def test_latest_complete_successful_run_is_selected():
+    pr = make_pr()
+    # 默认完整成功 run 140 之外，再添加完整成功 run 139。
+    pr["statusCheckRollup"].extend(
+        check(name, run_id=139, job_id=13901 + i) for i, name in enumerate(CONFIG.required_checks)
+    )
+
+    decision, fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+    assert any(call[1].endswith("/actions/runs/140") for call in fake.calls if call[0] == "api")
+
+
+def test_old_failure_does_not_block_new_successful_run():
+    pr = make_pr()
+    pr["statusCheckRollup"].append(check("test", conclusion="FAILURE", run_id=139, job_id=13999))
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+
+
+def test_new_failure_cannot_be_hidden_by_old_success():
+    pr = make_pr()
+    replace_check(pr, "test", check("test", conclusion="FAILURE"))
+    pr["statusCheckRollup"].extend(
+        check(name, run_id=139, job_id=13901 + i) for i, name in enumerate(CONFIG.required_checks)
+    )
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.BLOCK_KIND
+    assert "test failure" in decision.reason
+
+
+def test_checks_are_read_from_all_paginated_pages():
+    pr = make_pr()
+    checks = pr["statusCheckRollup"]
+    fake = FakeGh([pr], check_pages=[[check("lint")], [entry for entry in checks if entry["name"] != "lint"]])
+
+    decision, fake = run_pr(pr)
+
+    assert decision.kind == dm.MERGE_KIND
+    command = next(call for call in fake.calls if call[0] == "api" and "/check-runs" in call[1])
+    assert "--paginate" in command and "--slurp" in command
+
+
+def test_unexpected_workflow_cannot_satisfy_required_checks():
+    pr = make_pr()
+    fake = FakeGh([pr])
+    gh = dm.Gh(REPO, runner=fake)
+    original_api = fake._api
+    run_id = 140
+
+    def wrong_workflow(cmd):
+        if "/actions/runs/" in cmd[1]:
+            return json.dumps({"id": run_id, "head_sha": SHA, "path": ".github/workflows/other.yml", "name": "Other"})
+        return original_api(cmd)
+
+    fake._api = wrong_workflow
+    decision = dm.run_single(gh, CONFIG, pr_number=pr["number"], dry_run=True)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "预期 CI 工作流" in decision.reason
+
+
+def test_status_context_is_not_a_trusted_check_run_source():
+    pr = make_pr()
+    replace_check(pr, "test", {**status_context("test", "SUCCESS"), "name": "test", "head_sha": SHA})
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "test 来源不可信" in decision.reason
+
+
 @pytest.mark.parametrize(
     ("replacement", "expected_kind", "needle"),
     [
@@ -267,11 +434,16 @@ def test_required_check_boundaries(replacement, expected_kind, needle):
         ("Analyze (python)", None, dm.MERGE_KIND, ""),
         (
             "Analyze (actions)",
-            check("Analyze (actions)", status="IN_PROGRESS", conclusion=None),
+            check("Analyze (actions)", status="IN_PROGRESS", conclusion=None, run_id=140, job_id=14098),
             dm.WAIT_KIND,
             "Analyze (actions) pending",
         ),
-        ("Analyze (python)", check("Analyze (python)", conclusion="SKIPPED"), dm.BLOCK_KIND, "skipped"),
+        (
+            "Analyze (python)",
+            check("Analyze (python)", conclusion="SKIPPED", run_id=140, job_id=14099),
+            dm.BLOCK_KIND,
+            "skipped",
+        ),
         ("CodeQL", check("CodeQL", conclusion="NEUTRAL"), dm.MERGE_KIND, ""),
     ],
     ids=["absent", "pending", "unallowed-skipped", "codeql-neutral"],
@@ -287,6 +459,32 @@ def test_optional_check_boundaries(name, replacement, expected_kind, needle):
         assert needle in decision.reason
 
 
+def test_optional_codeql_failure_outside_ci_run_blocks_merge():
+    pr = make_pr()
+    replace_check(pr, "CodeQL", {
+        "__typename": "CheckRun", "name": "CodeQL", "status": "completed", "conclusion": "failure",
+        "head_sha": SHA, "app": {"id": 57789}, "details_url": f"https://github.com/{REPO}/runs/777",
+    })
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.BLOCK_KIND
+    assert "CodeQL failure" in decision.reason
+
+
+def test_optional_pending_check_outside_ci_run_waits():
+    pr = make_pr()
+    replace_check(pr, "Analyze (python)", {
+        "__typename": "CheckRun", "name": "Analyze (python)", "status": "in_progress", "conclusion": None,
+        "head_sha": SHA, "app": {"id": 57789}, "details_url": f"https://github.com/{REPO}/runs/778",
+    })
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "Analyze (python) pending" in decision.reason
+
+
 def test_all_optional_checks_absent_do_not_block():
     pr = make_pr()
     for name in ("Analyze (python)", "Analyze (actions)", "CodeQL"):
@@ -297,19 +495,12 @@ def test_all_optional_checks_absent_do_not_block():
     assert decision.kind == dm.MERGE_KIND
 
 
-def test_status_context_entries_are_evaluated():
-    pr = make_pr()
-    replace_check(pr, "test", status_context("test", "SUCCESS"))
-    decision, _fake = run_pr(pr)
-    assert decision.kind == dm.MERGE_KIND
-
-    replace_check(pr, "test", status_context("test", "PENDING"))
-    decision, _fake = run_pr(pr)
-    assert decision.kind == dm.WAIT_KIND
-
-    replace_check(pr, "test", status_context("test", "FAILURE"))
-    decision, _fake = run_pr(pr)
-    assert decision.kind == dm.BLOCK_KIND
+def test_status_context_cannot_replace_required_ci_check():
+    for state, expected in (("SUCCESS", dm.WAIT_KIND), ("PENDING", dm.WAIT_KIND), ("FAILURE", dm.BLOCK_KIND)):
+        pr = make_pr()
+        replace_check(pr, "test", {**status_context("test", state), "name": "test"})
+        decision, _fake = run_pr(pr)
+        assert decision.kind == expected
 
 
 def test_ignored_ai_checks_and_unconfigured_checks_do_not_participate():
@@ -343,6 +534,11 @@ def test_ignored_ai_checks_and_unconfigured_checks_do_not_participate():
         ({"autoMergeRequest": {"enabledBy": {"login": "dependabot[bot]"}}}, dm.BLOCK_KIND, "auto-merge"),
         ({"reviewDecision": "CHANGES_REQUESTED"}, dm.BLOCK_KIND, "CHANGES_REQUESTED"),
         ({"headRefName": MAJOR_BRANCH}, dm.BLOCK_KIND, "major"),
+        (
+            {"headRefName": "dependabot/github_actions/project/github-actions-1234abcd"},
+            dm.BLOCK_KIND,
+            "github-actions",
+        ),
         ({"headRefName": "dependabot/uv/requests/unknown-group"}, dm.BLOCK_KIND, "unknown-group"),
         ({"headRefName": "dependabot/uv/requests/security"}, dm.BLOCK_KIND, "security"),
         ({"mergeable": "UNKNOWN"}, dm.WAIT_KIND, "UNKNOWN"),
@@ -360,6 +556,7 @@ def test_ignored_ai_checks_and_unconfigured_checks_do_not_participate():
         "native-auto-merge",
         "changes-requested",
         "major",
+        "actions-group",
         "ungrouped",
         "security",
         "unknown-mergeable",
@@ -389,7 +586,7 @@ def test_expected_head_mismatch_blocks():
     [
         "dependabot/uv/python-dependencies",
         "dependabot/uv/requirements/dev/python-dependencies-1a2b3c4d",
-        "dependabot/github_actions/dot-github/actions/setup-python-env/github-actions-1234abcd",
+        "dependabot/uv/project/python-dependencies-1234abcd",
     ],
     ids=["two-segments", "nested-suffix", "nested-default"],
 )
@@ -415,6 +612,35 @@ def test_already_merged_pr_is_idempotent_success():
     assert decision.merged is False
     assert merge_calls(fake) == []
     assert comment_calls(fake) == []
+
+
+def test_already_merged_pr_skips_checks_even_when_api_fails():
+    fake = FakeGh([make_pr(state="MERGED")])
+    fake.fail_when(lambda cmd: cmd[0] == "api")
+    gh = dm.Gh(REPO, runner=fake)
+
+    decision = dm.run_single(gh, CONFIG, pr_number=40)
+
+    assert decision.already_merged is True
+    assert not [call for call in fake.calls if call[0] == "api"]
+    assert merge_calls(fake) == [] and comment_calls(fake) == []
+
+
+def test_reconcile_isolates_non_gh_error_per_pr(monkeypatch):
+    fake = FakeGh([make_pr(40), make_pr(41), make_pr(42)])
+    gh = dm.Gh(REPO, runner=fake)
+    original = dm.process_pr
+
+    def fail_one(gh, config, pr, **kwargs):
+        if pr["number"] == 41:
+            raise RuntimeError("boom")
+        return original(gh, config, pr, **kwargs)
+
+    monkeypatch.setattr(dm, "process_pr", fail_one)
+    decisions = dm.run_reconcile(gh, CONFIG, dry_run=True)
+
+    assert [decision.kind for decision in decisions] == [dm.MERGE_KIND, dm.ERROR_KIND, dm.MERGE_KIND]
+    assert decisions[1].pr_number == 41
 
 
 def test_head_branch_lookup_requires_unique_open_pr():

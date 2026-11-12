@@ -227,6 +227,16 @@ def quickstart_mrs_relpath(task):
     return "/".join((_repo_relative_path(DIR_MRS), task["strategy"], task["type"], task["owner"], f"{stem}.mrs"))
 
 
+def validate_quickstart_products(files_mrs):
+    available = {_repo_relative_path(path) for path in files_mrs}
+    missing = [
+        quickstart_mrs_relpath(task) for task in quickstart_merge_tasks()
+        if quickstart_mrs_relpath(task) not in available
+    ]
+    if missing:
+        raise ConfigError("快速开始所需 MRS 产物缺失: " + ", ".join(missing))
+
+
 def _quickstart_provider_yaml(task, repo_name, branch):
     strategy = task["strategy"]
     url_path = urllib.parse.quote(quickstart_mrs_relpath(task), safe="/!~-._")
@@ -326,8 +336,8 @@ def make_static_sections(repo_name=None, branch=None):
 > 需要固定版本或整包下载请使用 [Releases](https://github.com/{repo_name}/releases)
 > （含 `merged-rules-*.zip` 与 `SHA256SUMS`；校验前先解压 zip，再执行 `sha256sum -c SHA256SUMS`）。
 
-Releases 仅适合**短期固定**：默认只保留最近 {keep_days} 天，过期的 Release 与 tag 会在**后续成功发布**
-的收尾阶段清理（不是独立的每日定时任务）；需要长期使用时请跟随
+Releases 仅适合**短期固定**：默认只保留最近 {keep_days} 天，过期的 Release 与 tag 会在**后续成功运行的发布收尾（包括无内容变化轮次）**
+中清理（不是独立的每日定时任务）；需要长期使用时请跟随
 [`latest`](https://github.com/{repo_name}/releases/latest) 或自行镜像产物。
 
 ## 安全与许可
@@ -393,6 +403,7 @@ def main(argv=None):
         buf.write(make_intro())
         buf.write(make_inventory(files_std, files_mrs))
         buf.write(make_static_sections())
+        validate_quickstart_products(files_mrs)
         atomic_write(README_FILE, buf.getvalue())
     except Exception as e:
         error(f"README 生成失败: {e}")
