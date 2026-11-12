@@ -145,7 +145,18 @@ class FakeGh:
             pr = next((pr for pr in self.prs.values() if f"/{pr['headRefOid']}/" in endpoint), None)
             checks = pr["statusCheckRollup"] if pr is not None else []
             pages = self.check_pages if self.check_pages is not None else [checks]
-            return json.dumps([{"total_count": len(checks), "check_runs": page} for page in pages])
+            rest_pages = [
+                [
+                    {
+                        **entry,
+                        "status": entry.get("status", "completed").lower(),
+                        "conclusion": (entry.get("conclusion") or entry.get("state") or "").lower() or None,
+                    }
+                    for entry in page
+                ]
+                for page in pages
+            ]
+            return json.dumps([{"total_count": len(checks), "check_runs": page} for page in rest_pages])
         if "/actions/runs/" in endpoint:
             run_id = int(endpoint.rsplit("/", 1)[1])
             pr = next(
@@ -446,6 +457,32 @@ def test_optional_check_boundaries(name, replacement, expected_kind, needle):
     assert decision.kind == expected_kind
     if needle:
         assert needle in decision.reason
+
+
+def test_optional_codeql_failure_outside_ci_run_blocks_merge():
+    pr = make_pr()
+    replace_check(pr, "CodeQL", {
+        "__typename": "CheckRun", "name": "CodeQL", "status": "completed", "conclusion": "failure",
+        "head_sha": SHA, "app": {"id": 57789}, "details_url": f"https://github.com/{REPO}/runs/777",
+    })
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.BLOCK_KIND
+    assert "CodeQL failure" in decision.reason
+
+
+def test_optional_pending_check_outside_ci_run_waits():
+    pr = make_pr()
+    replace_check(pr, "Analyze (python)", {
+        "__typename": "CheckRun", "name": "Analyze (python)", "status": "in_progress", "conclusion": None,
+        "head_sha": SHA, "app": {"id": 57789}, "details_url": f"https://github.com/{REPO}/runs/778",
+    })
+
+    decision, _fake = run_pr(pr)
+
+    assert decision.kind == dm.WAIT_KIND
+    assert "Analyze (python) pending" in decision.reason
 
 
 def test_all_optional_checks_absent_do_not_block():

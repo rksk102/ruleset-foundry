@@ -351,6 +351,10 @@ def _entry_state(entry):
         return "pending"
     status = entry.get("status")
     conclusion = entry.get("conclusion")
+    if isinstance(status, str):
+        status = status.upper()
+    if isinstance(conclusion, str):
+        conclusion = conclusion.upper()
     if status and status != "COMPLETED":
         return "pending"
     if conclusion == "SUCCESS":
@@ -382,8 +386,10 @@ def rollup_states(rollup, config):
     return states
 
 
-def evaluate_checks(states, config):
+def evaluate_checks(states, config, optional_states=None):
     """返回 (kind, reason)；required 缺失/pending 为 wait，失败为 block。"""
+    if optional_states is None:
+        optional_states = states
     waiting = []
     failing = []
     for name in config.required_checks:
@@ -397,7 +403,7 @@ def evaluate_checks(states, config):
         else:
             failing.append(f"{name} {state}")
     for check in config.optional_checks:
-        state = states.get(check.name)
+        state = optional_states.get(check.name)
         if state is None:
             continue  # 可选项缺席不阻塞
         if state == "success" or state in check.allow_conclusions:
@@ -503,7 +509,7 @@ def _entry_state_check(run_id, entries, config):
         if name in states and CHECK_SEVERITY[state] < CHECK_SEVERITY[states[name]]:
             continue
         states[name] = state
-    return evaluate_checks(states, config)[0]
+    return evaluate_checks(states, config, optional_states={})[0]
 
 
 def evaluate_pr(pr, config, expected_sha=None, rollup=None, workflow_verifier=None):
@@ -570,7 +576,7 @@ def evaluate_pr(pr, config, expected_sha=None, rollup=None, workflow_verifier=No
         return decide(WAIT_KIND, f"mergeable={mergeable}，暂不能直接合并")
 
     verified_states = rollup_states(rollup, config) if rollup is not None else {}
-    check_kind, check_reason = evaluate_checks(verified_states, config)
+    check_kind, check_reason = evaluate_checks(verified_states, config, observed_states)
     if check_kind == PASS_KIND and workflow_verifier is not None:
         source_reason = workflow_verifier()
         if source_reason:
