@@ -459,6 +459,14 @@ class TestParseLines:
         encoded = base64.b64encode(b"payload:\n  - hidden.com\n").decode()
         assert processor.parse_lines(encoded) == ["hidden.com"]
 
+    def test_base64_single_explicit_domain_rule_decoded(self):
+        encoded = base64.b64encode(b"DOMAIN,ad.example.com\n").decode()
+        assert processor.parse_lines(encoded) == ["DOMAIN,ad.example.com"]
+
+    def test_base64_plain_domain_stays_verbatim(self):
+        encoded = base64.b64encode(b"ad.example.com\n").decode()
+        assert processor.parse_lines(encoded) == [encoded]
+
     def test_base64_payload_decoded(self):
         encoded = base64.b64encode(b"hidden.com\nanother.com").decode()
         assert processor.parse_lines(encoded) == ["hidden.com", "another.com"]

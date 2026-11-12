@@ -166,7 +166,10 @@ def explicit_base64_decode(text):
         decoded_bytes = base64.b64decode(s, validate=True)
         decoded_str = safe_decode(decoded_bytes)
         if is_text_data(decoded_str) and (
-            "\n" in decoded_str or _yaml_payload_lines(decoded_str) is not None
+            "\n" in decoded_str
+            or _yaml_payload_lines(decoded_str) is not None
+            or _split_semantic_prefix(decoded_str)[0] is not None
+            or classify_rule_line(decoded_str)[0] in ("suffix", "exact")
         ):
             return decoded_str
     except binascii.Error, ValueError:
