@@ -13,7 +13,7 @@ dev = [
     "pytest==9.2.0",
     "pytest-cov==7.1.0",
     "ruff==0.17.3",
-    "zizmor==1.31.1",
+    "zizmor==1.32.0",
 ]
 
 [tool.uv]
