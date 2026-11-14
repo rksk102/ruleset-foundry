@@ -708,7 +708,7 @@ class TestProcessGroupGates:
             "type": "ipcidr",
             "members": [(0, {"url": "https://example.com/cn.txt"})],
         }
-        lines = ["DOMAIN-SUFFIX,ads.example.com"] * 20 + ["0.0.0.0/0"] * 180 + ["1.1.1.0/24"]
+        lines = [f"DOMAIN-SUFFIX,ads{i}.example.com" for i in range(20)] + ["0.0.0.0/0"] * 180 + ["1.1.1.0/24"]
         writes = []
         monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
 
@@ -821,6 +821,90 @@ class TestCombinedDropGate:
         assert count is None
         assert any("丢弃行合计占比" in reason for _src, reason in errors["parse"])
         assert writes == []
+
+    @pytest.mark.parametrize("kind", ["domain", "ipcidr"])
+    def test_duplicate_valid_and_invalid_lines_cannot_flip_gate(self, kind, monkeypatch):
+        group = self.DOMAIN_GROUP if kind == "domain" else self.IP_GROUP
+        lines = self.domain_lines(18, 18, 64) if kind == "domain" else self.ip_lines(18, 18, 64)
+        original = self.run_group(group, lines, monkeypatch)
+        if kind == "domain":
+            duplicates = [lines[-1], lines[-1].upper()] * 1000 + [lines[0]] * 2000
+        else:
+            duplicates = ["IP-CIDR," + lines[-1]] * 1000 + [lines[-1] + " # duplicate"] * 1000 + [lines[0]] * 2000
+        repeated = self.run_group(group, lines + duplicates, monkeypatch)
+
+        assert original[0] is None
+        assert repeated[0] is None
+        assert original[1]["parse"] and repeated[1]["parse"]
+        assert original[2] == repeated[2] == []
+
+    def test_semantically_equivalent_domain_spellings_are_unique(self):
+        lines = ["good.example", "full:good.example", "DOMAIN,good.example", "domain:good.example"]
+        assert main._unique_gate_lines(lines, "domain") == ["good.example", "domain:good.example"]
+
+    def test_identical_dropped_lines_cannot_flip_gate(self, monkeypatch):
+        lines = [f"good{i}.com" for i in range(200)] + ["DOMAIN-KEYWORD,ads"] * 180
+        original = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+        repeated = self.run_group(self.DOMAIN_GROUP, lines + ["good0.com"] * 2000, monkeypatch)
+
+        assert original[0] == repeated[0] == 200
+        assert original[1]["parse"] == repeated[1]["parse"] == []
+        assert len(original[2]) == len(repeated[2]) == 1
+
+    def test_distinct_dropped_payloads_are_not_collapsed_by_type(self, monkeypatch):
+        lines = [f"good{i}.com" for i in range(200)] + [f"DOMAIN-KEYWORD,ads{i}" for i in range(180)]
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines + ["good0.com"] * 2000, monkeypatch)
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_hosts_fields_keep_original_semantics_through_unique_gate(self, monkeypatch):
+        lines = ["0.0.0.0 DOMAIN-SUFFIX,bank.example"]
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_domain_yaml_item_rejections_reach_drop_gate(self, monkeypatch):
+        monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
+        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "good.com"]'
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, [raw], monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_default_routes_are_unique_before_gate(self, monkeypatch):
+        lines = ["DOMAIN-SUFFIX,ads.example.com"] * 20 + ["0.0.0.0/0"] * 2000 + ["1.1.1.0/24"]
+        count, errors, writes = self.run_group(self.IP_GROUP, lines, monkeypatch)
+
+        assert count == 1
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_yaml_item_rejections_reach_ip_drop_gate(self, monkeypatch):
+        monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
+        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "1.1.1.0/24"]'
+        count, errors, writes = self.run_group(self.IP_GROUP, [raw], monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_url_extraction_has_independent_log_and_unchanged_gate(self, monkeypatch, caplog):
+        lines = [f"https://good{i}.example/path" for i in range(20)]
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count == 20
+        assert errors["parse"] == []
+        assert len(writes) == 1
+        assert "URL hostname 提取" in caplog.text
 
 
 class TestProcessIpGroup:

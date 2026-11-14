@@ -691,6 +691,36 @@ def _unexpected_drop_count(stats):
     )
 
 
+def _unique_gate_lines(lines, rule_type, domain_kind="exact"):
+    """以规范化语义识别重复候选，避免改写形式改变门禁分母。"""
+    unique = set()
+    result = []
+    for line in lines:
+        text = str(line)
+        candidate = text
+        if isinstance(line, processor._HostsField):
+            key = (line.semantic, line.field.casefold())
+            candidate = line
+        elif rule_type == "ipcidr":
+            kind, payload, _type_name = processor.classify_rule_line(text)
+            candidate = payload if kind == "ip" else text
+            candidate = re.split(r"[#!]", candidate, maxsplit=1)[0].strip()
+            with contextlib.suppress(ValueError):
+                candidate = str(ipaddress.ip_network(candidate, strict=False))
+            key = candidate
+        else:
+            normalized, _stats = processor.process_domain_detailed([line], domain_kind)
+            _prefix, payload, type_name = processor.classify_rule_line(text)
+            if type_name in processor._OPAQUE_TYPES or type_name in processor._UNEXPRESSIBLE_IP_TYPES:
+                key = text.casefold()
+            else:
+                key = tuple(normalized) if normalized else text.casefold()
+        if key not in unique:
+            unique.add(key)
+            result.append(candidate)
+    return result
+
+
 def _gate_drops(unrecognized, unexpected, total, contributing, errors):
     """合计丢弃门禁：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。
 
@@ -724,6 +754,7 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
     all_lines = []
     errors = {"download": [], "parse": []}
     contributing = []
+    yaml_dropped = 0
     for idx, task in group["members"]:
         raw = raw_by_index.get(idx)
         if raw is None:
@@ -734,6 +765,14 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         except Exception as e:
             errors["parse"].append((task["url"], f"解析失败: {e}"))
             continue
+        yaml_errors = getattr(parsed, "yaml_errors", 0)
+        if yaml_errors:
+            message = f"YAML 非字符串或空规则候选 {yaml_errors} 项，已拒绝"
+            if not ALLOW_PARTIAL:
+                errors["parse"].append((task["url"], message))
+                continue
+            warning(f"    {task['url']}: {message}")
+            yaml_dropped += yaml_errors
         # 表头只记录解析出非空行的源；规则最终是否保留由后续去重/门禁决定
         if parsed:
             all_lines.extend(parsed)
@@ -741,6 +780,7 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         elif raw:
             errors["parse"].append((task["url"], "未解析出任何行（疑似空规则集或格式变更）"))
 
+    all_lines = _unique_gate_lines(all_lines, group["type"], group.get("domain_kind", "exact"))
     if not all_lines:
         if not errors["parse"] and not errors["download"]:
             # 所有成员都是空响应：raw 为空时报一次汇总错误，避免静默通过
@@ -757,7 +797,11 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         result, _special = _process_ip_group(all_lines)
         gate_total = len(all_lines) - _special.get("dropped_default_route", 0)
         gate_ok = _gate_drops(
-            _special.get("unrecognized", 0), _unexpected_drop_count(_special), gate_total, contributing, errors
+            _special.get("unrecognized", 0) + yaml_dropped,
+            _unexpected_drop_count(_special),
+            gate_total + yaml_dropped,
+            contributing,
+            errors,
         )
     else:
         effective_kind = group.get("domain_kind", "exact")
@@ -767,6 +811,8 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
             warning(f"    同一输出混用精确/后缀语义源，拒绝按单一语义输出: {group['path']}")
             return None, errors
         result, special = processor.process_domain_detailed(all_lines, effective_kind)
+        if special.get("extracted_url"):
+            info(f"    URL hostname 提取: {special['extracted_url']} 条")
         if special.get("suffix_promoted"):
             info(f"    后缀语义源: 提升 {special['suffix_promoted']} 条裸域名为 '+.' 形式")
         for key, label in (
@@ -782,7 +828,7 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
             ("dropped_exception", "例外规则(@@)被丢弃"),
             ("dropped_keyword", "关键字/正则规则被丢弃"),
             ("dropped_modifier", "含 $ 修饰符的规则被丢弃"),
-            ("dropped_path", "带路径的 Adblock 锚点规则被丢弃"),
+            ("dropped_path", "路径或不可无损表达的分隔符规则被丢弃"),
             ("ip_in_domain", "IP 规则出现在 domain 源中，已丢弃"),
         ):
             if special.get(key):
@@ -791,7 +837,11 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
             warning(f"    不可表达规则类型被丢弃 [{type_name}]: {count} 行")
 
         gate_ok = _gate_drops(
-            special.get("unrecognized", 0), _unexpected_drop_count(special), len(all_lines), contributing, errors
+            special.get("unrecognized", 0) + yaml_dropped,
+            _unexpected_drop_count(special),
+            len(all_lines) + yaml_dropped,
+            contributing,
+            errors,
         )
 
     if not gate_ok:

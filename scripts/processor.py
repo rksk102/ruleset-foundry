@@ -3,6 +3,7 @@ import binascii
 import ipaddress
 import re
 import sys
+from urllib.parse import urlsplit
 
 import utils
 
@@ -89,6 +90,16 @@ def _is_ip_literal(value):
         return False
 
 
+def _idna_labels(labels):
+    try:
+        encoded = [label.encode("idna") if not label.isascii() else label.encode("ascii") for label in labels]
+    except (UnicodeError, UnicodeDecodeError):
+        return None
+    if any(len(label) > 63 for label in encoded) or sum(len(label) + 1 for label in encoded) + 1 > 255:
+        return None
+    return encoded
+
+
 def _valid_wildcard(value):
     if value.endswith(".") or value.startswith("*.") is False or any(c.isspace() for c in value):
         return False
@@ -108,7 +119,7 @@ def _valid_wildcard(value):
             return False
     if not seen_entity:
         return False
-    return not labels[-1].isdigit()
+    return not labels[-1].isdigit() and _idna_labels([label for label in labels if label != "*"]) is not None
 
 
 def ipcidr_drop_reason(type_name):
@@ -134,6 +145,7 @@ def new_stats():
         "dropped_path": 0,
         "dropped_keyword": 0,
         "dropped_default_route": 0,
+        "extracted_url": 0,
         "dropped_rule_type": {},
         "unrecognized": 0,
     }
@@ -165,39 +177,58 @@ def explicit_base64_decode(text):
     try:
         decoded_bytes = base64.b64decode(s, validate=True)
         decoded_str = safe_decode(decoded_bytes)
+        has_yaml_head = any(_YAML_HEAD_RE.match(line) for line in decoded_str.splitlines())
         if is_text_data(decoded_str) and (
             "\n" in decoded_str
-            or _yaml_payload_lines(decoded_str) is not None
+            or has_yaml_head
             or _split_semantic_prefix(decoded_str)[0] is not None
             or classify_rule_line(decoded_str)[0] in ("suffix", "exact")
         ):
             return decoded_str
-    except binascii.Error, ValueError:
+    except (binascii.Error, ValueError):
         pass
     return text
+
+
+class YamlPayloadError(ValueError):
+    pass
+
+
+class ParsedLines(list):
+    def __init__(self, values=(), yaml_errors=0):
+        super().__init__(values)
+        self.yaml_errors = yaml_errors
 
 
 def _yaml_payload_lines(content):
     try:
         import yaml
-    except Exception:
-        return None
+    except Exception as exc:
+        raise YamlPayloadError("YAML 输入需要 PyYAML 安全解析") from exc
     try:
         data = yaml.load(content, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
+    except Exception as exc:
+        raise YamlPayloadError(f"YAML 结构无效: {exc}") from exc
+    if not isinstance(data, dict) or any(key not in ("payload", "rules", "behavior") for key in data):
+        raise YamlPayloadError("YAML 顶层必须仅含 payload 或 rules 列表")
     for key in ("payload", "rules"):
-        value = data.get(key)
-        if isinstance(value, list) and all(isinstance(x, str) for x in value):
-            result = []
-            for item in value:
-                cleaned = item.split(" #", 1)[0].strip()
-                if cleaned:
-                    result.append(cleaned)
-            return result
-    return None
+        if key not in data:
+            continue
+        value = data[key]
+        if not isinstance(value, list):
+            raise YamlPayloadError(f"YAML {key} 必须是列表")
+        result = ParsedLines()
+        for item in value:
+            if not isinstance(item, str):
+                result.yaml_errors += 1
+                continue
+            cleaned = item.split(" #", 1)[0].strip()
+            if cleaned:
+                result.append(cleaned)
+            else:
+                result.yaml_errors += 1
+        return result
+    raise YamlPayloadError("YAML 缺少 payload 或 rules 列表")
 
 
 _YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
@@ -279,7 +310,10 @@ def _expand_hosts_entries(lines):
         if expanded is None:
             expanded = list(lines[:index])
         expanded.extend(_HostsField(prefix + name, semantic, name) for name in hostnames)
-    return lines if expanded is None else expanded
+    if expanded is None:
+        return lines
+    result = ParsedLines(expanded, yaml_errors=getattr(lines, "yaml_errors", 0))
+    return result
 
 
 def parse_lines(raw_content):
@@ -296,13 +330,9 @@ def parse_lines(raw_content):
 
     if any(_YAML_HEAD_RE.match(l) for l in probe):
         yaml_lines = _yaml_payload_lines(content)
-        if yaml_lines is not None:
-            return _expand_hosts_entries(yaml_lines)
+        return _expand_hosts_entries(yaml_lines)
 
-    lines = []
-    in_payload = False
-    has_yaml_head = any(_YAML_HEAD_RE.match(l) for l in probe)
-
+    lines = ParsedLines()
     for line in content_lines:
         line = line.strip()
         if not line:
@@ -311,25 +341,6 @@ def parse_lines(raw_content):
             continue
         if " #" in line:
             line = line.split(" #")[0].strip()
-
-        if has_yaml_head:
-            if _YAML_HEAD_RE.match(line):
-                in_payload = True
-                m = re.search(r"\[(.*)\]", line)
-                if m:
-                    for x in m.group(1).split(","):
-                        lines.append(x.strip("'\" "))
-                continue
-
-            if in_payload:
-                if re.match(r"^[a-zA-Z0-9_-]+:", line):
-                    in_payload = False
-                    continue
-                if line.startswith("- "):
-                    lines.append(line[2:].strip("'\" "))
-                elif line.startswith("-"):
-                    lines.append(line[1:].strip("'\" "))
-            continue
 
         if line.startswith("- "):
             lines.append(line[2:].strip("'\" "))
@@ -353,20 +364,20 @@ def _record_domain(s, semantic, domain_kind, stats, valid_domains):
             stats["unrecognized"] += 1
             return
         valid = all(c.isalnum() or c in "-_" for c in s) and s[0] != "-" and s[-1] != "-"
-        if valid and semantic == "suffix":
+        if not valid or _idna_labels([s]) is None:
+            stats["unrecognized"] += 1
+        elif semantic == "suffix":
             stats["suffix"] += 1
             valid_domains.add("+." + s)
-        elif valid and semantic == "subdomain":
+        elif semantic == "subdomain":
             stats["subdomain"] += 1
             valid_domains.add("." + s)
-        elif valid and semantic is None and domain_kind == "suffix":
+        elif semantic is None and domain_kind == "suffix":
             stats["suffix_promoted"] += 1
             valid_domains.add("+." + s)
-        elif valid:
+        else:
             stats["bare_single_label"] += 1
             valid_domains.add(s)
-        else:
-            stats["unrecognized"] += 1
         return
     if " " in s or "*" in s:
         stats["unrecognized"] += 1
@@ -379,7 +390,7 @@ def _record_domain(s, semantic, domain_kind, stats, valid_domains):
     if not all(
         label and label[0] != "-" and label[-1] != "-" and all(c.isalnum() or c in "-_" for c in label)
         for label in labels
-    ):
+    ) or _idna_labels(labels) is None:
         stats["unrecognized"] += 1
         return
 
@@ -397,10 +408,23 @@ def _record_domain(s, semantic, domain_kind, stats, valid_domains):
         valid_domains.add(s)
 
 
+def _extract_url_hostname(value):
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in ("http", "https") or parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            return None
+        return parsed.hostname
+    except ValueError:
+        return None
+
+
 def _analyze_and_process_domain(lines, domain_kind="exact"):
     valid_domains = set()
     stats = new_stats()
     stats["suffix_promoted"] = 0
+    stats["unrecognized"] = getattr(lines, "yaml_errors", 0)
 
     for item in _expand_hosts_entries(lines):
         s = item.strip()
@@ -432,10 +456,11 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 semantic = "wildcard"
 
         kind, payload, type_name = classify_rule_line(s)
-        if kind == "suffix":
-            semantic, s = "suffix", payload
-        elif kind == "exact":
-            semantic, s = "exact", payload
+        if kind in ("suffix", "exact"):
+            if semantic is not None and semantic != kind:
+                stats["unrecognized"] += 1
+                continue
+            semantic, s = kind, payload
         elif kind == "ip":
             stats["ip_in_domain"] += 1
             continue
@@ -444,6 +469,17 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             continue
 
         s = s.strip()
+        if semantic is None and kind is None and re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", s):
+            hostname = _extract_url_hostname(s)
+            if hostname is None:
+                stats["unrecognized"] += 1
+                continue
+            stats["extracted_url"] += 1
+            _record_domain(hostname, None, domain_kind, stats, valid_domains)
+            continue
+        if s.startswith("//"):
+            stats["dropped_path"] += 1
+            continue
         if re.match(r"^\*\.", s):
             if semantic in ("exact", "suffix") or not _valid_wildcard(s):
                 stats["unrecognized"] += 1
@@ -470,10 +506,12 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
 
         adblock_anchor = s.startswith("||")
         if adblock_anchor:
+            if semantic is not None and semantic != "suffix":
+                stats["unrecognized"] += 1
+                continue
             s = s[2:]
             # ABP 的 || 锚点匹配根域及其子域，对应 mihomo 的 +.
-            if semantic is None:
-                semantic = "suffix"
+            semantic = "suffix"
         if "$" in s:
             modifiers = s.split("$", 1)[1]
             names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
@@ -485,8 +523,11 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if adblock_anchor and "/" in s:
             stats["dropped_path"] += 1
             continue
+        if adblock_anchor and s.endswith("^"):
+            s = s[:-1]
         if "^" in s:
-            s = s.replace("^", "")
+            stats["dropped_path"] += 1
+            continue
         if s.startswith("+."):
             if semantic == "exact":
                 stats["unrecognized"] += 1
@@ -494,12 +535,17 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             semantic = "suffix"
             s = s[2:]
         if "/" in s:
-            if explicit_semantic or kind in ("suffix", "exact"):
+            ip_candidate = s.strip("[]").split("/", 1)[0]
+            if _is_ip_literal(s) or _is_ip_literal(ip_candidate) or explicit_semantic or kind in ("suffix", "exact"):
                 stats["unrecognized"] += 1
-                continue
-            s = s.split("/")[0]
+            else:
+                stats["dropped_path"] += 1
+            continue
         s = s.strip("[]")
         if ":" in s:
+            if adblock_anchor:
+                stats["dropped_path"] += 1
+                continue
             head, _, port = s.rpartition(":")
             if port.isdigit() and "." in head:
                 s = head
@@ -516,6 +562,7 @@ def process_domain_detailed(lines, domain_kind="exact"):
 def process_ip_detailed(lines):
     candidates = []
     stats = new_stats()
+    stats["unrecognized"] = getattr(lines, "yaml_errors", 0)
     dropped_default_routes = []
     for line in _expand_hosts_entries(lines):
         if isinstance(line, _HostsField):
@@ -571,6 +618,8 @@ def main():
             print(f"# 另有 {errors.count - len(errors.samples)} 条无效 CIDR 未逐条列出", file=sys.stderr)
     else:
         result, stats = process_domain_detailed(lines)
+        if stats.get("extracted_url"):
+            print(f"# URL hostname 提取: {stats['extracted_url']} 行", file=sys.stderr)
         if stats.get("unrecognized"):
             print(f"# 未识别行: {stats['unrecognized']}", file=sys.stderr)
 
