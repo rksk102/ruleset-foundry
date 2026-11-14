@@ -965,9 +965,15 @@ class TestYamlPayloadParsing:
         content = "rules:\n  - DOMAIN-SUFFIX,a.com\n  - IP-CIDR,1.2.3.0/24\n"
         assert processor.parse_lines(content) == ["DOMAIN-SUFFIX,a.com", "IP-CIDR,1.2.3.0/24"]
 
-    def test_payload_preferred_over_rules(self):
+    def test_payload_and_rules_are_combined(self):
         content = "payload:\n  - a.com\nrules:\n  - b.com\n"
-        assert processor.parse_lines(content) == ["a.com"]
+        assert processor.parse_lines(content) == ["a.com", "b.com"]
+
+    def test_non_string_items_in_both_lists_are_counted(self):
+        content = "payload: [13335, good.com]\nrules: [true, rules.com]\n"
+        parsed = processor.parse_lines(content)
+        assert parsed == ["good.com", "rules.com"]
+        assert parsed.yaml_errors == 2
 
     def test_payload_with_trailing_key(self):
         content = "payload:\n  - '+.a.com'\n  - 'b.com'\nbehavior: domain\n"

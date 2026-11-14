@@ -210,14 +210,16 @@ def _yaml_payload_lines(content):
     except Exception as exc:
         raise YamlPayloadError(f"YAML 结构无效: {exc}") from exc
     if not isinstance(data, dict) or any(key not in ("payload", "rules", "behavior") for key in data):
-        raise YamlPayloadError("YAML 顶层必须仅含 payload 或 rules 列表")
+        raise YamlPayloadError("YAML 顶层只能包含 payload、rules 或 behavior")
+    result = ParsedLines()
+    found = False
     for key in ("payload", "rules"):
         if key not in data:
             continue
+        found = True
         value = data[key]
         if not isinstance(value, list):
             raise YamlPayloadError(f"YAML {key} 必须是列表")
-        result = ParsedLines()
         for item in value:
             if not isinstance(item, str):
                 result.yaml_errors += 1
@@ -227,8 +229,9 @@ def _yaml_payload_lines(content):
                 result.append(cleaned)
             else:
                 result.yaml_errors += 1
-        return result
-    raise YamlPayloadError("YAML 缺少 payload 或 rules 列表")
+    if not found:
+        raise YamlPayloadError("YAML 缺少 payload 或 rules 列表")
+    return result
 
 
 _YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
