@@ -199,6 +199,11 @@ def _validate_domain_tree(leaves, bitmap, labels):
     return frozenset(keys)
 
 
+def _unmap_ip(address):
+    """MRS 的 16 字节地址以 IPv4-mapped IPv6 保存 IPv4；TXT/MRS 比较前统一还原。"""
+    return address.ipv4_mapped or address if address.version == 6 else address
+
+
 def _validate_body(reader, behavior):
     if reader.read_exact(1) != b"\x01":
         raise MrsFormatError("MRS 主体版本非法")
@@ -206,10 +211,8 @@ def _validate_body(reader, behavior):
         records = _records(reader, _int64(reader), 32)
         ranges = []
         for offset in range(0, len(records), 32):
-            start = ipaddress.ip_address(records[offset : offset + 16])
-            end = ipaddress.ip_address(records[offset + 16 : offset + 32])
-            start = start.ipv4_mapped or start if start.version == 6 else start
-            end = end.ipv4_mapped or end if end.version == 6 else end
+            start = _unmap_ip(ipaddress.ip_address(records[offset : offset + 16]))
+            end = _unmap_ip(ipaddress.ip_address(records[offset + 16 : offset + 32]))
             if start.version != end.version or start > end:
                 raise MrsFormatError("MRS IP range 地址族或起止顺序无效")
             ranges.append((int(start), int(end), start.version))
@@ -281,9 +284,11 @@ def _text_network(rule):
         network = ipaddress.ip_network(rule, strict=False)
     except ValueError as exc:
         raise MrsFormatError(f"TXT 含无效 CIDR: {rule!r}") from exc
-    start = network.network_address
-    end = network.broadcast_address
-    return int(start), int(end), network.version
+    start = _unmap_ip(network.network_address)
+    end = _unmap_ip(network.broadcast_address)
+    if start.version != end.version:
+        raise MrsFormatError(f"TXT 含无法归一化的地址族: {rule!r}")
+    return int(start), int(end), start.version
 
 
 def _merge_ranges(ranges):

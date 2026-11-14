@@ -160,6 +160,14 @@ class TestMrsFormat:
         with pytest.raises(mrs_format.MrsFormatError, match="range"):
             mrs_format.validate_mrs(path, "ipcidr")
 
+    def test_mapped_ipv6_txt_matches_mrs(self, work_dir):
+        txt = work_dir / "mapped.txt"
+        txt.write_text("::ffff:192.0.2.0/120\n", encoding="utf-8")
+        mrs = work_dir / "mapped.mrs"
+        mrs.write_bytes(ipcidr_mrs_bytes(["::ffff:192.0.2.0/120"]))
+
+        mrs_format.verify_product_pair(txt, mrs, "ipcidr")
+
     @pytest.mark.parametrize("network", ["0.0.0.0/0", "255.255.255.255/32", "::/0", "2001:db8::1/128"])
     def test_valid_ip_ranges_pass(self, work_dir, network):
         path = work_dir / "valid-range.mrs"
