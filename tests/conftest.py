@@ -9,7 +9,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import config_loader
 import logger
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config_loader(monkeypatch):
+    monkeypatch.setattr(config_loader, "_CONFIG", None)
+    monkeypatch.setattr(config_loader, "_CONFIG_FILE", Path("config.yaml"))
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +43,7 @@ def _isolate_logger():
 
 @pytest.fixture
 def work_dir():
-    """Sandbox-friendly scratch dir: default perms, always removable, no tmp_path."""
+    """供需要立即清理的测试使用；普通测试可使用仓库内 basetemp 下的 tmp_path。"""
     base = Path(__file__).resolve().parent.parent / ".tools" / "pytest-scratch"
     os.makedirs(base, exist_ok=True)
     path = base / uuid.uuid4().hex[:12]
