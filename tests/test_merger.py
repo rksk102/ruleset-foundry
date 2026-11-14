@@ -135,7 +135,7 @@ class TestProcessTaskLogic:
         assert "+.google.com" in content
         assert "+.ads.google.com" not in content
 
-    def test_subdomain_parent_does_not_drop_suffix_child(self, tmp_path, monkeypatch):
+    def test_subdomain_parent_drops_strict_suffix_child(self, tmp_path, monkeypatch):
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"
         write(source / "block" / "domain" / "A" / "one.txt", ".example.com\n+.www.example.com\n")
@@ -150,10 +150,10 @@ class TestProcessTaskLogic:
         )
 
         assert result["raw"] == 2
-        assert result["opt"] == 2
+        assert result["opt"] == 1
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
         assert ".example.com" in content
-        assert "+.www.example.com" in content
+        assert "+.www.example.com" not in content
 
     def test_sources_recorded_in_header(self, tmp_path, monkeypatch):
         source = tmp_path / "rulesets"

@@ -534,10 +534,10 @@ class TestDedupDomainSuffix:
         assert kept == [".google.com"]
         assert removed == 1
 
-    def test_subdomain_parent_does_not_cover_suffix_child_root(self):
+    def test_subdomain_parent_covers_strict_suffix_child(self):
         kept, removed = utils.dedup_domain_suffix({".example.com", "+.www.example.com"})
-        assert kept == ["+.www.example.com", ".example.com"]
-        assert removed == 0
+        assert kept == [".example.com"]
+        assert removed == 1
 
     def test_subdomain_parent_still_covers_subdomain_child(self):
         kept, removed = utils.dedup_domain_suffix({".example.com", ".www.example.com"})
