@@ -19,93 +19,66 @@ BASE = (
 )
 
 
-def use_config(work_dir, content=None):
-    config_loader._CONFIG = None
+def use_config(work_dir, monkeypatch, content=None):
+    monkeypatch.setattr(config_loader, "_CONFIG", None)
     path = work_dir / "config.yaml"
     if content is not None:
         path.write_text(content, encoding="utf-8")
-    config_loader._CONFIG_FILE = path
+    monkeypatch.setattr(config_loader, "_CONFIG_FILE", path)
     return path
 
 
-def reset_config():
-    import pathlib
-
-    config_loader._CONFIG = None
-    config_loader._CONFIG_FILE = pathlib.Path("config.yaml")
-
-
 class TestLoadConfig:
-    def test_missing_file_uses_defaults(self, work_dir):
-        use_config(work_dir)
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["network"]["timeout_seconds"] == 15
-            assert cfg["network"]["max_concurrency"] == 6
-            assert cfg["network"]["max_per_host"] == 2
-            assert cfg["network"]["max_retry_after_seconds"] == 60
-            assert cfg["paths"]["merged_output_dir"] == "merged-rules"
-            assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
-            assert cfg["behavior"]["conflict_policy"] == "warn"
-            assert cfg["behavior"]["unrecognized_warn_ratio"] == 0.10
-            assert cfg["mihomo"]["kernel_sha256"] == ""
-            assert cfg["mihomo"]["kernel_sha256_arm64"] == ""
-            assert cfg["merges"] == []
-        finally:
-            reset_config()
+    def test_missing_file_uses_defaults(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        cfg = config_loader.load_config()
+        assert cfg["network"]["timeout_seconds"] == 15
+        assert cfg["network"]["max_concurrency"] == 6
+        assert cfg["network"]["max_per_host"] == 2
+        assert cfg["network"]["max_retry_after_seconds"] == 60
+        assert cfg["paths"]["merged_output_dir"] == "merged-rules"
+        assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
+        assert cfg["behavior"]["conflict_policy"] == "warn"
+        assert cfg["behavior"]["unrecognized_warn_ratio"] == 0.10
+        assert cfg["mihomo"]["kernel_sha256"] == ""
+        assert cfg["mihomo"]["kernel_sha256_arm64"] == ""
+        assert cfg["merges"] == []
 
-    def test_result_is_cached(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.load_config() is config_loader.load_config()
-        finally:
-            reset_config()
+    def test_result_is_cached(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        assert config_loader.load_config() is config_loader.load_config()
 
-    def test_user_file_overrides_only_given_keys(self, work_dir):
-        use_config(work_dir, "behavior:\n  conflict_policy: fail\n")
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["behavior"]["conflict_policy"] == "fail"
-            assert cfg["behavior"]["release_keep_days"] == 3
-            assert cfg["behavior"]["release_change_detection"] is True
-        finally:
-            reset_config()
+    def test_user_file_overrides_only_given_keys(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "behavior:\n  conflict_policy: fail\n")
+        cfg = config_loader.load_config()
+        assert cfg["behavior"]["conflict_policy"] == "fail"
+        assert cfg["behavior"]["release_keep_days"] == 3
+        assert cfg["behavior"]["release_change_detection"] is True
 
-    def test_nested_merge_keeps_sibling_defaults(self, work_dir):
-        use_config(work_dir, "network:\n  timeout_seconds: 30\n")
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["network"]["timeout_seconds"] == 30
-            assert cfg["network"]["max_retries"] == 2
-            assert cfg["network"]["max_concurrency"] == 6
-        finally:
-            reset_config()
+    def test_nested_merge_keeps_sibling_defaults(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "network:\n  timeout_seconds: 30\n")
+        cfg = config_loader.load_config()
+        assert cfg["network"]["timeout_seconds"] == 30
+        assert cfg["network"]["max_retries"] == 2
+        assert cfg["network"]["max_concurrency"] == 6
 
-    def test_empty_file_falls_back_to_defaults(self, work_dir):
-        use_config(work_dir, "")
-        try:
-            assert config_loader.load_config()["behavior"]["conflict_policy"] == "warn"
-        finally:
-            reset_config()
+    def test_empty_file_falls_back_to_defaults(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "")
+        assert config_loader.load_config()["behavior"]["conflict_policy"] == "warn"
 
-    def test_malformed_yaml_is_rejected(self, work_dir):
-        use_config(work_dir, "a: [1, 2\n")
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_malformed_yaml_is_rejected(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "a: [1, 2\n")
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
-    def test_https_repo_api_is_accepted(self, work_dir):
-        use_config(work_dir, BASE + 'mihomo:\n  repo_api: "https://api.github.com/repos/X/Y/releases"\n')
-        try:
-            assert config_loader.get("mihomo", "repo_api").startswith("https://")
-        finally:
-            reset_config()
+    def test_https_repo_api_is_accepted(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, BASE + 'mihomo:\n  repo_api: "https://api.github.com/repos/X/Y/releases"\n')
+        assert config_loader.get("mihomo", "repo_api").startswith("https://")
 
-    def test_valid_kernel_pin_formats_are_accepted(self, work_dir):
+    def test_valid_kernel_pin_formats_are_accepted(self, work_dir, monkeypatch):
         use_config(
             work_dir,
+            monkeypatch,
             BASE
             + (
                 "mihomo:\n"
@@ -114,12 +87,9 @@ class TestLoadConfig:
                 f'  kernel_sha256_arm64: "{"b" * 64}"\n'
             ),
         )
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["mihomo"]["pinned_version"] == "v1.19.32-rc1"
-            assert cfg["mihomo"]["kernel_sha256"] == "a" * 64
-        finally:
-            reset_config()
+        cfg = config_loader.load_config()
+        assert cfg["mihomo"]["pinned_version"] == "v1.19.32-rc1"
+        assert cfg["mihomo"]["kernel_sha256"] == "a" * 64
 
     @pytest.mark.parametrize(
         "repo_api",
@@ -129,13 +99,10 @@ class TestLoadConfig:
             "not-a-url",
         ],
     )
-    def test_non_https_repo_api_is_rejected(self, work_dir, repo_api):
-        use_config(work_dir, BASE + f'mihomo:\n  repo_api: "{repo_api}"\n')
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_non_https_repo_api_is_rejected(self, work_dir, monkeypatch, repo_api):
+        use_config(work_dir, monkeypatch, BASE + f'mihomo:\n  repo_api: "{repo_api}"\n')
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
 
 class TestMergeFilename:
@@ -151,76 +118,49 @@ class TestMergeFilename:
 
 
 class TestGet:
-    def test_single_key(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.get("behavior")["conflict_policy"] == "warn"
-        finally:
-            reset_config()
+    def test_single_key(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        assert config_loader.get("behavior")["conflict_policy"] == "warn"
 
-    def test_nested_keys(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.get("network", "timeout_seconds") == 15
-        finally:
-            reset_config()
+    def test_nested_keys(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        assert config_loader.get("network", "timeout_seconds") == 15
 
-    def test_missing_returns_default(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.get("nope") is None
-            assert config_loader.get("nope", default=7) == 7
-            assert config_loader.get("network", "nope", default="x") == "x"
-        finally:
-            reset_config()
+    def test_missing_returns_default(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        assert config_loader.get("nope") is None
+        assert config_loader.get("nope", default=7) == 7
+        assert config_loader.get("network", "nope", default="x") == "x"
 
-    def test_traversing_through_scalar_returns_default(self, work_dir):
-        use_config(work_dir)
-        try:
-            assert config_loader.get("network", "timeout_seconds", "deeper", default=9) == 9
-        finally:
-            reset_config()
+    def test_traversing_through_scalar_returns_default(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch)
+        assert config_loader.get("network", "timeout_seconds", "deeper", default=9) == 9
 
-    def test_zero_release_keep_days_is_rejected(self, work_dir):
-        use_config(work_dir, "behavior:\n  release_keep_days: 0\n")
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_zero_release_keep_days_is_rejected(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "behavior:\n  release_keep_days: 0\n")
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
-    def test_release_keep_days_over_list_capacity_is_rejected(self, work_dir):
-        use_config(work_dir, "behavior:\n  release_keep_days: 91\n")
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_release_keep_days_over_list_capacity_is_rejected(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "behavior:\n  release_keep_days: 91\n")
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
-    def test_zero_unrecognized_ratio_is_not_treated_as_missing(self, work_dir):
-        use_config(work_dir, "behavior:\n  unrecognized_warn_ratio: 0\n")
-        try:
-            assert config_loader.get("behavior", "unrecognized_warn_ratio", default=99) == 0
-        finally:
-            reset_config()
+    def test_zero_unrecognized_ratio_is_not_treated_as_missing(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "behavior:\n  unrecognized_warn_ratio: 0\n")
+        assert config_loader.get("behavior", "unrecognized_warn_ratio", default=99) == 0
 
-    def test_false_is_not_treated_as_missing(self, work_dir):
-        use_config(work_dir, "behavior:\n  allow_partial: false\n")
-        try:
-            assert config_loader.get("behavior", "allow_partial", default=True) is False
-        finally:
-            reset_config()
+    def test_false_is_not_treated_as_missing(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, "behavior:\n  allow_partial: false\n")
+        assert config_loader.get("behavior", "allow_partial", default=True) is False
 
 
 class TestWindowsPathValues:
     @pytest.mark.parametrize("value", ["foo:bar", "NUL", "NUL.txt", "CON", "COM1.txt"])
-    def test_windows_unsafe_path_values_are_rejected(self, work_dir, value):
-        use_config(work_dir, f'paths:\n  rulesets_dir: "{value}"\n')
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_windows_unsafe_path_values_are_rejected(self, work_dir, monkeypatch, value):
+        use_config(work_dir, monkeypatch, f'paths:\n  rulesets_dir: "{value}"\n')
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
 
 class TestPathValidationHardening:
@@ -228,35 +168,26 @@ class TestPathValidationHardening:
         "value",
         ["./.", ".//.", "scripts", "Scripts", ".git/config", "docs", "tests/../scripts"],
     )
-    def test_dot_and_protected_paths_are_rejected(self, work_dir, value):
-        use_config(work_dir, f'paths:\n  merged_output_dir: "{value}"\n')
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_dot_and_protected_paths_are_rejected(self, work_dir, monkeypatch, value):
+        use_config(work_dir, monkeypatch, f'paths:\n  merged_output_dir: "{value}"\n')
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
     @pytest.mark.parametrize("value", ["data.", "out/data.", "data /x", "out/data /x"])
-    def test_trailing_dot_or_space_segments_are_rejected(self, work_dir, value):
-        use_config(work_dir, f'paths:\n  merged_output_dir: "{value}"\n')
-        try:
-            with pytest.raises(config_loader.ConfigError, match="点或空格"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_trailing_dot_or_space_segments_are_rejected(self, work_dir, monkeypatch, value):
+        use_config(work_dir, monkeypatch, f'paths:\n  merged_output_dir: "{value}"\n')
+        with pytest.raises(config_loader.ConfigError, match="点或空格"):
+            config_loader.load_config()
 
     def test_path_value_is_stripped(self):
         assert config_loader._validate_path_value("x", "  rulesets  ") == "rulesets"
 
-    def test_stripped_path_is_written_back(self, work_dir):
-        use_config(work_dir, 'paths:\n  merged_output_dir: "  merged-rules  "\n')
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["paths"]["merged_output_dir"] == "merged-rules"
-        finally:
-            reset_config()
+    def test_stripped_path_is_written_back(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, 'paths:\n  merged_output_dir: "  merged-rules  "\n')
+        cfg = config_loader.load_config()
+        assert cfg["paths"]["merged_output_dir"] == "merged-rules"
 
-    def test_merge_input_is_stripped_and_written_back(self, work_dir):
+    def test_merge_input_is_stripped_and_written_back(self, work_dir, monkeypatch):
         body = (
             "merges:\n"
             "  - strategy: block\n"
@@ -265,12 +196,9 @@ class TestPathValidationHardening:
             "    filename: a.txt\n"
             '    inputs: ["  block/domain/A/a.txt  "]\n'
         )
-        use_config(work_dir, body)
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["merges"][0]["inputs"][0] == "block/domain/A/a.txt"
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        cfg = config_loader.load_config()
+        assert cfg["merges"][0]["inputs"][0] == "block/domain/A/a.txt"
 
 
 def path_config(paths=None, mihomo=None):
@@ -298,13 +226,10 @@ class TestPathRelationshipValidation:
             path_config({"log_dir": "shared"}, {"kernel_cache_path": "shared"}),
         ],
     )
-    def test_directories_must_not_equal_or_nest(self, work_dir, body):
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_directories_must_not_equal_or_nest(self, work_dir, monkeypatch, body):
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+            config_loader.load_config()
 
     @pytest.mark.parametrize(
         "body",
@@ -316,13 +241,10 @@ class TestPathRelationshipValidation:
             path_config({"sources_file": "shared/kernel/sources.urls"}, {"kernel_cache_path": "shared/kernel"}),
         ],
     )
-    def test_sources_file_must_not_live_under_directory(self, work_dir, body):
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_sources_file_must_not_live_under_directory(self, work_dir, monkeypatch, body):
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+            config_loader.load_config()
 
     @pytest.mark.parametrize(
         "body",
@@ -331,24 +253,18 @@ class TestPathRelationshipValidation:
             path_config({"sources_file": "shared/kernel"}, {"kernel_cache_path": "shared/kernel"}),
         ],
     )
-    def test_sources_file_must_not_equal_directory(self, work_dir, body):
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="路径冲突"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_sources_file_must_not_equal_directory(self, work_dir, monkeypatch, body):
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+            config_loader.load_config()
 
-    def test_repo_default_config_paths_are_accepted(self, work_dir):
-        config_loader._CONFIG = None
-        config_loader._CONFIG_FILE = config_loader._REPO_CONFIG_FILE
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["paths"]["rulesets_dir"] == "rulesets"
-            assert cfg["paths"]["merged_output_dir"] == "merged-rules"
-            assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
-        finally:
-            reset_config()
+    def test_repo_default_config_paths_are_accepted(self, work_dir, monkeypatch):
+        monkeypatch.setattr(config_loader, "_CONFIG", None)
+        monkeypatch.setattr(config_loader, "_CONFIG_FILE", config_loader._REPO_CONFIG_FILE)
+        cfg = config_loader.load_config()
+        assert cfg["paths"]["rulesets_dir"] == "rulesets"
+        assert cfg["paths"]["merged_output_dir"] == "merged-rules"
+        assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
 
 
 class TestMergeFieldWhitelist:
@@ -371,36 +287,27 @@ class TestMergeFieldWhitelist:
             ("    description: [a, b]\n", "description 期望 str"),
         ],
     )
-    def test_invalid_merge_fields_are_rejected(self, work_dir, extra, pattern):
-        use_config(work_dir, self.merge_body(extra))
-        try:
-            with pytest.raises(config_loader.ConfigError, match=pattern):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_invalid_merge_fields_are_rejected(self, work_dir, monkeypatch, extra, pattern):
+        use_config(work_dir, monkeypatch, self.merge_body(extra))
+        with pytest.raises(config_loader.ConfigError, match=pattern):
+            config_loader.load_config()
 
-    def test_valid_description_is_accepted(self, work_dir):
-        use_config(work_dir, self.merge_body("    description: 合并广告列表\n"))
-        try:
-            cfg = config_loader.load_config()
-            assert cfg["merges"][0]["description"] == "合并广告列表"
-        finally:
-            reset_config()
+    def test_valid_description_is_accepted(self, work_dir, monkeypatch):
+        use_config(work_dir, monkeypatch, self.merge_body("    description: 合并广告列表\n"))
+        cfg = config_loader.load_config()
+        assert cfg["merges"][0]["description"] == "合并广告列表"
 
     @pytest.mark.parametrize("escaped_newline", [r"\n", r"\r", r"\r\n"])
-    def test_multiline_description_is_rejected(self, work_dir, escaped_newline):
+    def test_multiline_description_is_rejected(self, work_dir, monkeypatch, escaped_newline):
         extra = f'    description: "第一行{escaped_newline}第二行"\n'
-        use_config(work_dir, self.merge_body(extra))
-        try:
-            with pytest.raises(config_loader.ConfigError, match="换行"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, self.merge_body(extra))
+        with pytest.raises(config_loader.ConfigError, match="换行"):
+            config_loader.load_config()
 
 
 class TestMergeInputType:
     @pytest.mark.parametrize(("task_type", "input_type"), [("domain", "ipcidr"), ("ipcidr", "domain")])
-    def test_input_type_must_match_task_type(self, work_dir, task_type, input_type):
+    def test_input_type_must_match_task_type(self, work_dir, monkeypatch, task_type, input_type):
         body = (
             "merges:\n"
             "  - strategy: block\n"
@@ -409,12 +316,9 @@ class TestMergeInputType:
             "    filename: a.txt\n"
             f"    inputs: ['block/{input_type}/o/x.txt']\n"
         )
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="输入类型"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="输入类型"):
+            config_loader.load_config()
 
 
 class TestMergeOutputReservedNames:
@@ -422,7 +326,7 @@ class TestMergeOutputReservedNames:
         ("field", "value"),
         [("strategy", "CON"), ("owner", "NUL.txt"), ("filename", "con.rules.txt")],
     )
-    def test_windows_reserved_output_stem_is_rejected(self, work_dir, field, value):
+    def test_windows_reserved_output_stem_is_rejected(self, work_dir, monkeypatch, field, value):
         fields = {"strategy": "block", "type": "domain", "owner": "o", "filename": "a.txt"}
         fields[field] = value
         body = (
@@ -433,16 +337,13 @@ class TestMergeOutputReservedNames:
             f"    filename: {fields['filename']}\n"
             "    inputs: ['block/domain/o/x.txt']\n"
         )
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="保留设备名"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="保留设备名"):
+            config_loader.load_config()
 
 
 class TestMergeOutputUniqueness:
-    def test_duplicate_output_is_rejected(self, work_dir):
+    def test_duplicate_output_is_rejected(self, work_dir, monkeypatch):
         body = (
             "merges:\n"
             "  - strategy: block\n"
@@ -456,14 +357,11 @@ class TestMergeOutputUniqueness:
             "    filename: a.txt\n"
             "    inputs: ['y.txt']\n"
         )
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
+            config_loader.load_config()
 
-    def test_duplicate_output_case_insensitive_is_rejected(self, work_dir):
+    def test_duplicate_output_case_insensitive_is_rejected(self, work_dir, monkeypatch):
         body = (
             "merges:\n"
             "  - strategy: block\n"
@@ -477,14 +375,11 @@ class TestMergeOutputUniqueness:
             "    filename: a.txt\n"
             "    inputs: ['y.txt']\n"
         )
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="输出同一路径"):
+            config_loader.load_config()
 
-    def test_trailing_dot_output_is_rejected(self, work_dir):
+    def test_trailing_dot_output_is_rejected(self, work_dir, monkeypatch):
         body = (
             "merges:\n"
             "  - strategy: block\n"
@@ -493,12 +388,9 @@ class TestMergeOutputUniqueness:
             "    filename: a.txt.\n"
             "    inputs: ['block/domain/o/x.txt']\n"
         )
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError, match="不能以点结尾"):
-                config_loader.load_config()
-        finally:
-            reset_config()
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError, match="不能以点结尾"):
+            config_loader.load_config()
 
 
 class TestValidationMatrix:
@@ -540,13 +432,10 @@ class TestValidationMatrix:
             BASE + 'mihomo:\n  pinned_version: "../v1"\n',
         ],
     )
-    def test_invalid_config_is_rejected(self, work_dir, body):
-        use_config(work_dir, body)
-        try:
-            with pytest.raises(config_loader.ConfigError):
-                config_loader.load_config()
-        finally:
-            reset_config()
+    def test_invalid_config_is_rejected(self, work_dir, monkeypatch, body):
+        use_config(work_dir, monkeypatch, body)
+        with pytest.raises(config_loader.ConfigError):
+            config_loader.load_config()
 
     @pytest.mark.parametrize(
         "body",
@@ -557,33 +446,33 @@ class TestValidationMatrix:
             "    filename: a.txt\n    inputs: ['block/domain/o/x.txt']\n",
         ],
     )
-    def test_supported_config_variants_load(self, work_dir, body):
-        use_config(work_dir, body)
-        try:
-            config_loader.load_config()
-        finally:
-            reset_config()
+    def test_supported_config_variants_load(self, work_dir, monkeypatch, body):
+        use_config(work_dir, monkeypatch, body)
+        cfg = config_loader.load_config()
+        assert cfg["behavior"]["allow_partial"] is False
+        assert cfg["network"]["max_source_bytes"] == 67108864
+        assert cfg["paths"]["rulesets_dir"] == "rulesets"
+        assert cfg["paths"]["merged_output_dir"] == "merged-rules"
+        assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
+        if "inputs:" in body:
+            assert cfg["merges"][0]["inputs"] == ["block/domain/o/x.txt"]
+        else:
+            assert cfg["merges"] == []
 
 
 class TestResolveConfigFile:
     def test_cwd_config_wins_over_repo_root(self, work_dir, monkeypatch):
         (work_dir / "config.yaml").write_text("behavior:\n  conflict_policy: fail\n", encoding="utf-8")
         monkeypatch.chdir(work_dir)
-        config_loader._CONFIG_FILE = Path("config.yaml")
-        try:
-            assert Path(config_loader.resolve_config_file()) == Path("config.yaml")
-        finally:
-            reset_config()
+        monkeypatch.setattr(config_loader, "_CONFIG_FILE", Path("config.yaml"))
+        assert Path(config_loader.resolve_config_file()) == Path("config.yaml")
 
     def test_falls_back_to_repo_root_config(self, work_dir, monkeypatch):
         monkeypatch.chdir(work_dir)
-        config_loader._CONFIG_FILE = Path("config.yaml")
-        try:
-            resolved = Path(config_loader.resolve_config_file())
-            assert resolved == config_loader._REPO_CONFIG_FILE
-            assert resolved.exists()
-        finally:
-            reset_config()
+        monkeypatch.setattr(config_loader, "_CONFIG_FILE", Path("config.yaml"))
+        resolved = Path(config_loader.resolve_config_file())
+        assert resolved == config_loader._REPO_CONFIG_FILE
+        assert resolved.exists()
 
 
 class TestEntryPointConfigErrors:

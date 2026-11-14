@@ -143,8 +143,51 @@ class TestDomainCleaning:
         assert stats["unrecognized"] == 5
         assert stats["bare_single_label"] == 0
 
-    def test_path_and_port_stripped(self):
-        assert self.clean(["example.com/ads/path"]) == ["example.com"]
+    def test_bare_path_is_rejected_and_counted(self):
+        result, stats = processor.process_domain_detailed(["example.com/ads/path"])
+        assert result == []
+        assert stats["dropped_path"] == 1
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://Example.COM/path?q=1#fragment", "example.com"),
+            ("http://example.com:8080/path", "example.com"),
+        ],
+    )
+    def test_complete_url_extracts_hostname(self, url, expected):
+        result, stats = processor.process_domain_detailed([url])
+        assert result == [expected]
+        assert stats["extracted_url"] == 1
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "//example.com/path",
+            "ftp://example.com/path",
+            "https://user:secret@example.com/path",
+            "https:///path",
+            "https://example.com:bad/path",
+            "https://example.com:99999/path",
+            "https://[::1/path",
+        ],
+    )
+    def test_invalid_or_unsupported_urls_are_rejected(self, url):
+        result, stats = processor.process_domain_detailed([url])
+        assert result == []
+        assert stats["extracted_url"] == 0
+        assert stats["unrecognized"] + stats["dropped_path"] == 1
+
+    def test_explicit_url_payload_is_not_extracted(self):
+        for rule in ("full:https://example.com/path", "DOMAIN,https://example.com/path"):
+            result, stats = processor.process_domain_detailed([rule])
+            assert result == []
+            assert stats["unrecognized"] == 1
+            assert stats["extracted_url"] == 0
+
+    def test_bare_port_remains_backward_compatible(self):
         assert self.clean(["example.com:8080"]) == ["example.com"]
 
     @pytest.mark.parametrize("rule", ["full:example.com/path", "domain:example.com/path", "DOMAIN,example.com/path"])
@@ -182,6 +225,45 @@ class TestDomainCleaning:
 
     def test_idn_kept(self):
         assert self.clean(["例え.jp"]) == ["例え.jp"]
+
+    @pytest.mark.parametrize("value", ["a" * 64 + ".com", "*." + "a" * 64 + ".com"])
+    def test_oversize_label_is_rejected(self, value):
+        out, stats = processor.process_domain_detailed([value])
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    def test_oversize_full_name_is_rejected(self):
+        value = ".".join(["a" * 63] * 4) + ".com"
+        out, stats = processor.process_domain_detailed([value])
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    def test_unicode_uses_idna_octets_for_length(self):
+        value = "例" * 58 + ".jp"
+        with pytest.raises(UnicodeEncodeError):
+            value.split(".")[0].encode("idna")
+        out, stats = processor.process_domain_detailed([value])
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    def test_wildcard_full_name_uses_fixed_domain_length(self):
+        invalid = "*." + ".".join(["a" * 63] * 3 + ["a" * 58, "com"])
+        fixed = invalid[2:]
+        assert sum(len(label.encode()) + 1 for label in fixed.split(".")) + 1 == 256
+        out, stats = processor.process_domain_detailed([invalid])
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+        valid = "*." + ".".join(["a" * 63] * 3 + ["a" * 57, "com"])
+        assert sum(len(label.encode()) + 1 for label in valid[2:].split(".")) + 1 == 255
+        out, stats = processor.process_domain_detailed([valid])
+        assert out == [valid]
+        assert stats["unrecognized"] == 0
+
+    def test_single_label_and_underscore_length_limits_preserved(self):
+        out, stats = processor.process_domain_detailed(["_" + "a" * 62, "*." + "a" * 63 + ".com"])
+        assert out == ["*." + "a" * 63 + ".com", "_" + "a" * 62]
+        assert stats["unrecognized"] == 0
 
     def test_result_sorted_and_deduped(self):
         assert self.clean(["b.com", "a.com", "a.com"]) == ["a.com", "b.com"]
@@ -334,6 +416,45 @@ class TestAdblockModifierSemantics:
         assert out == []
         assert stats["dropped_path"] == 1
 
+    @pytest.mark.parametrize(
+        "rule",
+        ["||example.com^ads", "||example.com^^", "||example.com:8080^", "||example.com^:8080"],
+    )
+    def test_unexpressible_separator_or_port_is_counted(self, rule):
+        out, stats = processor.process_domain_detailed([rule], "exact")
+        assert out == []
+        assert stats["dropped_path"] == 1
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize("rule", ["example.com^ads", "example.com^", "full:example.com^"])
+    def test_separator_without_anchor_is_not_silently_removed(self, rule):
+        out, stats = processor.process_domain_detailed([rule])
+        assert out == []
+        assert stats["dropped_path"] == 1
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "full:DOMAIN-SUFFIX,example.com",
+            "domain:DOMAIN,example.com",
+            "full:||example.com^",
+            "domain:full:example.com",
+        ],
+    )
+    def test_explicit_semantic_conflicts_are_rejected(self, rule):
+        out, stats = processor.process_domain_detailed([rule])
+        assert out == []
+        assert stats["unrecognized"] == 1
+
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [("full:DOMAIN,example.com", "example.com"), ("domain:DOMAIN-SUFFIX,example.com", "+.example.com")],
+    )
+    def test_matching_explicit_semantics_are_normalized(self, rule, expected):
+        out, stats = processor.process_domain_detailed([rule])
+        assert out == [expected]
+        assert stats["unrecognized"] == 0
+
 
 class TestNoSilentDrop:
     DROPPED_SHAPES = (
@@ -427,9 +548,11 @@ class TestParseLines:
         text = ("a.com\n" * 1000) + "# comment\n"
         assert processor.parse_lines(text)[0] == "a.com"
 
-    def test_rules_yaml_fallback_does_not_emit_key(self):
+    def test_rules_yaml_rejects_non_string_without_emitting_key(self):
         content = "rules:\n  - DOMAIN-SUFFIX,a.com\n  - 123\n"
-        assert processor.parse_lines(content) == ["DOMAIN-SUFFIX,a.com", "123"]
+        parsed = processor.parse_lines(content)
+        assert parsed == ["DOMAIN-SUFFIX,a.com"]
+        assert parsed.yaml_errors == 1
 
     def test_yaml_payload_list_strips_inline_comment(self):
         content = "payload:\n  - 'example.com # note'\n"
@@ -842,9 +965,15 @@ class TestYamlPayloadParsing:
         content = "rules:\n  - DOMAIN-SUFFIX,a.com\n  - IP-CIDR,1.2.3.0/24\n"
         assert processor.parse_lines(content) == ["DOMAIN-SUFFIX,a.com", "IP-CIDR,1.2.3.0/24"]
 
-    def test_payload_preferred_over_rules(self):
+    def test_payload_and_rules_are_combined(self):
         content = "payload:\n  - a.com\nrules:\n  - b.com\n"
-        assert processor.parse_lines(content) == ["a.com"]
+        assert processor.parse_lines(content) == ["a.com", "b.com"]
+
+    def test_non_string_items_in_both_lists_are_counted(self):
+        content = "payload: [13335, good.com]\nrules: [true, rules.com]\n"
+        parsed = processor.parse_lines(content)
+        assert parsed == ["good.com", "rules.com"]
+        assert parsed.yaml_errors == 2
 
     def test_payload_with_trailing_key(self):
         content = "payload:\n  - '+.a.com'\n  - 'b.com'\nbehavior: domain\n"
@@ -854,17 +983,33 @@ class TestYamlPayloadParsing:
         content = "payload:\n  - '+.a.com'\n  - b.com\n"
         assert processor.parse_lines(content) == ["+.a.com", "b.com"]
 
-    def test_non_string_items_fall_back_to_line_scan(self):
-        content = "payload:\n  - 13335\n  - a.com\n"
-        assert processor.parse_lines(content) == ["13335", "a.com"]
+    def test_non_string_items_are_explicitly_counted(self):
+        content = "payload: [13335, true, null, {host: bad.com}, good.com]"
+        parsed = processor.parse_lines(content)
+        assert parsed == ["good.com"]
+        assert parsed.yaml_errors == 4
+        result, stats = processor.process_domain_detailed(parsed)
+        assert result == ["good.com"]
+        assert stats["unrecognized"] == 4
 
-    def test_invalid_yaml_falls_back_to_line_scan(self):
+    def test_block_yaml_garbage_does_not_disappear(self):
+        content = "payload:\ngarbage\n  - good.com\n"
+        with pytest.raises(processor.YamlPayloadError):
+            processor.parse_lines(content)
+
+    def test_invalid_yaml_raises_instead_of_falling_back(self):
         content = "payload:\n  - a.com\n: : :\n"
-        assert processor.parse_lines(content) == ["a.com"]
+        with pytest.raises(processor.YamlPayloadError):
+            processor.parse_lines(content)
 
-    def test_missing_pyyaml_falls_back_silently(self, monkeypatch):
+    def test_missing_pyyaml_fails_structured_input_closed(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "yaml", None)
-        assert processor.parse_lines("payload: ['a.com', 'b.com']\n") == ["a.com", "b.com"]
+        with pytest.raises(processor.YamlPayloadError):
+            processor.parse_lines("payload: ['a.com', 'b.com']\n")
+
+    def test_unknown_yaml_keys_are_rejected(self):
+        with pytest.raises(processor.YamlPayloadError):
+            processor.parse_lines("payload:\n  - a.com\nunknown: value\n")
 
     def test_missing_pyyaml_keeps_plain_line_scan(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "yaml", None)
@@ -884,13 +1029,13 @@ class TestYamlProbeGating:
 
     def test_payload_head_triggers_yaml_probe(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or None)
+        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or ["a.com"])
         assert processor.parse_lines("payload:\n  - a.com\n") == ["a.com"]
         assert len(calls) == 1
 
     def test_rules_head_triggers_yaml_probe(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or None)
+        monkeypatch.setattr(processor, "_yaml_payload_lines", lambda content: calls.append(content) or ["a.com"])
         processor.parse_lines("rules:\n  - a.com\n")
         assert len(calls) == 1
 

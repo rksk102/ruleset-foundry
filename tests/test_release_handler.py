@@ -12,7 +12,7 @@ import zipfile
 import manifest
 import pytest
 import release_handler
-from support import GhStub, valid_mrs_bytes, write_paired_product
+from support import GhStub, domain_mrs_bytes, ipcidr_mrs_bytes, write_paired_product
 
 
 def release_listing(*releases):
@@ -1359,7 +1359,7 @@ def verify_workspace(work_dir, monkeypatch):
     )
     mrs_dir = work_dir / "merged-rules-mrs" / "block" / "domain" / "A"
     mrs_dir.mkdir(parents=True)
-    (mrs_dir / "x.mrs").write_bytes(valid_mrs_bytes())
+    (mrs_dir / "x.mrs").write_bytes(domain_mrs_bytes(["x"]))
     monkeypatch.chdir(work_dir)
     return work_dir
 
@@ -1377,6 +1377,88 @@ class TestVerifyOnly:
             run_with_stub(stub, release_handler.verify_only)
         assert exc.value.code == 1
         assert stub.calls == []
+
+    def test_mismatched_txt_and_mrs_content_is_fatal(self, verify_workspace):
+        (verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_text(
+            "one.example\ntwo.example\n", encoding="utf-8"
+        )
+        (verify_workspace / "merged-rules-mrs" / "block" / "domain" / "A" / "x.mrs").write_bytes(
+            domain_mrs_bytes(["one.example"])
+        )
+        manifest.save_manifest(
+            verify_workspace / "merged-rules" / "products.manifest",
+            {"block/domain/A/x.txt": hashlib.sha256(b"one.example\ntwo.example\n").hexdigest()},
+            generation="verify-gen",
+        )
+        with pytest.raises(manifest.ManifestError, match="内容"):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_tampered_mrs_count_is_fatal(self, verify_workspace):
+        (verify_workspace / "merged-rules-mrs" / "block" / "domain" / "A" / "x.mrs").write_bytes(
+            domain_mrs_bytes(["x"], count=999999)
+        )
+        with pytest.raises(manifest.ManifestError, match="内容"):
+            release_handler.verify_products(require_baseline=True)
+
+    def test_domain_plus_expansion_and_duplicate_count_match(self, verify_workspace):
+        text = b"+.example.com\nwww.example.com\nwww.example.com\n"
+        (verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt").write_bytes(text)
+        (verify_workspace / "merged-rules-mrs" / "block" / "domain" / "A" / "x.mrs").write_bytes(
+            domain_mrs_bytes(["+.example.com", "www.example.com", "www.example.com"])
+        )
+        manifest.save_manifest(
+            verify_workspace / "merged-rules" / "products.manifest",
+            {"block/domain/A/x.txt": hashlib.sha256(text).hexdigest()},
+            generation="verify-gen",
+        )
+        assert release_handler.verify_products(require_baseline=True) == 1
+
+    def test_ip_network_canonicalization_matches_mrs(self, verify_workspace):
+        (verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt").unlink()
+        target = verify_workspace / "merged-rules" / "block" / "ipcidr" / "A"
+        target.mkdir(parents=True)
+        (target / "x.txt").write_bytes(b"1.0.0.1/24\n1.0.1.0/24\n")
+        (verify_workspace / "merged-rules-mrs" / "block" / "domain" / "A" / "x.mrs").unlink()
+        target_mrs = verify_workspace / "merged-rules-mrs" / "block" / "ipcidr" / "A"
+        target_mrs.mkdir(parents=True)
+        (target_mrs / "x.mrs").write_bytes(ipcidr_mrs_bytes(["1.0.0.0/23"], count=2))
+        for name in ("rulesets", "merged-rules"):
+            manifest.save_manifest(
+                verify_workspace / name / "products.manifest",
+                {"block/ipcidr/A/x.txt": hashlib.sha256(b"1.0.0.1/24\n1.0.1.0/24\n").hexdigest()},
+                generation="verify-gen",
+            )
+        assert release_handler.verify_products(require_baseline=True) == 1
+
+    def test_mixed_ip_families_match_mrs_order(self, verify_workspace):
+        (verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt").unlink()
+        text = b"::1/128\n1.0.0.0/24\n"
+        target = verify_workspace / "merged-rules" / "block" / "ipcidr" / "A"
+        target.mkdir(parents=True)
+        (target / "x.txt").write_bytes(text)
+        (verify_workspace / "merged-rules-mrs" / "block" / "domain" / "A" / "x.mrs").unlink()
+        target_mrs = verify_workspace / "merged-rules-mrs" / "block" / "ipcidr" / "A"
+        target_mrs.mkdir(parents=True)
+        (target_mrs / "x.mrs").write_bytes(ipcidr_mrs_bytes(["1.0.0.0/24", "::1/128"]))
+        for name in ("rulesets", "merged-rules"):
+            manifest.save_manifest(
+                verify_workspace / name / "products.manifest",
+                {"block/ipcidr/A/x.txt": hashlib.sha256(text).hexdigest()},
+                generation="verify-gen",
+            )
+        assert release_handler.verify_products(require_baseline=True) == 1
+
+    def test_invalid_utf8_txt_is_fatal_even_with_valid_manifest(self, verify_workspace):
+        text = b"# generated\n\xff\n"
+        target = verify_workspace / "merged-rules" / "block" / "domain" / "A" / "x.txt"
+        target.write_bytes(text)
+        manifest.save_manifest(
+            verify_workspace / "merged-rules" / "products.manifest",
+            {"block/domain/A/x.txt": hashlib.sha256(text).hexdigest()},
+            generation="verify-gen",
+        )
+        with pytest.raises(manifest.ManifestError, match="UTF-8"):
+            release_handler.verify_products(require_baseline=True)
 
     def test_nonempty_garbage_mrs_exits_nonzero(self, verify_workspace):
         (verify_workspace / "merged-rules-mrs/block/domain/A/x.mrs").write_bytes(b"not an mrs\n")

@@ -534,6 +534,16 @@ class TestDedupDomainSuffix:
         assert kept == [".google.com"]
         assert removed == 1
 
+    def test_subdomain_parent_covers_strict_suffix_child(self):
+        kept, removed = utils.dedup_domain_suffix({".example.com", "+.www.example.com"})
+        assert kept == [".example.com"]
+        assert removed == 1
+
+    def test_subdomain_parent_still_covers_subdomain_child(self):
+        kept, removed = utils.dedup_domain_suffix({".example.com", ".www.example.com"})
+        assert kept == [".example.com"]
+        assert removed == 1
+
     def test_suffix_covers_subdomain_child(self):
         kept, removed = utils.dedup_domain_suffix({"+.google.com", ".ads.google.com"})
         assert kept == ["+.google.com"]
@@ -706,6 +716,11 @@ class TestDomainTrie:
                     expected = pattern
                     break
             assert trie.covering_wildcard(entry) == expected, entry
+
+    def test_multi_wildcard_does_not_expand_to_shallower_exact_domain(self):
+        trie = utils.DomainTrie()
+        trie.add("*.*.example.com")
+        assert trie.covering_wildcard("a.example.com") is None
 
     def test_nonmatching_wildcards_do_not_scan_every_pattern(self, monkeypatch):
         size = 1000

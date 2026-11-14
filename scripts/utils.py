@@ -480,9 +480,10 @@ def dedup_domain_suffix(domains):
         else:
             kind = DomainTrie.EXACT
 
-        if trie.has_marked_ancestor(name, DomainTrie.SUFFIX) or trie.covering_parent(
-            name, (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN)
-        ):
+        if trie.has_marked_ancestor(name, DomainTrie.SUFFIX):
+            removed += 1
+            continue
+        if trie.covering_parent(name, (DomainTrie.SUFFIX, DomainTrie.SUBDOMAIN)):
             removed += 1
             continue
         if kind == DomainTrie.EXACT and trie.covering_wildcard(entry):

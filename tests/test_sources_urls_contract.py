@@ -95,17 +95,22 @@ class TestSourceUrlValidation:
 
 
 class TestRealSourcesContract:
-    def test_real_file_parses(self, monkeypatch):
+    def test_real_file_parses_into_wellformed_products(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
-        assert len(main.parse_sources()) >= 10
+        tasks = main.parse_sources()
+        groups = main.plan_groups(tasks)
 
-    def test_every_task_is_wellformed(self, monkeypatch):
-        monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
-        for task in main.parse_sources():
+        assert len(tasks) >= 10
+        assert len(groups) == len(tasks)
+        for task in tasks:
             assert task["url"].startswith("https://")
             assert task["policy"] in ("block", "direct", "policy")
             assert task["type"] in ("domain", "ipcidr")
             assert task["domain_kind"] in ("exact", "suffix")
+        for group in groups:
+            assert group["path"].startswith(f"rulesets/{group['policy']}/{group['type']}/")
+            assert group["members"]
+            assert all(tasks[index]["domain_kind"] == group["domain_kind"] for index, _task in group["members"])
 
     def test_meta_rules_raw_sources_use_canonical_urls(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
@@ -134,21 +139,19 @@ class TestNoMixedKindPerProduct:
         tasks = parse(monkeypatch, work_dir, f"[policy:block]\n[type:domain]\n[domain-kind:suffix]\n{url}\n{url}\n")
         assert [g["domain_kind"] for g in main.plan_groups(tasks)] == ["suffix"]
 
-    def test_real_sources_file_has_no_mixed_products(self, monkeypatch):
+    def test_real_sources_file_has_single_kind_per_product_and_url(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
-        groups = main.plan_groups(main.parse_sources())
-        mixed = [g["path"] for g in groups if g.get("domain_kind") == "mixed"]
-        assert mixed == []
+        tasks = main.parse_sources()
+        groups = main.plan_groups(tasks)
+
+        assert [group["path"] for group in groups if group.get("domain_kind") == "mixed"] == []
+        kinds = {}
+        for task in tasks:
+            kinds.setdefault(task["url"], set()).add(task["domain_kind"])
+        assert {url: values for url, values in kinds.items() if len(values) > 1} == {}
 
     def test_real_sources_file_marks_dlc_sources_as_suffix(self, monkeypatch):
         monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
         suffix = {t["url"] for t in main.parse_sources() if t.get("domain_kind") == "suffix"}
         for name in ("reject-list.txt", "win-extra.txt", "win-spy.txt", "direct-list.txt", "proxy-list.txt"):
             assert any(u.endswith(name) for u in suffix)
-
-    def test_no_url_declared_with_two_kinds(self, monkeypatch):
-        monkeypatch.setattr(main, "SOURCES_FILE", str(REAL_SOURCES))
-        kinds = {}
-        for task in main.parse_sources():
-            kinds.setdefault(task["url"], set()).add(task.get("domain_kind"))
-        assert {url: values for url, values in kinds.items() if len(values) > 1} == {}

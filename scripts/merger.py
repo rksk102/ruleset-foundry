@@ -390,12 +390,26 @@ def main():
                 sys.exit(1)
 
     auto_tasks = auto_discover_files()
-    overlap = sorted(merge_product_paths(config_tasks) & merge_product_paths(auto_tasks))
-    if overlap:
-        for rel in overlap:
-            error(f"合并任务与自动透传输出同一路径: {rel}")
+    configured_paths = merge_product_paths(config_tasks)
+    automatic_paths = merge_product_paths(auto_tasks)
+    configured_by_casefold = {rel.casefold(): rel for rel in sorted(configured_paths)}
+    automatic_by_casefold = {rel.casefold(): rel for rel in sorted(automatic_paths)}
+    collisions = {
+        (configured_by_casefold[key], automatic_by_casefold[key])
+        for key in configured_by_casefold.keys() & automatic_by_casefold.keys()
+    }
+    for paths in (configured_paths, automatic_paths):
+        seen = {}
+        for rel in sorted(paths):
+            key = rel.casefold()
+            if key in seen and seen[key] != rel:
+                collisions.add((seen[key], rel))
+            seen[key] = rel
+    if collisions:
+        for left, right in sorted(collisions):
+            error(f"合并输出同一路径（含大小写变体）: {left} <-> {right}")
         error("请改用不同的 owner/filename，或把该路径从 merges.inputs 中移除")
-        gh_error(f"合并任务与自动透传输出同一路径: {', '.join(overlap)}")
+        gh_error("合并任务与自动透传输出路径重复或大小写碰撞")
         sys.exit(1)
 
     if os.path.exists(OUTPUT_DIR):
