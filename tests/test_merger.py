@@ -152,8 +152,7 @@ class TestProcessTaskLogic:
         assert result["raw"] == 2
         assert result["opt"] == 1
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
-        assert ".example.com" in content
-        assert "+.www.example.com" not in content
+        assert [line for line in content.splitlines() if not line.startswith("#")] == [".example.com"]
 
     def test_sources_recorded_in_header(self, tmp_path, monkeypatch):
         source = tmp_path / "rulesets"
