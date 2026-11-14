@@ -1045,23 +1045,26 @@ class TestGetLatestMihomo:
         assert version_file.read_text(encoding="utf-8") == "v1.2.2"
 
     def test_fetch_failure_degrades_to_verified_cache(self, monkeypatch, work_dir):
-        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
+        bin_path, version_file = self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.2")
         previous = bin_path.read_bytes()
+        fetches = []
 
-        def fake_fetch(*_a, **_k):
+        def fake_fetch(*_a, **kwargs):
+            fetches.append(kwargs.get("pinned"))
             raise RuntimeError("网络不可用")
 
         monkeypatch.setattr(convert_mrs, "_fetch_latest_release_info", fake_fetch)
         monkeypatch.setattr(convert_mrs, "verify_kernel_file", lambda *a, **k: "a" * 64)
-        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.3")
+        monkeypatch.setattr(convert_mrs, "_verify_kernel", lambda *a: "Mihomo Meta v1.2.2")
         downloads = []
         monkeypatch.setattr(convert_mrs, "_download_kernel", lambda *a, **k: downloads.append(a))
 
         convert_mrs.get_latest_mihomo()
 
+        assert fetches == ["v1.2.3"]
         assert downloads == []
         assert bin_path.read_bytes() == previous
-        assert version_file.read_text(encoding="utf-8") == "v1.2.3"
+        assert version_file.read_text(encoding="utf-8") == "v1.2.2"
 
     def test_fallback_rejects_version_output_without_mihomo(self, monkeypatch, work_dir):
         self.setup_kernel(monkeypatch, work_dir, cached_version="v1.2.3")
