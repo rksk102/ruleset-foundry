@@ -13,6 +13,9 @@ CHUNK_SIZE = 64 * 1024
 MAX_COMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_EXTRA_BYTES = 1024 * 1024
+# 域名键由 LOUDS 标签逐层展开；限制单键长度与键总量，避免小体积畸形文件放大成 GB 级内存。
+MAX_DOMAIN_KEY_BYTES = 255
+MAX_DOMAIN_KEYS_BYTES = MAX_DECOMPRESSED_BYTES
 
 
 class MrsFormatError(ValueError):
@@ -172,20 +175,37 @@ def _validate_domain_tree(leaves, bitmap, labels):
     index = 0
     node_count = 1
     node = 0
+    total_key_bytes = 0
+    queue_bytes = 0
     while node < node_count:
         if index >= len(bitmap) * 8:
             raise MrsFormatError("MRS LOUDS 树节点终止位不足")
         node_key = queue.popleft()
+        queue_bytes -= len(node_key)
         if _bit(leaves, node):
             keys.add(node_key)
+            total_key_bytes += len(node_key)
+            if total_key_bytes > MAX_DOMAIN_KEYS_BYTES:
+                raise MrsFormatError("MRS 域名键总量超过校验上限")
+        child_labels = set()
         while index < len(bitmap) * 8 and not _bit(bitmap, index):
             if label_offset >= len(labels):
                 raise MrsFormatError("MRS LOUDS 树标签越界")
             child = index - node + 1
             if child != node_count or child >= len(leaves) * 8:
                 raise MrsFormatError("MRS LOUDS 树子节点边界非法")
+            label = labels[label_offset : label_offset + 1]
+            if label in child_labels:
+                raise MrsFormatError("MRS LOUDS 树同一节点标签重复")
+            child_labels.add(label)
+            new_key = node_key + label
+            if len(new_key) > MAX_DOMAIN_KEY_BYTES:
+                raise MrsFormatError("MRS 域名键超过长度上限")
+            queue_bytes += len(new_key)
+            if queue_bytes > MAX_DOMAIN_KEYS_BYTES:
+                raise MrsFormatError("MRS 域名键工作集超过校验上限")
             node_count += 1
-            queue.append(node_key + labels[label_offset : label_offset + 1])
+            queue.append(new_key)
             label_offset += 1
             index += 1
         if index >= len(bitmap) * 8 or not _bit(bitmap, index):

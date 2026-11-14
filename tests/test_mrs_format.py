@@ -168,6 +168,38 @@ class TestMrsFormat:
 
         mrs_format.verify_product_pair(txt, mrs, "ipcidr")
 
+    def test_duplicate_sibling_labels_are_rejected(self, work_dir):
+        path = work_dir / "duplicate-labels.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1) + b"\x00" * 7 + b"\x0a"
+            + struct.pack(">q", 1) + b"\x00" * 7 + b"\x6c"
+            + struct.pack(">q", 3) + b"aab"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 2, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="重复"):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_overlong_domain_key_is_rejected(self, work_dir):
+        path = work_dir / "long-key.mrs"
+        path.write_bytes(domain_mrs_bytes(["a" * 256]))
+        with pytest.raises(mrs_format.MrsFormatError, match="长度上限"):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_excessive_total_domain_key_bytes_are_rejected(self, work_dir, monkeypatch):
+        monkeypatch.setattr(mrs_format, "MAX_DOMAIN_KEYS_BYTES", 2)
+        path = work_dir / "many-keys.mrs"
+        path.write_bytes(domain_mrs_bytes(["a", "bb"]))
+        with pytest.raises(mrs_format.MrsFormatError, match="键总量"):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_excessive_domain_key_working_set_is_rejected(self, work_dir, monkeypatch):
+        monkeypatch.setattr(mrs_format, "MAX_DOMAIN_KEYS_BYTES", 1)
+        path = work_dir / "wide-tree.mrs"
+        path.write_bytes(domain_mrs_bytes(["aa", "bb"]))
+        with pytest.raises(mrs_format.MrsFormatError, match="工作集"):
+            mrs_format.validate_mrs(path, "domain")
+
     @pytest.mark.parametrize("network", ["0.0.0.0/0", "255.255.255.255/32", "::/0", "2001:db8::1/128"])
     def test_valid_ip_ranges_pass(self, work_dir, network):
         path = work_dir / "valid-range.mrs"
