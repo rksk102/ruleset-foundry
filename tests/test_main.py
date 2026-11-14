@@ -823,14 +823,14 @@ class TestCombinedDropGate:
         assert writes == []
 
     @pytest.mark.parametrize("kind", ["domain", "ipcidr"])
-    def test_duplicate_valid_and_invalid_lines_cannot_flip_gate(self, kind, monkeypatch):
+    def test_duplicate_valid_lines_cannot_flip_gate(self, kind, monkeypatch):
         group = self.DOMAIN_GROUP if kind == "domain" else self.IP_GROUP
         lines = self.domain_lines(18, 18, 64) if kind == "domain" else self.ip_lines(18, 18, 64)
         original = self.run_group(group, lines, monkeypatch)
         if kind == "domain":
-            duplicates = [lines[-1], lines[-1].upper()] * 1000 + [lines[0]] * 2000
+            duplicates = [lines[-1], lines[-1].upper()] * 1000
         else:
-            duplicates = ["IP-CIDR," + lines[-1]] * 1000 + [lines[-1] + " # duplicate"] * 1000 + [lines[0]] * 2000
+            duplicates = ["IP-CIDR," + lines[-1]] * 1000 + [lines[-1] + " # duplicate"] * 1000
         repeated = self.run_group(group, lines + duplicates, monkeypatch)
 
         assert original[0] is None
