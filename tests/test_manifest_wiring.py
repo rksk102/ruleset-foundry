@@ -6,7 +6,7 @@ import manifest
 import merger
 import pytest
 import release_handler
-from support import GhStub, valid_mrs_bytes
+from support import GhStub, domain_mrs_bytes, ipcidr_mrs_bytes
 from support import write_text as write
 
 
@@ -40,11 +40,15 @@ def build_products(
     rulesets_dir=True,
 ):
     for rel in txt_entries:
-        write(root / "merged-rules" / rel, "rule.example\n")
+        is_ip = Path(rel).parts[1] == "ipcidr"
+        write(root / "merged-rules" / rel, "192.0.2.0/24\n" if is_ip else "rule.example\n")
     for rel in mrs_of(txt_entries) if mrs_entries is None else mrs_entries:
         target = root / "merged-rules-mrs" / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(valid_mrs_bytes("ipcidr" if Path(rel).parts[1] == "ipcidr" else "domain"))
+        if Path(rel).parts[1] == "ipcidr":
+            target.write_bytes(ipcidr_mrs_bytes(["192.0.2.0/24"]))
+        else:
+            target.write_bytes(domain_mrs_bytes(["rule.example"]))
     write_v2_manifest(root / "merged-rules")
     if not rulesets_dir:
         return

@@ -480,15 +480,13 @@ def get_latest_mihomo(skip_hash_check=False):
 
 
 def has_valid_content(filepath):
-    try:
-        with open(filepath, encoding="utf-8") as f:
-            for line in f:
-                content = line.strip()
-                if content and not content.startswith("#"):
-                    return True
-        return False
-    except Exception:
-        return False
+    found = False
+    with open(filepath, encoding="utf-8") as f:
+        for line in f:
+            content = line.strip()
+            if content and not content.startswith("#"):
+                found = True
+    return found
 
 
 def write_summary(stats, total_time):
@@ -727,7 +725,14 @@ def main():
             stats["skipped"] += 1
             continue
 
-        if not has_valid_content(src_path):
+        try:
+            has_content = has_valid_content(src_path)
+        except (OSError, UnicodeError) as exc:
+            error(f"  {prefix} {rel_path}")
+            error(f"      L TXT 读取或 UTF-8 解码失败: {exc}")
+            stats["failed"] += 1
+            continue
+        if not has_content:
             warning(f"  {prefix} 跳过: {rel_path} (无有效规则)")
             stats["skipped"] += 1
             continue

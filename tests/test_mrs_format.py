@@ -1,8 +1,9 @@
+import ipaddress
 import struct
 
 import mrs_format
 import pytest
-from support import compress_zstd, valid_mrs_bytes
+from support import compress_zstd, domain_mrs_bytes, ipcidr_mrs_bytes, valid_mrs_bytes
 
 
 def valid_mrs(path, behavior="domain"):
@@ -68,7 +69,7 @@ class TestMrsFormat:
             + b"x"
         )
         path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
-        with pytest.raises(mrs_format.MrsFormatError, match="标签位图"):
+        with pytest.raises(mrs_format.MrsFormatError, match=r"标签位图|LOUDS 树"):
             mrs_format.validate_mrs(path, "domain")
 
     def test_wrong_behavior_rejected(self, work_dir):
@@ -82,6 +83,88 @@ class TestMrsFormat:
         path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 0, 0)))
         with pytest.raises(mrs_format.MrsFormatError, match="计数"):
             mrs_format.validate_mrs(path, "domain")
+
+    def test_unreachable_label_data_is_rejected(self, work_dir):
+        path = work_dir / "unreachable.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\0" * 7 + b"\x01"
+            + struct.pack(">q", 1)
+            + b"\xa0" + b"\0" * 7
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="树"):
+            mrs_format.validate_mrs(path, "domain")
+
+    @pytest.mark.parametrize(
+        "rules", [["x"], ["+.example.com", "www.example.com"], ["*.*.example.com", ".example.com"]]
+    )
+    def test_normal_domain_trees_pass(self, work_dir, rules):
+        path = work_dir / "normal.mrs"
+        path.write_bytes(domain_mrs_bytes(rules))
+        assert mrs_format.validate_mrs(path, "domain") == len(rules)
+
+    def test_label_bitmap_must_have_node_terminator(self, work_dir):
+        path = work_dir / "bad-tree.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\xc0" + b"\0" * 7
+            + struct.pack(">q", 1)
+            + b"\x80" + b"\0" * 7
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match=r"LOUDS 树|标签位图"):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_zero_length_bitmap_record_is_rejected(self, work_dir):
+        path = work_dir / "zero-bitmap.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + b"\xc0" + b"\0" * 7
+            + struct.pack(">q", 0)
+            + struct.pack(">q", 1)
+            + b"x"
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError):
+            mrs_format.validate_mrs(path, "domain")
+
+    def test_reverse_ip_range_is_rejected(self, work_dir):
+        path = work_dir / "reverse.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + bytes.fromhex("20010db8000000000000000000000000")
+            + b"\0" * 16
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x01" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="range"):
+            mrs_format.validate_mrs(path, "ipcidr")
+
+    def test_mixed_address_family_range_is_rejected(self, work_dir):
+        path = work_dir / "mixed.mrs"
+        body = (
+            b"\x01"
+            + struct.pack(">q", 1)
+            + ipaddress.ip_address("1.0.0.0").ipv6_mapped.packed
+            + ipaddress.ip_address("2001:db8::1").packed
+        )
+        path.write_bytes(compress_zstd(b"MRS\x01\x01" + struct.pack(">qq", 1, 0) + body))
+        with pytest.raises(mrs_format.MrsFormatError, match="range"):
+            mrs_format.validate_mrs(path, "ipcidr")
+
+    @pytest.mark.parametrize("network", ["0.0.0.0/0", "255.255.255.255/32", "::/0", "2001:db8::1/128"])
+    def test_valid_ip_ranges_pass(self, work_dir, network):
+        path = work_dir / "valid-range.mrs"
+        path.write_bytes(ipcidr_mrs_bytes([network]))
+        assert mrs_format.validate_mrs(path, "ipcidr") == 1
 
     def test_libzstd_unavailable_fails_closed(self, work_dir, monkeypatch):
         path = work_dir / "valid.mrs"

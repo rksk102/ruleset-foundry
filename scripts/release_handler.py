@@ -566,9 +566,9 @@ def validate_product_files(txt_dir, mrs_dir):
             if suffix == ".mrs":
                 behavior = rel.parts[1] if len(rel.parts) > 2 else ""
                 try:
-                    mrs_format.validate_mrs(path, behavior)
+                    mrs_format.verify_product_pair(Path(txt_dir) / rel.with_suffix(".txt"), path, behavior)
                 except mrs_format.MrsFormatError as exc:
-                    raise manifest.ManifestError(f"MRS 格式校验失败: {exc}") from exc
+                    raise manifest.ManifestError(f"产物内容校验失败: {exc}") from exc
 
 
 def verify_products(txt_dir=None, mrs_dir=None, require_baseline=None):

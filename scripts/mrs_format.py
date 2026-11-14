@@ -1,6 +1,9 @@
 import ctypes
 import ctypes.util
+import ipaddress
 import struct
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 MRS_MAGIC = b"MRS\x01"
@@ -14,6 +17,13 @@ MAX_EXTRA_BYTES = 1024 * 1024
 
 class MrsFormatError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class MrsContent:
+    count: int
+    keys: frozenset
+    ranges: tuple
 
 
 class _ZstdInput(ctypes.Structure):
@@ -129,30 +139,91 @@ def _records(reader, count, width):
     return b"".join(reader.read_exact(width) for _ in range(count))
 
 
+def _bit(data, index):
+    word, offset = divmod(index, 64)
+    return bool(data[word * 8 + 7 - offset // 8] & (1 << (offset % 8)))
+
+
+def _bit_count(data):
+    return sum(int.from_bytes(data[offset : offset + 8], "big").bit_count() for offset in range(0, len(data), 8))
+
+
+def _has_bit_from(data, start):
+    word, offset = divmod(start, 64)
+    for index in range(word, len(data) // 8):
+        value = int.from_bytes(data[index * 8 : index * 8 + 8], "big")
+        if index == word:
+            value &= ~((1 << offset) - 1)
+        if value:
+            return True
+    return False
+
+
+def _validate_domain_tree(leaves, bitmap, labels):
+    if not bitmap:
+        raise MrsFormatError("MRS 标签位图为空")
+    if not _bit_count(leaves):
+        raise MrsFormatError("MRS 没有有效叶节点")
+    if _bit_count(bitmap) > len(labels) + 1:
+        raise MrsFormatError("MRS 标签位图与标签内容长度不一致")
+    queue = deque([b""])
+    keys = set()
+    label_offset = 0
+    index = 0
+    node_count = 1
+    node = 0
+    while node < node_count:
+        if index >= len(bitmap) * 8:
+            raise MrsFormatError("MRS LOUDS 树节点终止位不足")
+        node_key = queue.popleft()
+        if _bit(leaves, node):
+            keys.add(node_key)
+        while index < len(bitmap) * 8 and not _bit(bitmap, index):
+            if label_offset >= len(labels):
+                raise MrsFormatError("MRS LOUDS 树标签越界")
+            child = index - node + 1
+            if child != node_count or child >= len(leaves) * 8:
+                raise MrsFormatError("MRS LOUDS 树子节点边界非法")
+            node_count += 1
+            queue.append(node_key + labels[label_offset : label_offset + 1])
+            label_offset += 1
+            index += 1
+        if index >= len(bitmap) * 8 or not _bit(bitmap, index):
+            raise MrsFormatError("MRS LOUDS 树未闭合")
+        index += 1
+        node += 1
+    if label_offset != len(labels) or node_count != _bit_count(bitmap):
+        raise MrsFormatError("MRS LOUDS 树含不可达标签或位图数据")
+    if _has_bit_from(leaves, node_count):
+        raise MrsFormatError("MRS 终结位越出 LOUDS 树节点边界")
+    return frozenset(keys)
+
+
 def _validate_body(reader, behavior):
     if reader.read_exact(1) != b"\x01":
         raise MrsFormatError("MRS 主体版本非法")
     if behavior == "ipcidr":
-        _records(reader, _int64(reader), 32)
-        return
+        records = _records(reader, _int64(reader), 32)
+        ranges = []
+        for offset in range(0, len(records), 32):
+            start = ipaddress.ip_address(records[offset : offset + 16])
+            end = ipaddress.ip_address(records[offset + 16 : offset + 32])
+            start = start.ipv4_mapped or start if start.version == 6 else start
+            end = end.ipv4_mapped or end if end.version == 6 else end
+            if start.version != end.version or start > end:
+                raise MrsFormatError("MRS IP range 地址族或起止顺序无效")
+            ranges.append((int(start), int(end), start.version))
+        return frozenset(), tuple(ranges)
     leaves = _records(reader, _int64(reader), 8)
     bitmap = _records(reader, _int64(reader), 8)
     labels_length = _int64(reader)
     if labels_length < 1 or labels_length > MAX_DECOMPRESSED_BYTES:
         raise MrsFormatError("MRS 标签长度非法")
     labels = reader.read_exact(labels_length)
-    if not bitmap:
-        raise MrsFormatError("MRS 标签位图为空")
-    leaf_count = sum(value.bit_count() for value in struct.unpack(f">{len(leaves) // 8}Q", leaves))
-    if leaf_count == 0:
-        raise MrsFormatError("MRS 没有有效叶节点")
-    words = struct.unpack(f">{len(bitmap) // 8}Q", bitmap)
-    if sum(value.bit_count() for value in words) != len(labels) + 1:
-        raise MrsFormatError("MRS 标签位图与标签内容长度不一致")
-        raise MrsFormatError("MRS 标签位图与标签内容长度不一致")
+    return _validate_domain_tree(leaves, bitmap, labels), ()
 
 
-def validate_mrs(path, behavior):
+def read_mrs(path, behavior):
     expected_behavior = MRS_BEHAVIORS.get(behavior)
     if expected_behavior is None:
         raise MrsFormatError(f"MRS 不支持行为: {behavior!r}")
@@ -171,11 +242,88 @@ def validate_mrs(path, behavior):
         if count <= 0 or extra_length < 0 or extra_length > MAX_EXTRA_BYTES:
             raise MrsFormatError(f"MRS 计数或扩展长度无效: {path}")
         reader.read_exact(extra_length)
-        _validate_body(reader, behavior)
+        keys, ranges = _validate_body(reader, behavior)
         reader.finish()
-        return count
+        return MrsContent(count, keys, ranges)
     except (OSError, struct.error, MrsFormatError) as exc:
         raise MrsFormatError(f"MRS 校验失败: {path}（{exc}）") from exc
     finally:
         if reader is not None:
             reader.close()
+
+
+def validate_mrs(path, behavior):
+    return read_mrs(path, behavior).count
+
+
+def _domain_text_key(rule):
+    if not rule or rule != rule.strip() or rule.endswith(".") or "/" in rule:
+        raise MrsFormatError(f"TXT 含内核无法接受的域名规则: {rule!r}")
+    parts = rule.lower().split(".")
+    if any(not part for part in parts[1:]):
+        raise MrsFormatError(f"TXT 含空域名标签: {rule!r}")
+    if len(parts) == 1 and not parts[0]:
+        raise MrsFormatError("TXT 含空域名")
+    for index, part in enumerate(parts):
+        if "+" in part and (part != "+" or index != 0 or len(parts) == 1):
+            raise MrsFormatError(f"TXT 含非法 + 通配符: {rule!r}")
+        if "*" in part and part != "*":
+            raise MrsFormatError(f"TXT 通配符必须占据完整标签: {rule!r}")
+    if parts[0] == "+":
+        return frozenset((rule[2:].lower()[::-1].encode(), rule.lower()[::-1].encode()))
+    if parts[0] == "":
+        return frozenset((("+." + rule[1:]).lower()[::-1].encode(),))
+    return frozenset((rule.lower()[::-1].encode(),))
+
+
+def _text_network(rule):
+    try:
+        network = ipaddress.ip_network(rule, strict=False)
+    except ValueError as exc:
+        raise MrsFormatError(f"TXT 含无效 CIDR: {rule!r}") from exc
+    start = network.network_address
+    end = network.broadcast_address
+    return int(start), int(end), network.version
+
+
+def _merge_ranges(ranges):
+    merged = []
+    for start, end, version in sorted(ranges, key=lambda item: (item[2], item[0], item[1])):
+        if merged and merged[-1][2] == version and start <= merged[-1][1] + 1:
+            previous = merged[-1]
+            merged[-1] = (previous[0], max(previous[1], end), version)
+        else:
+            merged.append((start, end, version))
+    return tuple(merged)
+
+
+def verify_product_pair(txt_path, mrs_path, behavior):
+    try:
+        lines = Path(txt_path).read_text(encoding="utf-8").splitlines()
+    except UnicodeError as exc:
+        raise MrsFormatError(f"TXT 不是有效 UTF-8: {txt_path}") from exc
+    except OSError as exc:
+        raise MrsFormatError(f"TXT 读取失败: {txt_path}") from exc
+    actual = read_mrs(mrs_path, behavior)
+    if behavior == "domain":
+        keys = set()
+        count = 0
+        for line in lines:
+            rule = line.strip()
+            if not rule or rule.startswith("#") or rule.startswith("//"):
+                continue
+            keys.update(_domain_text_key(rule))
+            count += 1
+        if count != actual.count or keys != actual.keys:
+            raise MrsFormatError(f"TXT/MRS 内容不对应: {txt_path} <-> {mrs_path}")
+        return
+    networks = []
+    count = 0
+    for line in lines:
+        rule = line.strip()
+        if not rule or rule.startswith("#") or rule.startswith("//"):
+            continue
+        networks.append(_text_network(rule))
+        count += 1
+    if count != actual.count or _merge_ranges(networks) != actual.ranges:
+        raise MrsFormatError(f"TXT/MRS 内容不对应: {txt_path} <-> {mrs_path}")

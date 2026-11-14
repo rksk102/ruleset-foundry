@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.util
+import ipaddress
 import json
 import struct
 from pathlib import Path
@@ -18,7 +19,14 @@ def write_paired_product(root, rel, text=b"x"):
     relative.write_bytes(text)
     mrs = root / "merged-rules-mrs" / Path(rel).with_suffix(".mrs")
     mrs.parent.mkdir(parents=True, exist_ok=True)
-    mrs.write_bytes(valid_mrs_bytes("ipcidr" if "/ipcidr/" in rel else "domain"))
+    behavior = "ipcidr" if "/ipcidr/" in rel else "domain"
+    if text == b"x":
+        encoded = valid_mrs_bytes(behavior)
+    elif behavior == "domain":
+        encoded = domain_mrs_bytes(text.decode().splitlines())
+    else:
+        encoded = ipcidr_mrs_bytes(text.decode().splitlines())
+    mrs.write_bytes(encoded)
 
 
 def isolate_readme_paths(monkeypatch, root, readme, rules_rel="merged-rules", mrs_rel="merged-rules-mrs"):
@@ -35,22 +43,76 @@ def write_quickstart_mrs_placeholders(root):
         path.write_bytes(b"MRS fixture")
 
 
+def domain_mrs_bytes(rules, count=None):
+    keys = set()
+    for rule in rules:
+        normalized = rule.lower()
+        if normalized.startswith("+."):
+            keys.add(normalized[2:][::-1].encode())
+            keys.add(normalized[::-1].encode())
+        elif normalized.startswith("."):
+            keys.add(("+." + normalized[1:])[::-1].encode())
+        else:
+            keys.add(normalized[::-1].encode())
+    keys = sorted(keys)
+    leaves = []
+    bitmap = []
+    labels = []
+    queue = [(0, len(keys))]
+    depth = 0
+    while queue:
+        next_queue = []
+        for start, end in queue:
+            terminal = depth == len(keys[start])
+            leaves.append(terminal)
+            if terminal:
+                start += 1
+            while start < end:
+                finish = start + 1
+                while finish < end and keys[finish][depth] == keys[start][depth]:
+                    finish += 1
+                next_queue.append((start, finish))
+                labels.append(keys[start][depth : depth + 1])
+                bitmap.append(False)
+                start = finish
+            bitmap.append(True)
+        queue = next_queue
+        depth += 1
+
+    def pack_bits(bits):
+        return b"".join(
+            sum((1 << offset) for offset, bit in enumerate(bits[index : index + 64]) if bit).to_bytes(8, "big")
+            for index in range(0, len(bits), 64)
+        )
+
+    body = (
+        b"\x01"
+        + struct.pack(">q", (len(leaves) + 63) // 64)
+        + pack_bits(leaves)
+        + struct.pack(">q", (len(bitmap) + 63) // 64)
+        + pack_bits(bitmap)
+        + struct.pack(">q", sum(map(len, labels)))
+        + b"".join(labels)
+    )
+    return compress_zstd(b"MRS\x01\x00" + struct.pack(">qq", len(rules) if count is None else count, 0) + body)
+
+
+def ipcidr_mrs_bytes(networks, count=None):
+    ranges = []
+    for network in sorted(map(ipaddress.ip_network, networks), key=lambda n: (n.version, int(n.network_address))):
+        start = network.network_address.ipv6_mapped if network.version == 4 else network.network_address
+        end = network.broadcast_address.ipv6_mapped if network.version == 4 else network.broadcast_address
+        ranges.append(start.packed + end.packed)
+    body = b"\x01" + struct.pack(">q", len(ranges)) + b"".join(ranges)
+    return compress_zstd(b"MRS\x01\x01" + struct.pack(">qq", len(networks) if count is None else count, 0) + body)
+
+
 def valid_mrs_bytes(behavior="domain"):
     if behavior == "domain":
-        body = (
-            b"\x01"
-            + struct.pack(">q", 1)
-            + b"\xc0" + b"\0" * 7
-            + struct.pack(">q", 1)
-            + b"\xc0" + b"\0" * 7
-            + struct.pack(">q", 1)
-            + b"x"
-        )
-    elif behavior == "ipcidr":
-        body = b"\x01" + struct.pack(">q", 1) + b"\0" * 32
-    else:
-        raise ValueError(f"unsupported behavior: {behavior}")
-    return compress_zstd(b"MRS\x01" + bytes([0 if behavior == "domain" else 1]) + struct.pack(">qq", 1, 0) + body)
+        return domain_mrs_bytes(["x"])
+    if behavior == "ipcidr":
+        return ipcidr_mrs_bytes(["0.0.0.0/0"])
+    raise ValueError(f"unsupported behavior: {behavior}")
 
 
 def compress_zstd(payload):
