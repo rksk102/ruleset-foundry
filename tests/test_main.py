@@ -842,6 +842,23 @@ class TestCombinedDropGate:
         lines = ["good.example", "full:good.example", "DOMAIN,good.example", "domain:good.example"]
         assert main._unique_gate_lines(lines, "domain") == ["good.example", "domain:good.example"]
 
+    def test_hosts_duplicates_share_gate_key_with_plain_domains(self, monkeypatch):
+        lines = [f"bad line {i}" for i in range(20)] + [f"good{i}.example" for i in range(100)]
+        hosts = [f"0.0.0.0 good{i}.example" for i in range(100)]
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines + hosts, monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_opaque_ip_payloads_are_not_truncated_by_gate(self, monkeypatch):
+        lines = [f"DOMAIN-REGEX,^ads!{i}\\.example$" for i in range(20)] + ["1.1.1.0/24"]
+        count, errors, writes = self.run_group(self.IP_GROUP, lines, monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
     def test_identical_dropped_lines_cannot_flip_gate(self, monkeypatch):
         lines = [f"good{i}.com" for i in range(200)] + ["DOMAIN-KEYWORD,ads"] * 180
         original = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)

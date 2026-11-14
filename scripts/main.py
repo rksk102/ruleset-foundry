@@ -698,16 +698,13 @@ def _unique_gate_lines(lines, rule_type, domain_kind="exact"):
     for line in lines:
         text = str(line)
         candidate = text
-        if isinstance(line, processor._HostsField):
-            key = (line.semantic, line.field.casefold())
-            candidate = line
-        elif rule_type == "ipcidr":
+        if rule_type == "ipcidr":
             kind, payload, _type_name = processor.classify_rule_line(text)
-            candidate = payload if kind == "ip" else text
-            candidate = re.split(r"[#!]", candidate, maxsplit=1)[0].strip()
+            if kind == "ip":
+                candidate = payload
             with contextlib.suppress(ValueError):
                 candidate = str(ipaddress.ip_network(candidate, strict=False))
-            key = candidate
+            key = candidate.casefold()
         else:
             normalized, _stats = processor.process_domain_detailed([line], domain_kind)
             _prefix, payload, type_name = processor.classify_rule_line(text)
@@ -715,6 +712,8 @@ def _unique_gate_lines(lines, rule_type, domain_kind="exact"):
                 key = text.casefold()
             else:
                 key = tuple(normalized) if normalized else text.casefold()
+            if isinstance(line, processor._HostsField):
+                candidate = line
         if key not in unique:
             unique.add(key)
             result.append(candidate)
