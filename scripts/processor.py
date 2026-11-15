@@ -528,7 +528,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 stats["unrecognized"] += 1
                 continue
             s = s[2:]
-            # ABP 的 || 锚点匹配根域及其子域，对应 mihomo 的 +.
+            # ABP 的 ||domain^ 可无损表示为 mihomo 的 +. 后缀规则。
             semantic = "suffix"
         if "$" in s:
             modifiers = s.split("$", 1)[1]
@@ -541,7 +541,10 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if adblock_anchor and "/" in s:
             stats["dropped_path"] += 1
             continue
-        if adblock_anchor and s.endswith("^"):
+        if adblock_anchor:
+            if not s.endswith("^"):
+                stats["dropped_path"] += 1
+                continue
             s = s[:-1]
         if "^" in s:
             stats["dropped_path"] += 1

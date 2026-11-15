@@ -407,6 +407,14 @@ class TestDomainCleaningEdges:
 
 
 class TestAdblockModifierSemantics:
+    def test_anchor_without_terminal_separator_is_rejected_and_counted(self):
+        result, stats = processor.process_domain_detailed(["||example.com", "||example.com^"])
+
+        assert result == ["+.example.com"]
+        assert stats["suffix"] == 1
+        assert stats["dropped_path"] == 1
+        assert stats["unrecognized"] == 0
+
     def test_adblock_anchor_is_suffix_in_exact_source(self):
         out, stats = processor.process_domain_detailed(["||ads.example.com^"], "exact")
         assert out == ["+.ads.example.com"]
