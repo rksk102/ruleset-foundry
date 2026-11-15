@@ -205,8 +205,19 @@ def _yaml_payload_lines(content):
         import yaml
     except Exception as exc:
         raise YamlPayloadError("YAML 输入需要 PyYAML 安全解析") from exc
+
+    class UniqueKeyLoader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
+        def construct_mapping(self, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise YamlPayloadError(f"YAML 重复映射键: {key!r}")
+                mapping[key] = self.construct_object(value_node, deep=deep)
+            return mapping
+
     try:
-        data = yaml.load(content, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+        data = yaml.load(content, Loader=UniqueKeyLoader)
     except Exception as exc:
         raise YamlPayloadError(f"YAML 结构无效: {exc}") from exc
     if not isinstance(data, dict) or any(key not in ("payload", "rules", "behavior") for key in data):
@@ -234,7 +245,11 @@ def _yaml_payload_lines(content):
     return result
 
 
-_YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
+_YAML_HEAD_RE = re.compile(
+    r'''^\s*(?:(?:payload|rules|behavior)\s*:|"(?:[^"\\]|\\.)*"\s*:|'''
+    r"'(?:[^']|'')*'\s*:|\{|---(?:\s|$)|%YAML(?:\s|$))",
+    re.IGNORECASE,
+)
 
 _HOSTS_LOCAL_PREFIXES = ("127.0.0.1", "0.0.0.0", "::1")
 
@@ -320,7 +335,7 @@ def _expand_hosts_entries(lines):
 
 
 def parse_lines(raw_content):
-    content = explicit_base64_decode(raw_content)
+    content = explicit_base64_decode(raw_content.lstrip("\ufeff"))
     content_lines = content.splitlines()
     probe = []
     for raw in content_lines:

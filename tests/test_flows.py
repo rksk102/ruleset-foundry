@@ -149,6 +149,30 @@ class TestMainFlow:
         assert (rulesets / "products.manifest").read_bytes() == before_manifest
         assert not list(rulesets.glob(".staging-*"))
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b'"payload": [good.example, false, null]',
+            b"{rules: [good.example, false, null]}",
+            b"payload: [missing.example]\npayload: [good.example]",
+        ],
+    )
+    def test_invalid_yaml_preserves_previous_generation(self, monkeypatch, work_dir, raw):
+        sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
+        rulesets = self.setup_run(monkeypatch, work_dir, sources=sources)
+        main.main()
+        product = rulesets / "block" / "domain" / "o" / "keep.txt"
+        before_product = product.read_bytes()
+        before_manifest = (rulesets / "products.manifest").read_bytes()
+        self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert product.read_bytes() == before_product
+        assert (rulesets / "products.manifest").read_bytes() == before_manifest
+
     def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
         main.main()

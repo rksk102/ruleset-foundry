@@ -957,6 +957,39 @@ class TestMainCliContract:
 
 
 class TestYamlPayloadParsing:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '"payload":\n - good.example\n - false\n - null',
+            "'rules':\n - good.example\n - false\n - null",
+            '{"payload": [good.example, false, null]}',
+            "{rules: [good.example, false, null]}",
+            '\ufeff---\n"payload": [good.example, false, null]',
+            '"pay\\u006coad": [good.example, false, null]',
+            "%YAML 1.2\n---\nrules: [good.example, false, null]",
+        ],
+    )
+    def test_mapping_representations_keep_nonstring_rejection_counts(self, content):
+        parsed = processor.parse_lines(content)
+
+        assert parsed == ["good.example"]
+        assert parsed.yaml_errors == 2
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "payload: [missing.example]\npayload: [good.example]",
+            "rules: [missing.example]\nrules: [good.example]",
+            'payload: [missing.example]\n"payload": [good.example]',
+            "payload: [false]\npayload: [good.example]",
+            "payload: []\npayload: []",
+            "{payload: [missing.example], payload: [good.example]}",
+        ],
+    )
+    def test_duplicate_mapping_keys_fail_before_rules_can_disappear(self, content):
+        with pytest.raises(processor.YamlPayloadError, match="重复"):
+            processor.parse_lines(content)
+
     def test_multiline_flow_array(self):
         content = "payload: [\n  'a.com',\n  'b.com'\n]\n"
         assert processor.parse_lines(content) == ["a.com", "b.com"]
