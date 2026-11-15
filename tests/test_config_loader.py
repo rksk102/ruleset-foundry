@@ -5,6 +5,7 @@ from pathlib import Path
 
 import config_loader
 import pytest
+import utils
 
 SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
 BASE = (
@@ -265,6 +266,78 @@ class TestPathRelationshipValidation:
         assert cfg["paths"]["rulesets_dir"] == "rulesets"
         assert cfg["paths"]["merged_output_dir"] == "merged-rules"
         assert cfg["paths"]["mrs_output_dir"] == "merged-rules-mrs"
+
+
+class TestResolvedConfigPaths:
+    def prepare(self, work_dir, monkeypatch):
+        root = work_dir / "repo"
+        root.mkdir()
+        outside = work_dir / "outside"
+        outside.mkdir()
+        monkeypatch.setattr(utils, "REPO_ROOT", root)
+        return root, outside
+
+    @pytest.mark.parametrize(
+        ("section", "key", "value"),
+        [
+            ("paths", "log_dir", "alias"),
+            ("paths", "sources_file", "alias/sources.urls"),
+            ("mihomo", "kernel_cache_path", "alias"),
+        ],
+    )
+    def test_symlink_escape_is_rejected_before_consumers_run(self, work_dir, monkeypatch, section, key, value):
+        root, outside = self.prepare(work_dir, monkeypatch)
+        (root / "alias").symlink_to(outside, target_is_directory=True)
+        body = path_config(**{section: {key: value}})
+        use_config(root, monkeypatch, body)
+
+        with pytest.raises(config_loader.ConfigError, match="真实目标必须位于仓库内"):
+            config_loader.load_config()
+
+        assert list(outside.iterdir()) == []
+
+    @pytest.mark.parametrize("target", ["docs", "scripts"])
+    def test_symlink_to_protected_directory_is_rejected(self, work_dir, monkeypatch, target):
+        root, _outside = self.prepare(work_dir, monkeypatch)
+        (root / target).mkdir()
+        (root / "alias").symlink_to(root / target, target_is_directory=True)
+        use_config(root, monkeypatch, path_config({"log_dir": "alias"}))
+
+        with pytest.raises(config_loader.ConfigError, match="真实目标必须位于仓库内"):
+            config_loader.load_config()
+
+        assert list((root / target).iterdir()) == []
+
+    def test_symlink_loop_is_reported_as_configuration_error(self, work_dir, monkeypatch):
+        root, _outside = self.prepare(work_dir, monkeypatch)
+        (root / "loop").symlink_to("loop")
+        use_config(root, monkeypatch, path_config({"log_dir": "loop/logs"}))
+
+        with pytest.raises(config_loader.ConfigError, match="真实路径解析失败"):
+            config_loader.load_config()
+
+    @pytest.mark.parametrize("conflict", ["directories", "source"])
+    def test_distinct_aliases_cannot_hide_real_path_overlap(self, work_dir, monkeypatch, conflict):
+        root, _outside = self.prepare(work_dir, monkeypatch)
+        (root / "shared").mkdir()
+        (root / "alias").symlink_to(root / "shared", target_is_directory=True)
+        if conflict == "directories":
+            paths = {"rulesets_dir": "shared", "merged_output_dir": "alias/txt"}
+        else:
+            paths = {"rulesets_dir": "shared", "sources_file": "alias/sources.urls"}
+        use_config(root, monkeypatch, path_config(paths))
+
+        with pytest.raises(config_loader.ConfigError, match="路径冲突"):
+            config_loader.load_config()
+
+    def test_nonoverlapping_internal_symlink_is_accepted(self, work_dir, monkeypatch):
+        root, _outside = self.prepare(work_dir, monkeypatch)
+        (root / "data").mkdir()
+        (root / "alias").symlink_to(root / "data", target_is_directory=True)
+        use_config(root, monkeypatch, path_config({"log_dir": "alias/logs"}))
+
+        assert config_loader.load_config()["paths"]["log_dir"] == "alias/logs"
+        assert not (root / "data" / "logs").exists()
 
 
 class TestMergeFieldWhitelist:
