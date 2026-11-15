@@ -485,10 +485,12 @@ class TestAdblockModifierSemantics:
 class TestNoSilentDrop:
     DROPPED_SHAPES = (
         "@@||white.example.com^",
+        "||example.com",
         "keyword:tracker",
         r"regexp:^ads\.",
         "DOMAIN-KEYWORD,analytics",
         r"DOMAIN-REGEX,^ads\.",
+        "DOMAIN-SUFFIX,example.com:99999",
         "GEOIP,CN",
         "IP-CIDR,1.2.3.0/24",
         "steampowered.com.8686c.com @cn",
