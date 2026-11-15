@@ -926,6 +926,30 @@ class TestCombinedDropGate:
         assert "URL hostname 提取" in caplog.text
 
 
+class TestDomainSyntaxGate:
+    @pytest.mark.parametrize("syntax", ["port"])
+    def test_unexpressible_domain_syntax_reaches_drop_gate(self, monkeypatch, work_dir, syntax):
+        if syntax == "port":
+            rejected = [f"DOMAIN-SUFFIX,bad{i}.example:99999" for i in range(20)]
+        else:
+            rejected = [f"||bad{i}.example" for i in range(20)]
+        target = work_dir / "rulesets" / "block" / "domain" / "Owner" / "ads.txt"
+        write(target, "old.example\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target),
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join([*rejected, "good.example"]).encode()})
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "old.example\n"
+
+
 class TestIpGateCandidateConservation:
     @pytest.mark.parametrize(
         ("raw", "cidr_errors", "unrecognized"),

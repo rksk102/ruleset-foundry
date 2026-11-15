@@ -564,6 +564,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             if adblock_anchor:
                 stats["dropped_path"] += 1
                 continue
+            if semantic is not None:
+                stats["unrecognized"] += 1
+                continue
             head, _, port = s.rpartition(":")
             if port.isdigit() and "." in head:
                 s = head
