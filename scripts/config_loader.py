@@ -1,7 +1,9 @@
+import contextlib
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import utils
 from utils import PROTECTED_TOP_LEVEL, RULE_TYPES, WINDOWS_RESERVED_NAMES, is_safe_component
 
 try:
@@ -222,25 +224,39 @@ def _paths_overlap(parts_a, parts_b):
     return parts_a[: len(parts_b)] == parts_b or parts_b[: len(parts_a)] == parts_a
 
 
+def _resolved_path_parts(label, value):
+    try:
+        target = (utils.REPO_ROOT / value.replace("\\", "/")).resolve()
+        with contextlib.suppress(FileNotFoundError):
+            target.stat()
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"{label} 真实路径解析失败: {value!r}（{exc}）") from exc
+    if not utils.is_repo_subdir(target):
+        raise ConfigError(f"{label} 真实目标必须位于仓库内且不能指向受保护目录: {value!r} -> {target}")
+    return _normalized_path_parts(target.relative_to(utils.REPO_ROOT).as_posix())
+
+
 def _validate_path_relationships(cfg):
     entries = []
     for section, key in _PATH_DIR_KEYS:
         value = cfg[section][key]
-        entries.append((f"{section}.{key}", value, _normalized_path_parts(value)))
-    for pos, (label_a, value_a, parts_a) in enumerate(entries):
-        for label_b, value_b, parts_b in entries[pos + 1 :]:
-            if _paths_overlap(parts_a, parts_b):
+        label = f"{section}.{key}"
+        entries.append((label, value, _normalized_path_parts(value), _resolved_path_parts(label, value)))
+    for pos, (label_a, value_a, parts_a, real_a) in enumerate(entries):
+        for label_b, value_b, parts_b, real_b in entries[pos + 1 :]:
+            if _paths_overlap(parts_a, parts_b) or _paths_overlap(real_a, real_b):
                 raise ConfigError(
                     f"{label_a}={value_a!r} 与 {label_b}={value_b!r} 路径冲突："
-                    "目录之间不能相等或互相嵌套（按路径段、大小写不敏感比较）"
+                    "目录之间不能相等或互相嵌套（含符号链接真实路径、大小写不敏感比较）"
                 )
     sources_value = cfg["paths"]["sources_file"]
     sources_parts = _normalized_path_parts(sources_value)
-    for label, value, parts in entries:
-        if _paths_overlap(sources_parts, parts):
+    sources_real = _resolved_path_parts("paths.sources_file", sources_value)
+    for label, value, parts, real in entries:
+        if _paths_overlap(sources_parts, parts) or _paths_overlap(sources_real, real):
             raise ConfigError(
                 f"paths.sources_file={sources_value!r} 与 {label}={value!r} 路径冲突："
-                "sources_file 与该目录不能相等或互相嵌套（按路径段、大小写不敏感比较）"
+                "sources_file 与该目录不能相等或互相嵌套（含符号链接真实路径、大小写不敏感比较）"
             )
 
 
