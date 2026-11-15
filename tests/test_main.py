@@ -927,7 +927,7 @@ class TestCombinedDropGate:
 
 
 class TestDomainSyntaxGate:
-    @pytest.mark.parametrize("syntax", ["port"])
+    @pytest.mark.parametrize("syntax", ["port", "adblock"])
     def test_unexpressible_domain_syntax_reaches_drop_gate(self, monkeypatch, work_dir, syntax):
         if syntax == "port":
             rejected = [f"DOMAIN-SUFFIX,bad{i}.example:99999" for i in range(20)]
