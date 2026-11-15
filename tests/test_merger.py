@@ -578,6 +578,62 @@ class TestConflictPolicyIgnore:
         assert len(calls) == 1
 
 
+class TestWildcardPatternConflictPolicy:
+    @pytest.mark.parametrize(
+        ("left", "right", "policy", "overlap"),
+        [
+            ("*.*.example.com", "*.a.example.com", "fail", True),
+            ("*.a.example.com", "*.*.example.com", "fail", True),
+            ("*.*.example.com", "*.a.example.com", "warn", True),
+            ("*.*.example.com", "*.a.example.com", "ignore", True),
+            ("*.*.example.com", "*.example.com", "fail", False),
+            ("*.a.example.com", "*.b.example.com", "fail", False),
+        ],
+    )
+    def test_pattern_intersection_reaches_merge_policy(self, work_dir, monkeypatch, left, right, policy, overlap):
+        source = work_dir / "rulesets"
+        output = work_dir / "merged"
+        summary = work_dir / "summary.md"
+        entries = {"block/domain/Owner/left.txt": left, "direct/domain/Owner/right.txt": right}
+        for rel, pattern in entries.items():
+            write(source / rel, pattern + "\n")
+        manifest.save_manifest(
+            source / manifest.MANIFEST_NAME,
+            manifest.hash_entries(source, entries),
+            generation=manifest.expected_generation() or "test-patterns",
+        )
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(output))
+        monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+        original_get = merger.get
+        monkeypatch.setattr(
+            merger,
+            "get",
+            lambda *keys, **kwargs: (
+                policy if keys == ("behavior", "conflict_policy") else original_get(*keys, **kwargs)
+            ),
+        )
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+        if overlap and policy == "fail":
+            with pytest.raises(SystemExit) as exc:
+                merger.main()
+            assert exc.value.code == 1
+        else:
+            merger.main()
+
+        text = summary.read_text(encoding="utf-8")
+        assert ("### 隐式冲突检测" in text) == (overlap and policy != "ignore")
+        if overlap and policy != "ignore":
+            assert left in text and right in text
+        assert manifest.verify_manifest(manifest.load_manifest(output / manifest.MANIFEST_NAME), output, "merge")
+        for rel, pattern in entries.items():
+            rules = [
+                line for line in (output / rel).read_text(encoding="utf-8").splitlines() if not line.startswith("#")
+            ]
+            assert rules == [pattern]
+
+
 class TestConflictPolicyReporting:
     def setup_run(self, monkeypatch, work_dir, policy):
         source = work_dir / "rulesets"

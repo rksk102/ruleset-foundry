@@ -179,7 +179,7 @@ def explicit_base64_decode(text):
         decoded_str = safe_decode(decoded_bytes)
         has_yaml_head = any(_YAML_HEAD_RE.match(line) for line in decoded_str.splitlines())
         if is_text_data(decoded_str) and (
-            "\n" in decoded_str
+            ("\n" in decoded_str and not process_domain_detailed([text])[0])
             or has_yaml_head
             or _split_semantic_prefix(decoded_str)[0] is not None
             or classify_rule_line(decoded_str)[0] in ("suffix", "exact")
@@ -205,8 +205,19 @@ def _yaml_payload_lines(content):
         import yaml
     except Exception as exc:
         raise YamlPayloadError("YAML 输入需要 PyYAML 安全解析") from exc
+
+    class UniqueKeyLoader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
+        def construct_mapping(self, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise YamlPayloadError(f"YAML 重复映射键: {key!r}")
+                mapping[key] = self.construct_object(value_node, deep=deep)
+            return mapping
+
     try:
-        data = yaml.load(content, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+        data = yaml.load(content, Loader=UniqueKeyLoader)
     except Exception as exc:
         raise YamlPayloadError(f"YAML 结构无效: {exc}") from exc
     if not isinstance(data, dict) or any(key not in ("payload", "rules", "behavior") for key in data):
@@ -234,7 +245,11 @@ def _yaml_payload_lines(content):
     return result
 
 
-_YAML_HEAD_RE = re.compile(r"^\s*(?:payload|rules):", re.IGNORECASE)
+_YAML_HEAD_RE = re.compile(
+    r'''^\s*(?:(?:payload|rules|behavior)\s*:|"(?:[^"\\]|\\.)*"\s*:|'''
+    r"'(?:[^']|'')*'\s*:|\{|---(?:\s|$)|%YAML(?:\s|$))",
+    re.IGNORECASE,
+)
 
 _HOSTS_LOCAL_PREFIXES = ("127.0.0.1", "0.0.0.0", "::1")
 
@@ -320,7 +335,7 @@ def _expand_hosts_entries(lines):
 
 
 def parse_lines(raw_content):
-    content = explicit_base64_decode(raw_content)
+    content = explicit_base64_decode(raw_content.lstrip("\ufeff"))
     content_lines = content.splitlines()
     probe = []
     for raw in content_lines:
@@ -513,7 +528,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
                 stats["unrecognized"] += 1
                 continue
             s = s[2:]
-            # ABP 的 || 锚点匹配根域及其子域，对应 mihomo 的 +.
+            # ABP 的 ||domain^ 可无损表示为 mihomo 的 +. 后缀规则。
             semantic = "suffix"
         if "$" in s:
             modifiers = s.split("$", 1)[1]
@@ -526,7 +541,10 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if adblock_anchor and "/" in s:
             stats["dropped_path"] += 1
             continue
-        if adblock_anchor and s.endswith("^"):
+        if adblock_anchor:
+            if not s.endswith("^"):
+                stats["dropped_path"] += 1
+                continue
             s = s[:-1]
         if "^" in s:
             stats["dropped_path"] += 1
@@ -548,6 +566,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if ":" in s:
             if adblock_anchor:
                 stats["dropped_path"] += 1
+                continue
+            if semantic is not None:
+                stats["unrecognized"] += 1
                 continue
             head, _, port = s.rpartition(":")
             if port.isdigit() and "." in head:

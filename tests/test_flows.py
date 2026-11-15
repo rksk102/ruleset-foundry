@@ -1,5 +1,6 @@
 """进程内驱动 main() 与 convert_mrs.main()：补上编排路径的覆盖（T-1）。"""
 
+import base64
 import hashlib
 import os
 import subprocess
@@ -123,6 +124,67 @@ class TestMainFlow:
             "block/domain/o/keep.txt",
         ]
         assert self.manifest_entries(rulesets) == before
+
+    @pytest.mark.parametrize("defect", ["hosts", "empty-payload"])
+    def test_rejected_ip_inputs_preserve_previous_generation(self, monkeypatch, work_dir, defect):
+        sources = "[policy:direct]\n[type:ipcidr]\nhttps://raw.githubusercontent.com/o/keep/keep.txt\n"
+        rulesets = self.setup_run(
+            monkeypatch, work_dir, sources=sources, payloads={"keep.txt": b"198.51.100.0/24\n"}
+        )
+        main.main()
+        product = rulesets / "direct" / "ipcidr" / "o" / "keep.txt"
+        before_product = product.read_bytes()
+        before_manifest = (rulesets / "products.manifest").read_bytes()
+        if defect == "hosts":
+            raw = b"0.0.0.0 IP-CIDR,192.0.2.0/24\n"
+        else:
+            lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
+            raw = ("\n".join(lines) + "\nIP-CIDR,\n").encode()
+        self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert product.read_bytes() == before_product
+        assert (rulesets / "products.manifest").read_bytes() == before_manifest
+        assert not list(rulesets.glob(".staging-*"))
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b'"payload": [good.example, false, null]',
+            b"{rules: [good.example, false, null]}",
+            b"payload: [missing.example]\npayload: [good.example]",
+        ],
+    )
+    def test_invalid_yaml_preserves_previous_generation(self, monkeypatch, work_dir, raw):
+        sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
+        rulesets = self.setup_run(monkeypatch, work_dir, sources=sources)
+        main.main()
+        product = rulesets / "block" / "domain" / "o" / "keep.txt"
+        before_product = product.read_bytes()
+        before_manifest = (rulesets / "products.manifest").read_bytes()
+        self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert product.read_bytes() == before_product
+        assert (rulesets / "products.manifest").read_bytes() == before_manifest
+
+    def test_base64_shaped_domain_is_written_with_its_original_match(self, monkeypatch, work_dir):
+        raw = base64.b64encode(b"aaaaaaaaaa\nbbbbbbb")
+        sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
+        rulesets = self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        main.main()
+
+        product = rulesets / "block" / "domain" / "o" / "keep.txt"
+        rules = [line for line in product.read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+        assert rules == [raw.decode().lower()]
+        assert manifest.verify_manifest(manifest.load_manifest(rulesets / "products.manifest"), rulesets, "sync")
 
     def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)

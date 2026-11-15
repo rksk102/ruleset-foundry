@@ -613,7 +613,7 @@ class TestParseSources:
 
 
 class TestSourceTargetRejection:
-    """ISS-02/18：来源不得含 userinfo，且只能是 443 上的公网目标。"""
+    """来源不得含 userinfo，且只能是 443 上的公网目标。"""
 
     def load(self, tmp_path, content):
         target = tmp_path / "sources.urls"
@@ -739,7 +739,7 @@ class TestProcessGroupGates:
 
 
 class TestCombinedDropGate:
-    """ISS-03：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
+    """未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
 
     DOMAIN_GROUP: ClassVar[dict] = {
         "path": "rulesets/block/domain/Owner/ads.txt",
@@ -888,9 +888,10 @@ class TestCombinedDropGate:
         assert errors["parse"]
         assert writes == []
 
-    def test_domain_yaml_item_rejections_reach_drop_gate(self, monkeypatch):
+    @pytest.mark.parametrize("head", ["payload", '"payload"', "'rules'"])
+    def test_domain_yaml_item_rejections_reach_drop_gate(self, monkeypatch, head):
         monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
-        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "good.com"]'
+        raw = head + ": [" + ", ".join(map(str, range(20))) + ', "good.com"]'
         count, errors, writes = self.run_group(self.DOMAIN_GROUP, [raw], monkeypatch)
 
         assert count is None
@@ -905,9 +906,10 @@ class TestCombinedDropGate:
         assert errors["parse"] == []
         assert len(writes) == 1
 
-    def test_yaml_item_rejections_reach_ip_drop_gate(self, monkeypatch):
+    @pytest.mark.parametrize("head", ["payload", '"payload"', "'rules'"])
+    def test_yaml_item_rejections_reach_ip_drop_gate(self, monkeypatch, head):
         monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
-        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "1.1.1.0/24"]'
+        raw = head + ": [" + ", ".join(map(str, range(20))) + ', "1.1.1.0/24"]'
         count, errors, writes = self.run_group(self.IP_GROUP, [raw], monkeypatch)
 
         assert count is None
@@ -922,6 +924,83 @@ class TestCombinedDropGate:
         assert errors["parse"] == []
         assert len(writes) == 1
         assert "URL hostname 提取" in caplog.text
+
+
+class TestDomainSyntaxGate:
+    @pytest.mark.parametrize("syntax", ["port", "adblock"])
+    def test_unexpressible_domain_syntax_reaches_drop_gate(self, monkeypatch, work_dir, syntax):
+        if syntax == "port":
+            rejected = [f"DOMAIN-SUFFIX,bad{i}.example:99999" for i in range(20)]
+        else:
+            rejected = [f"||bad{i}.example" for i in range(20)]
+        target = work_dir / "rulesets" / "block" / "domain" / "Owner" / "ads.txt"
+        write(target, "old.example\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target),
+            "policy": "block",
+            "type": "domain",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join([*rejected, "good.example"]).encode()})
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "old.example\n"
+
+
+class TestIpGateCandidateConservation:
+    @pytest.mark.parametrize(
+        ("raw", "cidr_errors", "unrecognized"),
+        [
+            ("0.0.0.0 IP-CIDR,192.0.2.0/24", 1, 0),
+            ("IP-CIDR,", 0, 1),
+            ("IP-CIDR6,", 0, 1),
+            ("IP-CIDR,\nIP-CIDR,", 0, 1),
+        ],
+    )
+    def test_rejected_candidates_survive_gate_deduplication(self, raw, cidr_errors, unrecognized):
+        parsed = main.processor.parse_lines(raw)
+        unique = main._unique_gate_lines(parsed, "ipcidr")
+
+        rules, errors, stats = main.processor.process_ip_detailed(unique)
+
+        assert rules == []
+        assert errors.count == cidr_errors
+        assert stats["unrecognized"] == unrecognized
+
+    def test_hosts_field_does_not_share_key_with_valid_rule_payload(self):
+        parsed = main.processor.parse_lines("IP-CIDR,192.0.2.0/24\n0.0.0.0 IP-CIDR,192.0.2.0/24")
+
+        unique = main._unique_gate_lines(parsed, "ipcidr")
+        rules, errors, stats = main.processor.process_ip_detailed(unique)
+
+        assert len(unique) == 2
+        assert rules == ["192.0.2.0/24"]
+        assert errors.count == 1
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize("empty_rule", [None, "IP-CIDR,", "IP-CIDR6,"])
+    def test_empty_payload_cannot_turn_threshold_failure_into_write(self, work_dir, monkeypatch, empty_rule):
+        lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
+        if empty_rule:
+            lines.extend([empty_rule, empty_rule])
+        target = work_dir / "rulesets" / "direct" / "ipcidr" / "Owner" / "cn.txt"
+        write(target, "198.51.100.0/24\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target),
+            "policy": "direct",
+            "type": "ipcidr",
+            "members": [(0, {"url": "https://example.com/cn.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join(lines).encode()})
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "198.51.100.0/24\n"
 
 
 class TestProcessIpGroup:

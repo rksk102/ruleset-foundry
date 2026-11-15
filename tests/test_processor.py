@@ -187,6 +187,24 @@ class TestDomainCleaning:
             assert stats["unrecognized"] == 1
             assert stats["extracted_url"] == 0
 
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "DOMAIN,example.com:443",
+            "DOMAIN-SUFFIX,example.com:99999",
+            "full:example.com:8080",
+            "domain:example.com:bad",
+            "+.example.com:8080",
+            ".example.com:8080",
+        ],
+    )
+    def test_explicit_domain_port_is_rejected_without_widening_match(self, rule):
+        result, stats = processor.process_domain_detailed([rule])
+
+        assert result == []
+        assert stats["unrecognized"] == 1
+        assert stats["extracted_url"] == 0
+
     def test_bare_port_remains_backward_compatible(self):
         assert self.clean(["example.com:8080"]) == ["example.com"]
 
@@ -389,6 +407,14 @@ class TestDomainCleaningEdges:
 
 
 class TestAdblockModifierSemantics:
+    def test_anchor_without_terminal_separator_is_rejected_and_counted(self):
+        result, stats = processor.process_domain_detailed(["||example.com", "||example.com^"])
+
+        assert result == ["+.example.com"]
+        assert stats["suffix"] == 1
+        assert stats["dropped_path"] == 1
+        assert stats["unrecognized"] == 0
+
     def test_adblock_anchor_is_suffix_in_exact_source(self):
         out, stats = processor.process_domain_detailed(["||ads.example.com^"], "exact")
         assert out == ["+.ads.example.com"]
@@ -459,10 +485,12 @@ class TestAdblockModifierSemantics:
 class TestNoSilentDrop:
     DROPPED_SHAPES = (
         "@@||white.example.com^",
+        "||example.com",
         "keyword:tracker",
         r"regexp:^ads\.",
         "DOMAIN-KEYWORD,analytics",
         r"DOMAIN-REGEX,^ads\.",
+        "DOMAIN-SUFFIX,example.com:99999",
         "GEOIP,CN",
         "IP-CIDR,1.2.3.0/24",
         "steampowered.com.8686c.com @cn",
@@ -578,6 +606,17 @@ class TestParseLines:
     def test_single_base64_shaped_domain_is_not_rewritten(self):
         assert processor.parse_lines("YWJjLmRlZmV4YW1wbGVz") == ["YWJjLmRlZmV4YW1wbGVz"]
 
+    def test_base64_multiline_probe_does_not_rewrite_a_valid_single_label(self):
+        encoded = base64.b64encode(b"aaaaaaaaaa\nbbbbbbb").decode()
+
+        parsed = processor.parse_lines(encoded)
+        result, stats = processor.process_domain_detailed(parsed)
+
+        assert parsed == [encoded]
+        assert result == [encoded.lower()]
+        assert stats["bare_single_label"] == 1
+        assert stats["unrecognized"] == 0
+
     def test_base64_yaml_payload_still_decoded(self):
         encoded = base64.b64encode(b"payload:\n  - hidden.com\n").decode()
         assert processor.parse_lines(encoded) == ["hidden.com"]
@@ -615,7 +654,7 @@ class TestParseLines:
 
 
 class TestHostsHostnameConservation:
-    """ISS-04：hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
+    """hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
 
     def test_tab_separated_hosts_comment_does_not_become_rules(self):
         result, stats = processor.process_domain_detailed(
@@ -957,6 +996,39 @@ class TestMainCliContract:
 
 
 class TestYamlPayloadParsing:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '"payload":\n - good.example\n - false\n - null',
+            "'rules':\n - good.example\n - false\n - null",
+            '{"payload": [good.example, false, null]}',
+            "{rules: [good.example, false, null]}",
+            '\ufeff---\n"payload": [good.example, false, null]',
+            '"pay\\u006coad": [good.example, false, null]',
+            "%YAML 1.2\n---\nrules: [good.example, false, null]",
+        ],
+    )
+    def test_mapping_representations_keep_nonstring_rejection_counts(self, content):
+        parsed = processor.parse_lines(content)
+
+        assert parsed == ["good.example"]
+        assert parsed.yaml_errors == 2
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "payload: [missing.example]\npayload: [good.example]",
+            "rules: [missing.example]\nrules: [good.example]",
+            'payload: [missing.example]\n"payload": [good.example]',
+            "payload: [false]\npayload: [good.example]",
+            "payload: []\npayload: []",
+            "{payload: [missing.example], payload: [good.example]}",
+        ],
+    )
+    def test_duplicate_mapping_keys_fail_before_rules_can_disappear(self, content):
+        with pytest.raises(processor.YamlPayloadError, match="重复"):
+            processor.parse_lines(content)
+
     def test_multiline_flow_array(self):
         content = "payload: [\n  'a.com',\n  'b.com'\n]\n"
         assert processor.parse_lines(content) == ["a.com", "b.com"]

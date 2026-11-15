@@ -803,7 +803,7 @@ class TestFlattenIpOrdering:
 
 
 class TestFlattenIpErrorSummary:
-    """ISS-07：错误计数完整，但样本有界，内存不随错误数线性增长。"""
+    """错误计数完整，但样本有界，内存不随错误数线性增长。"""
 
     def test_hundred_thousand_errors_keep_bounded_samples(self):
         entries = [f"bad line {i}" for i in range(100_000)]
