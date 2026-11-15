@@ -924,6 +924,59 @@ class TestCombinedDropGate:
         assert "URL hostname 提取" in caplog.text
 
 
+class TestIpGateCandidateConservation:
+    @pytest.mark.parametrize(
+        ("raw", "cidr_errors", "unrecognized"),
+        [
+            ("0.0.0.0 IP-CIDR,192.0.2.0/24", 1, 0),
+            ("IP-CIDR,", 0, 1),
+            ("IP-CIDR6,", 0, 1),
+            ("IP-CIDR,\nIP-CIDR,", 0, 1),
+        ],
+    )
+    def test_rejected_candidates_survive_gate_deduplication(self, raw, cidr_errors, unrecognized):
+        parsed = main.processor.parse_lines(raw)
+        unique = main._unique_gate_lines(parsed, "ipcidr")
+
+        rules, errors, stats = main.processor.process_ip_detailed(unique)
+
+        assert rules == []
+        assert errors.count == cidr_errors
+        assert stats["unrecognized"] == unrecognized
+
+    def test_hosts_field_does_not_share_key_with_valid_rule_payload(self):
+        parsed = main.processor.parse_lines("IP-CIDR,192.0.2.0/24\n0.0.0.0 IP-CIDR,192.0.2.0/24")
+
+        unique = main._unique_gate_lines(parsed, "ipcidr")
+        rules, errors, stats = main.processor.process_ip_detailed(unique)
+
+        assert len(unique) == 2
+        assert rules == ["192.0.2.0/24"]
+        assert errors.count == 1
+        assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize("empty_rule", [None, "IP-CIDR,", "IP-CIDR6,"])
+    def test_empty_payload_cannot_turn_threshold_failure_into_write(self, work_dir, monkeypatch, empty_rule):
+        lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
+        if empty_rule:
+            lines.extend([empty_rule, empty_rule])
+        target = work_dir / "rulesets" / "direct" / "ipcidr" / "Owner" / "cn.txt"
+        write(target, "198.51.100.0/24\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target),
+            "policy": "direct",
+            "type": "ipcidr",
+            "members": [(0, {"url": "https://example.com/cn.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join(lines).encode()})
+
+        assert count is None
+        assert any("丢弃行合计占比" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "198.51.100.0/24\n"
+
+
 class TestProcessIpGroup:
     def test_domain_rules_are_counted_as_dropped_types(self):
         result, stats = main._process_ip_group(["DOMAIN-SUFFIX,ads.example.com"])
