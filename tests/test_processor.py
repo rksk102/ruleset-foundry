@@ -187,6 +187,24 @@ class TestDomainCleaning:
             assert stats["unrecognized"] == 1
             assert stats["extracted_url"] == 0
 
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "DOMAIN,example.com:443",
+            "DOMAIN-SUFFIX,example.com:99999",
+            "full:example.com:8080",
+            "domain:example.com:bad",
+            "+.example.com:8080",
+            ".example.com:8080",
+        ],
+    )
+    def test_explicit_domain_port_is_rejected_without_widening_match(self, rule):
+        result, stats = processor.process_domain_detailed([rule])
+
+        assert result == []
+        assert stats["unrecognized"] == 1
+        assert stats["extracted_url"] == 0
+
     def test_bare_port_remains_backward_compatible(self):
         assert self.clean(["example.com:8080"]) == ["example.com"]
 
