@@ -1,4 +1,8 @@
 import importlib
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,6 +84,51 @@ def test_apply_pin_rejects_invalid_metadata_before_writing(work_dir, tag, amd64,
         kernel_pin().apply_pin(path, tag, amd64, arm64)
 
     assert path.read_text(encoding="utf-8") == CONFIG
+
+
+@pytest.mark.parametrize("caller_config", [None, CONFIG.replace("v1.0.0", "v9.9.9"), "unknown: true\n"])
+def test_cli_emit_and_apply_use_repo_config_from_another_directory(work_dir, caller_config):
+    root = work_dir / "repo"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True)
+    for filename in ("kernel_pin.py", "utils.py", "config_loader.py", "convert_mrs.py", "logger.py", "mrs_format.py"):
+        shutil.copyfile(REPO / "scripts" / filename, scripts / filename)
+    config = root / "config.yaml"
+    config.write_text(CONFIG, encoding="utf-8")
+    caller = work_dir / "caller"
+    caller.mkdir()
+    if caller_config is not None:
+        (caller / "config.yaml").write_text(caller_config, encoding="utf-8")
+    output = work_dir / "github-output.txt"
+    env = dict(os.environ, GITHUB_OUTPUT=str(output))
+
+    def run(*args):
+        return subprocess.run(
+            [sys.executable, str(scripts / "kernel_pin.py"), *args],
+            cwd=caller, env=env, capture_output=True, text=True, timeout=15,
+        )
+
+    emitted = run("--emit")
+    assert emitted.returncode == 0, emitted.stdout + emitted.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "tag=v1.0.0", f"kernel_sha256={'a' * 64}", f"kernel_sha256_arm64={'b' * 64}",
+    ]
+
+    applied = run("--apply", "--tag", "v2.0.0", "--kernel-sha256", "1" * 64, "--kernel-sha256-arm64", "2" * 64)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    expected = yaml.safe_load(CONFIG)
+    expected["mihomo"].update(pinned_version="v2.0.0", kernel_sha256="1" * 64, kernel_sha256_arm64="2" * 64)
+    assert yaml.safe_load(config.read_text(encoding="utf-8")) == expected
+    if caller_config is None:
+        assert not (caller / "config.yaml").exists()
+    else:
+        assert (caller / "config.yaml").read_text(encoding="utf-8") == caller_config
+
+    emitted = run("--emit")
+    assert emitted.returncode == 0, emitted.stdout + emitted.stderr
+    assert output.read_text(encoding="utf-8").splitlines()[3:] == [
+        "tag=v2.0.0", f"kernel_sha256={'1' * 64}", f"kernel_sha256_arm64={'2' * 64}",
+    ]
 
 
 def test_emit_outputs_only_validated_pin_metadata(work_dir, monkeypatch):
