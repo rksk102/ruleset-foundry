@@ -652,7 +652,7 @@ class TestParseLines:
 
 
 class TestHostsHostnameConservation:
-    """ISS-04：hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
+    """hosts 行的每个 hostname 都必须进入输出或显式丢弃。"""
 
     def test_tab_separated_hosts_comment_does_not_become_rules(self):
         result, stats = processor.process_domain_detailed(

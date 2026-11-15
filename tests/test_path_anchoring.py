@@ -43,7 +43,7 @@ class TestVerifyFailsClosed:
 
 
 class TestBaselineRequirement:
-    """ISS-16：显式 require_baseline 时，自定义 rulesets_dir 缺失不得静默降级为告警。"""
+    """显式 require_baseline 时，自定义 rulesets_dir 缺失不得静默降级为告警。"""
 
     def paired_products(self, work_dir):
         write_paired_product(work_dir, "block/domain/Owner/a.txt")

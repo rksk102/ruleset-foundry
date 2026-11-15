@@ -1495,7 +1495,7 @@ class TestVerifyOnly:
         assert exc.value.code == 1
 
     def test_require_baseline_rejects_missing_rulesets_dir(self, verify_workspace):
-        """ISS-16：--require-baseline 时基线目录缺失必须硬失败，不得降级为告警。"""
+        """--require-baseline 时基线目录缺失必须硬失败，不得降级为告警。"""
         shutil.rmtree(verify_workspace / "rulesets")
 
         with pytest.raises(SystemExit) as exc:

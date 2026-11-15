@@ -1083,7 +1083,7 @@ class TestDownloadAll:
 
 
 class TestEmptySourceParseErrors:
-    """ISS-15：raw 非空但解析为空的成员各记一次 parse error；全空时不重复、空 raw 只汇总一次。"""
+    """raw 非空但解析为空的成员各记一次 parse error；全空时不重复、空 raw 只汇总一次。"""
 
     DEAD = "https://raw.githubusercontent.com/o/r/empty.txt"
     ALIVE = "https://raw.githubusercontent.com/o/r/ads.txt"
