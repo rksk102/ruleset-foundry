@@ -179,7 +179,7 @@ def explicit_base64_decode(text):
         decoded_str = safe_decode(decoded_bytes)
         has_yaml_head = any(_YAML_HEAD_RE.match(line) for line in decoded_str.splitlines())
         if is_text_data(decoded_str) and (
-            "\n" in decoded_str
+            ("\n" in decoded_str and not process_domain_detailed([text])[0])
             or has_yaml_head
             or _split_semantic_prefix(decoded_str)[0] is not None
             or classify_rule_line(decoded_str)[0] in ("suffix", "exact")

@@ -578,6 +578,17 @@ class TestParseLines:
     def test_single_base64_shaped_domain_is_not_rewritten(self):
         assert processor.parse_lines("YWJjLmRlZmV4YW1wbGVz") == ["YWJjLmRlZmV4YW1wbGVz"]
 
+    def test_base64_multiline_probe_does_not_rewrite_a_valid_single_label(self):
+        encoded = base64.b64encode(b"aaaaaaaaaa\nbbbbbbb").decode()
+
+        parsed = processor.parse_lines(encoded)
+        result, stats = processor.process_domain_detailed(parsed)
+
+        assert parsed == [encoded]
+        assert result == [encoded.lower()]
+        assert stats["bare_single_label"] == 1
+        assert stats["unrecognized"] == 0
+
     def test_base64_yaml_payload_still_decoded(self):
         encoded = base64.b64encode(b"payload:\n  - hidden.com\n").decode()
         assert processor.parse_lines(encoded) == ["hidden.com"]
