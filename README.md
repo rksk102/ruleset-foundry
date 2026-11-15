@@ -11,7 +11,7 @@
     <img src="https://img.shields.io/github/actions/workflow/status/rksk102/ruleset-foundry/pipeline.yml?style=flat-square&label=Build" alt="Build status">
   </a>
   <a href="https://github.com/rksk102/ruleset-foundry/releases">
-    <img src="https://img.shields.io/badge/%E4%BA%A7%E7%89%A9%E7%94%9F%E6%88%90-2026--11--15%2006%3A52-blue?style=flat-square&logo=github" alt="产物生成时间">
+    <img src="https://img.shields.io/badge/%E4%BA%A7%E7%89%A9%E7%94%9F%E6%88%90-2026--11--15%2023%3A10-blue?style=flat-square&logo=github" alt="产物生成时间">
   </a>
 </p>
 
@@ -64,7 +64,7 @@ rules:
 
 ## 产物清单
 
-共 **42** 个产物文件，合计 **27.00 MB**（.txt 19.16 MB + .mrs 7.84 MB）。引用时必须声明正确的 `behavior` 和 `format`，否则规则可能被静默解析为空：`.txt` 使用 `format: text`，`.mrs` 使用 `format: mrs`；domain 产物使用 `behavior: domain`，IP 产物使用 `behavior: ipcidr`。
+共 **42** 个产物文件，合计 **27.02 MB**（.txt 19.17 MB + .mrs 7.84 MB）。引用时必须声明正确的 `behavior` 和 `format`，否则规则可能被静默解析为空：`.txt` 使用 `format: text`，`.mrs` 使用 `format: mrs`；domain 产物使用 `behavior: domain`，IP 产物使用 `behavior: ipcidr`。
 
 | 产物 | `behavior` | `format` |
 | :--- | :--- | :--- |
@@ -77,11 +77,11 @@ rules:
 *mihomo 文本规则集*
 
 <details>
-<summary><b>21 个文件</b> | 总大小 <b>19.16 MB</b></summary>
+<summary><b>21 个文件</b> | 总大小 <b>19.17 MB</b></summary>
 
 | 文件名称 | 大小 | 下载 | GitHub raw |
 | :--- | :--- | :--- | :--- |
-| <sub>block/domain/DustinWin</sub><br><b>ads.txt</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `2.04 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules/block/domain/DustinWin/ads.txt"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download ads.txt"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules/block/domain/DustinWin/ads.txt"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw ads.txt"></a> |
+| <sub>block/domain/DustinWin</sub><br><b>ads.txt</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `2.06 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules/block/domain/DustinWin/ads.txt"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download ads.txt"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules/block/domain/DustinWin/ads.txt"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw ads.txt"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>reject-list.txt</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `4.39 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules/block/domain/Loyalsoldier/reject-list.txt"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download reject-list.txt"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules/block/domain/Loyalsoldier/reject-list.txt"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw reject-list.txt"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>reject.txt</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `4.39 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules/block/domain/Loyalsoldier/reject.txt"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download reject.txt"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules/block/domain/Loyalsoldier/reject.txt"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw reject.txt"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>win-extra.txt</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `11.67 KB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules/block/domain/Loyalsoldier/win-extra.txt"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download win-extra.txt"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules/block/domain/Loyalsoldier/win-extra.txt"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw win-extra.txt"></a> |
@@ -114,7 +114,7 @@ rules:
 
 | 文件名称 | 大小 | 下载 | GitHub raw |
 | :--- | :--- | :--- | :--- |
-| <sub>block/domain/DustinWin</sub><br><b>ads.mrs</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `850.65 KB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules-mrs/block/domain/DustinWin/ads.mrs"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download ads.mrs"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules-mrs/block/domain/DustinWin/ads.mrs"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw ads.mrs"></a> |
+| <sub>block/domain/DustinWin</sub><br><b>ads.mrs</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `858.22 KB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules-mrs/block/domain/DustinWin/ads.mrs"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download ads.mrs"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules-mrs/block/domain/DustinWin/ads.mrs"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw ads.mrs"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>reject-list.mrs</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `1.85 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules-mrs/block/domain/Loyalsoldier/reject-list.mrs"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download reject-list.mrs"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules-mrs/block/domain/Loyalsoldier/reject-list.mrs"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw reject-list.mrs"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>reject.mrs</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `1.85 MB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules-mrs/block/domain/Loyalsoldier/reject.mrs"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download reject.mrs"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules-mrs/block/domain/Loyalsoldier/reject.mrs"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw reject.mrs"></a> |
 | <sub>block/domain/Loyalsoldier</sub><br><b>win-extra.mrs</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | `3.41 KB` | <a href="https://cdn.jsdelivr.net/gh/rksk102/ruleset-foundry@artifacts/merged-rules-mrs/block/domain/Loyalsoldier/win-extra.mrs"><img src="https://img.shields.io/badge/Download-34D399?style=flat-square" alt="Download win-extra.mrs"></a> | <a href="https://raw.githubusercontent.com/rksk102/ruleset-foundry/artifacts/merged-rules-mrs/block/domain/Loyalsoldier/win-extra.mrs"><img src="https://img.shields.io/badge/Source-181717?style=flat-square&logo=github" alt="GitHub raw win-extra.mrs"></a> |
