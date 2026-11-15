@@ -7,9 +7,8 @@ from pathlib import Path
 
 import yaml
 from config_loader import ConfigError, load_config
-from convert_mrs import _set_config_field
 from logger import gh_error
-from utils import is_safe_component
+from utils import anchor_cwd_to_repo_root, is_safe_component
 
 _PIN_KEYS = ("pinned_version", "kernel_sha256", "kernel_sha256_arm64")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -42,6 +41,8 @@ def read_metadata(path="config.yaml"):
 
 
 def apply_pin(path, tag, kernel_sha256, kernel_sha256_arm64):
+    from convert_mrs import _set_config_field
+
     metadata = validate_metadata(tag, kernel_sha256, kernel_sha256_arm64)
     path = Path(path)
     original_text = path.read_text(encoding="utf-8")
@@ -91,4 +92,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
     main()
