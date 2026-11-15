@@ -422,6 +422,20 @@ class DomainTrie:
                 best_order = order
         return best
 
+    def intersecting_wildcard(self, entry):
+        if not entry.startswith("*."):
+            return self.covering_wildcard(entry)
+        labels = entry.split(".")
+        stars = 0
+        while stars < len(labels) and labels[stars] == "*":
+            stars += 1
+        fixed = tuple(labels[stars:])
+        depth = len(labels)
+        candidates = list(self._wildcard_suffix.get(fixed, {}).get(depth, ()))
+        for start in range(len(fixed) + 1):
+            candidates.extend(self._wildcard_fixed.get(fixed[start:], {}).get(depth, ()))
+        return min(candidates, key=lambda record: record[0])[3] if candidates else None
+
     def _walk(self, domain):
         node = self._root
         for matched, part in enumerate(reversed(domain.split(".")), 1):

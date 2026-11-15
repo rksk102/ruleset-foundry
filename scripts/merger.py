@@ -333,7 +333,7 @@ def detect_cross_policy_conflicts(merged_dir):
                 if ancestor:
                     items.append((domain, ancestor))
                     continue
-                wildcard = parent_trie.covering_wildcard(domain)
+                wildcard = parent_trie.intersecting_wildcard(domain)
                 if wildcard:
                     items.append((domain, wildcard))
             if items:
