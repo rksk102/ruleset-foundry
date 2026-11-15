@@ -398,7 +398,7 @@ def get_latest_mihomo(skip_hash_check=False):
                 return
 
         # 固定 pin 时必须显式按配置 tag 取同一 release 的资产：若在 prepare 之后上游 latest 前进，
-        # 用 latest 的新资产去比配置里的旧 SHA 会永久错配（ISS-06）。
+        # 用 latest 的新资产去比配置里的旧 SHA 会永久错配。
         data = _fetch_latest_release_info(pinned=PINNED_VERSION)
         tag_name = data.get("tag_name", "") if isinstance(data, dict) else ""
         if PINNED_VERSION and tag_name != PINNED_VERSION:
@@ -684,7 +684,7 @@ def main():
     start_time = time.time()
     ensure_products_anchored()
 
-    # 源目录缺失时必须在清理输出目录之前失败，旧 MRS 逐字节保留（ISS-10）。
+    # 源目录缺失时必须在清理输出目录之前失败，旧 MRS 逐字节保留。
     if not os.path.exists(SRC_ROOT):
         error(f"源目录 {SRC_ROOT} 不存在！")
         sys.exit(1)

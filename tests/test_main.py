@@ -613,7 +613,7 @@ class TestParseSources:
 
 
 class TestSourceTargetRejection:
-    """ISS-02/18：来源不得含 userinfo，且只能是 443 上的公网目标。"""
+    """来源不得含 userinfo，且只能是 443 上的公网目标。"""
 
     def load(self, tmp_path, content):
         target = tmp_path / "sources.urls"
@@ -739,7 +739,7 @@ class TestProcessGroupGates:
 
 
 class TestCombinedDropGate:
-    """ISS-03：未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
+    """未识别 + 意外丢弃共用一个分子，阈值与绝对下限只应用一次。"""
 
     DOMAIN_GROUP: ClassVar[dict] = {
         "path": "rulesets/block/domain/Owner/ads.txt",
