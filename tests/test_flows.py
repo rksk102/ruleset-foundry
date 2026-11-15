@@ -124,6 +124,31 @@ class TestMainFlow:
         ]
         assert self.manifest_entries(rulesets) == before
 
+    @pytest.mark.parametrize("defect", ["hosts", "empty-payload"])
+    def test_rejected_ip_inputs_preserve_previous_generation(self, monkeypatch, work_dir, defect):
+        sources = "[policy:direct]\n[type:ipcidr]\nhttps://raw.githubusercontent.com/o/keep/keep.txt\n"
+        rulesets = self.setup_run(
+            monkeypatch, work_dir, sources=sources, payloads={"keep.txt": b"198.51.100.0/24\n"}
+        )
+        main.main()
+        product = rulesets / "direct" / "ipcidr" / "o" / "keep.txt"
+        before_product = product.read_bytes()
+        before_manifest = (rulesets / "products.manifest").read_bytes()
+        if defect == "hosts":
+            raw = b"0.0.0.0 IP-CIDR,192.0.2.0/24\n"
+        else:
+            lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
+            raw = ("\n".join(lines) + "\nIP-CIDR,\n").encode()
+        self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert product.read_bytes() == before_product
+        assert (rulesets / "products.manifest").read_bytes() == before_manifest
+        assert not list(rulesets.glob(".staging-*"))
+
     def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
         main.main()
