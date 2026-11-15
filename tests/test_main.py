@@ -888,9 +888,10 @@ class TestCombinedDropGate:
         assert errors["parse"]
         assert writes == []
 
-    def test_domain_yaml_item_rejections_reach_drop_gate(self, monkeypatch):
+    @pytest.mark.parametrize("head", ["payload", '"payload"', "'rules'"])
+    def test_domain_yaml_item_rejections_reach_drop_gate(self, monkeypatch, head):
         monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
-        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "good.com"]'
+        raw = head + ": [" + ", ".join(map(str, range(20))) + ', "good.com"]'
         count, errors, writes = self.run_group(self.DOMAIN_GROUP, [raw], monkeypatch)
 
         assert count is None
@@ -905,9 +906,10 @@ class TestCombinedDropGate:
         assert errors["parse"] == []
         assert len(writes) == 1
 
-    def test_yaml_item_rejections_reach_ip_drop_gate(self, monkeypatch):
+    @pytest.mark.parametrize("head", ["payload", '"payload"', "'rules'"])
+    def test_yaml_item_rejections_reach_ip_drop_gate(self, monkeypatch, head):
         monkeypatch.setattr(main, "ALLOW_PARTIAL", True)
-        raw = "payload: [" + ", ".join(map(str, range(20))) + ', "1.1.1.0/24"]'
+        raw = head + ": [" + ", ".join(map(str, range(20))) + ', "1.1.1.0/24"]'
         count, errors, writes = self.run_group(self.IP_GROUP, [raw], monkeypatch)
 
         assert count is None
