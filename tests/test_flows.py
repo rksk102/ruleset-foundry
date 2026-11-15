@@ -1,5 +1,6 @@
 """进程内驱动 main() 与 convert_mrs.main()：补上编排路径的覆盖（T-1）。"""
 
+import base64
 import hashlib
 import os
 import subprocess
@@ -172,6 +173,18 @@ class TestMainFlow:
         assert exc.value.code == 1
         assert product.read_bytes() == before_product
         assert (rulesets / "products.manifest").read_bytes() == before_manifest
+
+    def test_base64_shaped_domain_is_written_with_its_original_match(self, monkeypatch, work_dir):
+        raw = base64.b64encode(b"aaaaaaaaaa\nbbbbbbb")
+        sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
+        rulesets = self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
+
+        main.main()
+
+        product = rulesets / "block" / "domain" / "o" / "keep.txt"
+        rules = [line for line in product.read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+        assert rules == [raw.decode().lower()]
+        assert manifest.verify_manifest(manifest.load_manifest(rulesets / "products.manifest"), rulesets, "sync")
 
     def test_min_success_ratio_gate_blocks_publish(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
