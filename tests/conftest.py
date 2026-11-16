@@ -21,9 +21,10 @@ def _isolate_config_loader(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_github_env(monkeypatch):
-    """CI 会设置运行标识；测试用固定 generation 清单，需保持环境无关。"""
+    """隔离 CI 运行标识与构建 SHA，避免依赖外部环境和本地 Git 状态。"""
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
 
 
 @pytest.fixture(autouse=True)

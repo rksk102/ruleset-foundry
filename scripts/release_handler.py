@@ -904,6 +904,24 @@ def generate_release_notes(tag_date, tag_time, file_map):
     return notes
 
 
+def _build_commit_sha():
+    sha = os.getenv("GITHUB_SHA")
+    if sha is None:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT or None,
+                capture_output=True, text=True, check=True, timeout=GH_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            warning(f"  无法确认构建提交，拒绝创建 Release: {exc}")
+            return None
+        sha = result.stdout.strip()
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", sha):
+        warning("  构建提交必须为完整 SHA，拒绝创建 Release")
+        return None
+    return sha.lower()
+
+
 def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=None):
     assets = [zip_file, *(extra_assets or [])]
     if exists:
@@ -921,6 +939,9 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             ]
         )
 
+    target = _build_commit_sha()
+    if target is None:
+        return None
     return run_gh(
         [
             "release",
@@ -931,6 +952,8 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             title,
             "--notes",
             notes,
+            "--target",
+            target,
             "--latest=false",
         ]
     )

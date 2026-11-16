@@ -557,6 +557,88 @@ class TestZipTargetFiles:
 
 
 class TestPublishRelease:
+    def test_new_release_targets_build_sha_instead_of_moving_default_branch(self, monkeypatch):
+        build_sha = "a" * 40
+        local_sha = "b" * 40
+        monkeypatch.setenv("GITHUB_SHA", build_sha)
+        monkeypatch.setattr(
+            release_handler.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, local_sha + "\n", ""),
+        )
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result == "ok"
+        create = stub.calls[0]
+        assert "--target" in create
+        assert create[create.index("--target") + 1] == build_sha
+        assert "--latest=false" in create
+
+    def test_local_creation_resolves_full_sha_from_repo_head(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_SHA", raising=False)
+        sha = "c" * 40
+        git_calls = []
+
+        def run(command, **kwargs):
+            git_calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, sha + "\n", "")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", run)
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result == "ok"
+        assert git_calls[0][0] == ["git", "rev-parse", "HEAD"]
+        assert git_calls[0][1]["cwd"] == release_handler.REPO_ROOT
+        create = stub.calls[0]
+        assert create[create.index("--target") + 1] == sha
+
+    @pytest.mark.parametrize("sha", ["", "abc123", "main", "a" * 41])
+    def test_invalid_build_sha_prevents_remote_creation(self, monkeypatch, sha):
+        monkeypatch.setenv("GITHUB_SHA", sha)
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result is None
+        assert stub.calls == []
+
+    def test_unavailable_local_head_prevents_remote_creation(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_SHA", raising=False)
+
+        def fail(command, **kwargs):
+            raise subprocess.CalledProcessError(128, command, stderr="not a git repository")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", fail)
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result is None
+        assert stub.calls == []
+
+    def test_existing_release_keeps_tag_when_build_sha_changes(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_SHA", "invalid-for-new-release")
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, True),
+        )
+
+        assert result == "ok"
+        assert stub.release_actions() == ["upload", "edit"]
+        assert not any("--target" in call or "--latest" in call for call in stub.calls)
+
     def test_existing_release_updates_in_place(self):
         stub = GhStub()
         result = run_with_stub(
@@ -597,7 +679,11 @@ class TestPublishRelease:
         create = next(c for c in stub.calls if c[1] == "create")
         assert ZIP in create and "SHA256SUMS" in create
 
-    def test_missing_release_created(self):
+    def test_missing_release_created(self, monkeypatch):
+        def unexpected_process(*args, **kwargs):
+            raise AssertionError("普通发布测试不应读取真实 Git HEAD 或启动外部进程")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", unexpected_process)
         stub = GhStub()
         result = run_with_stub(
             stub,
@@ -606,6 +692,7 @@ class TestPublishRelease:
         assert result == "ok"
         assert len(stub.calls) == 1
         assert stub.calls[0][:4] == ["release", "create", "rules-2026-10-05", ZIP]
+        assert stub.calls[0][stub.calls[0].index("--target") + 1] == "a" * 40
         assert "--latest" not in stub.calls[0]
         assert "--latest=false" in stub.calls[0]
 
@@ -663,6 +750,22 @@ def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
 
 
 class TestMainOrchestration:
+    def test_invalid_build_sha_does_not_create_release_or_advance_state(self, publish_workspace, monkeypatch):
+        monkeypatch.setenv("GITHUB_SHA", "short-sha")
+        saved = []
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        stub = GhStub(release_exists=False)
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(stub, release_handler.main)
+
+        assert exc.value.code == 1
+        assert "create" not in stub.release_actions()
+        assert not any("--latest" in call for call in stub.calls)
+        assert saved == []
+        assert not list(publish_workspace.glob("merged-rules-*.zip"))
+        assert not (publish_workspace / "SHA256SUMS").exists()
+
     def test_publishes_when_hash_changed(self, publish_workspace, monkeypatch):
         stub = GhStub(responses={"release": "ok"})
         saved = []
