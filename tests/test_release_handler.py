@@ -168,6 +168,29 @@ def patch_remote_release(monkeypatch, stub):
     monkeypatch.setattr(release_handler, "run_gh_bytes", download, raising=False)
 
 
+class TestReleaseAssetOutput:
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            ("rules.zip\t\nSHA256SUMS\t\n", {"rules.zip": "", "SHA256SUMS": ""}),
+            ("rules.zip\tsha256:abcd\nSHA256SUMS\t\n", {"rules.zip": "sha256:abcd", "SHA256SUMS": ""}),
+            ("rules.zip\t\nSHA256SUMS\tsha256:abcd\n", {"rules.zip": "", "SHA256SUMS": "sha256:abcd"}),
+            ("rules.zip\tsha256:abcd\n", {"rules.zip": "sha256:abcd"}),
+            ("rules.zip\t\r\nSHA256SUMS\t\r\n", {"rules.zip": "", "SHA256SUMS": ""}),
+            ("rules.zip\n", None),
+            ("rules.zip\t\textra\n", None),
+        ],
+        ids=["all-empty", "last-empty", "first-empty", "digest", "crlf", "missing-field", "extra-field"],
+    )
+    def test_process_output_preserves_empty_fields_and_rejects_bad_records(self, monkeypatch, output, expected):
+        monkeypatch.setattr(
+            release_handler.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, output, ""),
+        )
+
+        assert release_handler.release_assets("rules-test") == expected
+
+
 class TestParseSha256sums:
     def test_duplicate_path_is_rejected(self):
         text = f"{'a' * 64}  a.txt\n{'b' * 64}  a.txt\n"
@@ -777,6 +800,58 @@ class TestMainOrchestration:
         assert "upload" not in actions and "create" not in actions
         assert actions.count("edit") == 1
         assert saved == [product_hash]
+
+    @pytest.mark.parametrize("corrupt", [False, True], ids=["matching-content", "wrong-content"])
+    def test_empty_digests_at_process_boundary_keep_reuse_and_confirmation_safe(
+        self, publish_workspace, monkeypatch, corrupt,
+    ):
+        product_hash = release_handler.combined_products_hash(
+            *release_handler.product_dirs(), format_tag=manifest.MANIFEST_MAGIC,
+        )[0]
+        tag_id = release_handler.release_id_for_hash(product_hash)
+        stub, _zip = remote_release_stub(
+            publish_workspace, tag_id, empty_digests=True,
+            corrupt_file="merged-rules/block/domain/A/x.txt" if corrupt else None,
+        )
+        stub.latest_tag = f"rules-{tag_id}"
+        saved = []
+        downloaded = []
+
+        def run(command, **kwargs):
+            output = stub(command[1:], strip=False)
+            if output is None:
+                raise subprocess.CalledProcessError(1, command, stderr="not found")
+            return subprocess.CompletedProcess(command, 0, output + "\n", "")
+
+        def download(command, max_bytes=None):
+            name = command[command.index("-p") + 1]
+            data = stub.asset_bytes[name]
+            downloaded.append(name)
+            assert max_bytes is not None and len(data) <= max_bytes
+            return data
+
+        monkeypatch.setattr(release_handler.subprocess, "run", run)
+        monkeypatch.setattr(release_handler, "run_gh_bytes", download)
+        monkeypatch.setattr(release_handler, "load_last_hash", lambda: saved[-1] if saved else "previous")
+        monkeypatch.setattr(release_handler, "save_last_hash", saved.append)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        monkeypatch.setattr(sys, "argv", ["release_handler.py"])
+
+        if corrupt:
+            with pytest.raises(SystemExit) as exc:
+                release_handler.main()
+            assert exc.value.code == 1
+            assert saved == []
+            assert not any("--latest" in call for call in stub.calls)
+        else:
+            release_handler.main()
+            release_handler.main()
+            assert saved == [product_hash]
+            assert "create" not in stub.release_actions()
+            assert "upload" not in stub.release_actions()
+            assert "--clobber" not in [arg for call in stub.calls for arg in call]
+        assert "SHA256SUMS" in downloaded
+        assert f"merged-rules-{tag_id}.zip" in downloaded
 
     def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
         stub = GhStub(latest_tag=expected_tag("same"))

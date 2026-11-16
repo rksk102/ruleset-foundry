@@ -83,7 +83,8 @@ def release_assets(release_tag):
             f"repos/{{owner}}/{{repo}}/releases/tags/{release_tag}",
             "--jq",
             '.assets[] | [.name, (.digest // "")] | @tsv',
-        ]
+        ],
+        strip=False,
     )
     if raw is None:
         return None
