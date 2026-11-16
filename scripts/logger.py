@@ -65,14 +65,9 @@ def _resolve_log_file():
     if _LOG_FILE is not None:
         return _LOG_FILE
 
-    log_dir_name = "logs"
-    try:
-        from config_loader import get
+    from config_loader import get
 
-        log_dir_name = get("paths", "log_dir", default="logs") or "logs"
-    except Exception:
-        pass
-
+    log_dir_name = get("paths", "log_dir", default="logs") or "logs"
     log_dir = Path(log_dir_name)
     log_dir.mkdir(parents=True, exist_ok=True)
     _LOG_FILE = log_dir / f"run-{beijing_now().strftime('%Y%m%d-%H%M%S')}.log"
@@ -99,8 +94,6 @@ def _init_logger():
     if _logger is not None:
         return
 
-    log_file = _resolve_log_file()
-
     _logger = logging.getLogger("mihomo-rules")
     _logger.setLevel(logging.DEBUG)
     _logger.handlers.clear()
@@ -110,7 +103,12 @@ def _init_logger():
     console.setFormatter(logging.Formatter("%(message)s"))
     _logger.addHandler(console)
 
-    _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
+    try:
+        log_file = _resolve_log_file()
+        _log_file_handle = logging.FileHandler(str(log_file), encoding="utf-8")
+    except Exception as exc:
+        _logger.warning(f"[警告] 文件日志不可用，仅输出到控制台: {_render(exc)}")
+        return
     _log_file_handle.setLevel(logging.DEBUG)
     _log_file_handle.setFormatter(
         _BeijingFormatter(
