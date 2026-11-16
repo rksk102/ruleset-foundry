@@ -62,6 +62,16 @@ class CidrErrorSummary(NamedTuple):
     samples: tuple[tuple[str, str], ...]
 
 
+def parse_ip_network(entry, strict=False, extract=False):
+    candidate = entry.strip()
+    if extract:
+        match = _IP_CANDIDATE_RE.search(candidate)
+        if not match:
+            raise ValueError("未找到 IP/CIDR")
+        candidate = match.group(1)
+    return ipaddress.ip_network(candidate, strict=strict)
+
+
 def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes=None):
     ipv4_nets = []
     ipv6_nets = []
@@ -73,18 +83,8 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
         if not text:
             continue
 
-        candidate = text
-        if extract:
-            match = _IP_CANDIDATE_RE.search(text)
-            if not match:
-                error_count += 1
-                if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
-                    error_samples.append((text, "未找到 IP/CIDR"))
-                continue
-            candidate = match.group(1)
-
         try:
-            net = ipaddress.ip_network(candidate, strict=strict)
+            net = parse_ip_network(text, strict=strict, extract=extract)
         except ValueError as e:
             error_count += 1
             if len(error_samples) < IP_CIDR_ERROR_SAMPLES:
