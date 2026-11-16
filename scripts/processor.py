@@ -5,6 +5,7 @@ import re
 import sys
 from urllib.parse import urlsplit
 
+import mrs_format
 import utils
 
 _SUFFIX_TYPES = {"DOMAIN-SUFFIX", "HOST-SUFFIX"}
@@ -368,6 +369,14 @@ def parse_lines(raw_content):
     return _expand_hosts_entries(lines)
 
 
+def _valid_mrs_domain(rule):
+    try:
+        mrs_format.domain_text_keys(rule)
+    except (mrs_format.MrsFormatError, UnicodeError):
+        return False
+    return True
+
+
 def _record_domain(s, semantic, domain_kind, stats, valid_domains):
     """把已确定语义的候选记入统计与输出集合；不能作为域名识别的计入一次未识别。"""
     s = s.strip().lower()
@@ -375,6 +384,15 @@ def _record_domain(s, semantic, domain_kind, stats, valid_domains):
         stats["unrecognized"] += 1
         return
     if _is_ip_literal(s):
+        stats["unrecognized"] += 1
+        return
+    if semantic == "suffix" or (semantic is None and domain_kind == "suffix"):
+        rule = "+." + s
+    elif semantic == "subdomain":
+        rule = "." + s
+    else:
+        rule = s
+    if not _valid_mrs_domain(rule):
         stats["unrecognized"] += 1
         return
     if "." not in s:
@@ -499,7 +517,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             stats["dropped_path"] += 1
             continue
         if re.match(r"^\*\.", s):
-            if semantic in ("exact", "suffix") or not _valid_wildcard(s):
+            if semantic in ("exact", "suffix") or not _valid_wildcard(s) or not _valid_mrs_domain(s.lower()):
                 stats["unrecognized"] += 1
                 continue
             semantic = "wildcard"

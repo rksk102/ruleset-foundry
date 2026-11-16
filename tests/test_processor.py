@@ -278,6 +278,17 @@ class TestDomainCleaning:
         assert out == [valid]
         assert stats["unrecognized"] == 0
 
+    @pytest.mark.parametrize(
+        "value",
+        [".".join(["例" * 50] * 4 + ["com"]), "*." * 130 + "example.com"],
+        ids=["unicode-utf8", "wildcard-labels"],
+    )
+    def test_mrs_overlong_representation_is_rejected_and_counted(self, value):
+        out, stats = processor.process_domain_detailed([value])
+
+        assert out == []
+        assert stats["unrecognized"] == 1
+
     def test_single_label_and_underscore_length_limits_preserved(self):
         out, stats = processor.process_domain_detailed(["_" + "a" * 62, "*." + "a" * 63 + ".com"])
         assert out == ["*." + "a" * 63 + ".com", "_" + "a" * 62]

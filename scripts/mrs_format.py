@@ -279,7 +279,9 @@ def validate_mrs(path, behavior):
     return read_mrs(path, behavior).count
 
 
-def _domain_text_key(rule):
+def domain_text_keys(rule):
+    if len(rule) > MAX_DOMAIN_KEY_BYTES:
+        raise MrsFormatError("TXT 域名键超过长度上限")
     if not rule or rule != rule.strip() or rule.endswith(".") or "/" in rule:
         raise MrsFormatError(f"TXT 含内核无法接受的域名规则: {rule!r}")
     parts = rule.lower().split(".")
@@ -293,10 +295,14 @@ def _domain_text_key(rule):
         if "*" in part and part != "*":
             raise MrsFormatError(f"TXT 通配符必须占据完整标签: {rule!r}")
     if parts[0] == "+":
-        return frozenset((rule[2:].lower()[::-1].encode(), rule.lower()[::-1].encode()))
-    if parts[0] == "":
-        return frozenset((("+." + rule[1:]).lower()[::-1].encode(),))
-    return frozenset((rule.lower()[::-1].encode(),))
+        keys = frozenset((rule[2:].lower()[::-1].encode(), rule.lower()[::-1].encode()))
+    elif parts[0] == "":
+        keys = frozenset((("+." + rule[1:]).lower()[::-1].encode(),))
+    else:
+        keys = frozenset((rule.lower()[::-1].encode(),))
+    if any(len(key) > MAX_DOMAIN_KEY_BYTES for key in keys):
+        raise MrsFormatError("TXT 域名键超过长度上限")
+    return keys
 
 
 def _text_network(rule):
@@ -337,7 +343,7 @@ def verify_product_pair(txt_path, mrs_path, behavior):
             rule = line.strip()
             if not rule or rule.startswith("#") or rule.startswith("//"):
                 continue
-            keys.update(_domain_text_key(rule))
+            keys.update(domain_text_keys(rule))
             count += 1
         if count != actual.count or keys != actual.keys:
             raise MrsFormatError(f"TXT/MRS 内容不对应: {txt_path} <-> {mrs_path}")

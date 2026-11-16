@@ -927,6 +927,23 @@ class TestCombinedDropGate:
 
 
 class TestDomainSyntaxGate:
+    def test_mrs_overlong_candidates_reach_gate_and_preserve_previous_output(self, work_dir, monkeypatch):
+        long_domain = ".".join(["例" * 50] * 4 + ["com"])
+        rejected = [f"{index}.{long_domain}" for index in range(20)]
+        target = work_dir / "rulesets/block/domain/Owner/ads.txt"
+        write(target, "old.example\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target), "policy": "block", "type": "domain",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join([*rejected, "good.example"]).encode()})
+
+        assert count is None
+        assert any("20/21" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "old.example\n"
+
     @pytest.mark.parametrize("syntax", ["port", "adblock"])
     def test_unexpressible_domain_syntax_reaches_drop_gate(self, monkeypatch, work_dir, syntax):
         if syntax == "port":
