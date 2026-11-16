@@ -19,6 +19,9 @@ from utils import (
     redact_url_userinfo,
 )
 
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
+
 try:
     SOURCE_DIR = get("paths", "rulesets_dir", default="rulesets")
     OUTPUT_DIR = get("paths", "merged_output_dir", default="merged-rules")
@@ -579,5 +582,4 @@ def main():
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()

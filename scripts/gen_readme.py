@@ -20,6 +20,9 @@ from utils import (
 )
 
 REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
+
 try:
     DIR_RULES = os.path.join(REPO_ROOT, get("paths", "merged_output_dir", default="merged-rules"))
     DIR_MRS = os.path.join(REPO_ROOT, get("paths", "mrs_output_dir", default="merged-rules-mrs"))
@@ -425,5 +428,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()

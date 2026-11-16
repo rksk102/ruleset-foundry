@@ -31,6 +31,9 @@ from utils import (
     is_safe_component,
 )
 
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
+
 try:
     SRC_ROOT = get("paths", "merged_output_dir", default="merged-rules")
     DST_ROOT = get("paths", "mrs_output_dir", default="merged-rules-mrs")
@@ -802,5 +805,4 @@ def main():
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()

@@ -36,6 +36,9 @@ from utils import (
     redact_url_userinfo,
 )
 
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
+
 try:
     SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
     RULESETS_DIR = Path(get("paths", "rulesets_dir", default="rulesets"))
@@ -1352,5 +1355,4 @@ def _main_locked():
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()
