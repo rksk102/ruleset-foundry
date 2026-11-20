@@ -169,6 +169,8 @@ class GhStub:
         key = (cmd[0], cmd[1]) if len(cmd) > 1 else (cmd[0],)
         if key in self.responses:
             return self.responses[key]
+        if cmd[0] == "api" and len(cmd) > 1 and "/git/matching-refs/tags/" in cmd[1]:
+            return ""
         if key == ("release", "list"):
             if self.latest_tag:
                 return json.dumps([{"tagName": self.latest_tag, "isLatest": True}])

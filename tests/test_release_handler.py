@@ -572,10 +572,52 @@ class TestPublishRelease:
         )
 
         assert result == "ok"
-        create = stub.calls[0]
+        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
         assert "--target" in create
         assert create[create.index("--target") + 1] == build_sha
         assert "--latest=false" in create
+
+    def test_orphan_tag_with_different_target_prevents_remote_creation(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+        endpoint = "repos/{owner}/{repo}/git/matching-refs/tags/rules-test"
+        stub = GhStub(responses={("api", endpoint): f"commit\t{'b' * 40}"})
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result is None
+        assert stub.release_actions() == []
+
+    def test_orphan_tag_target_lookup_failure_prevents_remote_creation(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+        stub = GhStub(fail_when=lambda cmd: cmd[0] == "api" and "matching-refs/tags/rules-test" in cmd[1])
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result is None
+        assert stub.release_actions() == []
+
+    def test_matching_annotated_orphan_tag_allows_release_creation(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+        endpoint = "repos/{owner}/{repo}/git/matching-refs/tags/rules-test"
+        object_endpoint = f"repos/{{owner}}/{{repo}}/git/tags/{'b' * 40}"
+        stub = GhStub(
+            responses={
+                ("api", endpoint): f"tag\t{'b' * 40}",
+                ("api", object_endpoint): f"commit\t{'a' * 40}",
+            }
+        )
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result == "ok"
+        assert stub.calls[0][:2] == ["api", endpoint]
+        assert stub.release_actions() == ["create"]
 
     def test_local_creation_resolves_full_sha_from_repo_head(self, monkeypatch):
         monkeypatch.delenv("GITHUB_SHA", raising=False)
@@ -596,7 +638,7 @@ class TestPublishRelease:
         assert result == "ok"
         assert git_calls[0][0] == ["git", "rev-parse", "HEAD"]
         assert git_calls[0][1]["cwd"] == release_handler.REPO_ROOT
-        create = stub.calls[0]
+        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
         assert create[create.index("--target") + 1] == sha
 
     @pytest.mark.parametrize("sha", ["", "abc123", "main", "a" * 41])
@@ -690,11 +732,12 @@ class TestPublishRelease:
             lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, False),
         )
         assert result == "ok"
-        assert len(stub.calls) == 1
-        assert stub.calls[0][:4] == ["release", "create", "rules-2026-10-05", ZIP]
-        assert stub.calls[0][stub.calls[0].index("--target") + 1] == "a" * 40
-        assert "--latest" not in stub.calls[0]
-        assert "--latest=false" in stub.calls[0]
+        assert stub.release_actions() == ["create"]
+        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
+        assert create[:4] == ["release", "create", "rules-2026-10-05", ZIP]
+        assert create[create.index("--target") + 1] == "a" * 40
+        assert "--latest" not in create
+        assert "--latest=false" in create
 
     def test_upload_failure_skips_edit(self):
         stub = GhStub(fail_when=lambda cmd: cmd[1] == "upload")
@@ -755,6 +798,27 @@ class TestMainOrchestration:
         saved = []
         stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
         stub = GhStub(release_exists=False)
+
+        with pytest.raises(SystemExit) as exc:
+            run_with_stub(stub, release_handler.main)
+
+        assert exc.value.code == 1
+        assert "create" not in stub.release_actions()
+        assert not any("--latest" in call for call in stub.calls)
+        assert saved == []
+        assert not list(publish_workspace.glob("merged-rules-*.zip"))
+        assert not (publish_workspace / "SHA256SUMS").exists()
+
+    def test_mismatched_orphan_tag_does_not_create_release_or_advance_state(self, publish_workspace, monkeypatch):
+        product_hash = "e" * 64
+        release_id = release_handler.release_id_for_hash(product_hash)
+        endpoint = f"repos/{{owner}}/{{repo}}/git/matching-refs/tags/rules-{release_id}"
+        saved = []
+        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
+        stub = GhStub(
+            release_exists=False,
+            responses={("api", endpoint): f"commit\t{'b' * 40}"},
+        )
 
         with pytest.raises(SystemExit) as exc:
             run_with_stub(stub, release_handler.main)

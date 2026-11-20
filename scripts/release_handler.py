@@ -355,11 +355,7 @@ def _parse_tag_object(raw):
     return obj_type, obj_sha
 
 
-def tag_commit_sha(tag):
-    """tag 最终指向的提交 SHA；annotated tag 逐层解引用，无法确认时返回 None。"""
-    target = _parse_tag_object(
-        run_gh(["api", f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}", "--jq", TAG_OBJECT_JQ])
-    )
+def _deref_tag_commit(target):
     for _ in range(TAG_DEREF_LIMIT):
         if target is None:
             return None
@@ -372,6 +368,39 @@ def tag_commit_sha(tag):
             run_gh(["api", f"repos/{{owner}}/{{repo}}/git/tags/{obj_sha}", "--jq", TAG_OBJECT_JQ])
         )
     return None
+
+
+def tag_commit_sha(tag):
+    """tag 最终指向的提交 SHA；annotated tag 逐层解引用，无法确认时返回 None。"""
+    return _deref_tag_commit(
+        _parse_tag_object(
+            run_gh(["api", f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}", "--jq", TAG_OBJECT_JQ])
+        )
+    )
+
+
+def new_release_tag_target_valid(tag, expected_sha):
+    """tag 不存在或最终指向 expected_sha 时才允许创建 Release。"""
+    # matching-refs 以空列表表示不存在，避免把单 ref 的 404 与查询失败混为一谈。
+    raw = run_gh(
+        [
+            "api",
+            f"repos/{{owner}}/{{repo}}/git/matching-refs/tags/{tag}",
+            "--paginate",
+            "--jq",
+            f'.[] | select(.ref == "refs/tags/{tag}") | {TAG_OBJECT_JQ}',
+        ]
+    )
+    if raw is None:
+        warning(f"  无法确认同名 tag 是否存在，拒绝创建 Release: {tag}")
+        return False
+    if not raw:
+        return True
+    actual_sha = _deref_tag_commit(_parse_tag_object(raw))
+    if actual_sha != expected_sha:
+        warning(f"  同名 tag 目标不匹配或无法确认，拒绝创建 Release: {tag}（{actual_sha or '未知'} != {expected_sha}）")
+        return False
+    return True
 
 
 def commit_time(sha):
@@ -941,6 +970,8 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
 
     target = _build_commit_sha()
     if target is None:
+        return None
+    if not new_release_tag_target_valid(release_tag, target):
         return None
     return run_gh(
         [
