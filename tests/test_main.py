@@ -895,7 +895,7 @@ class TestCombinedDropGate:
         count, errors, writes = self.run_group(self.DOMAIN_GROUP, [raw], monkeypatch)
 
         assert count is None
-        assert errors["parse"]
+        assert any("丢弃行合计占比" in reason and "20/21" in reason for _url, reason in errors["parse"])
         assert writes == []
 
     def test_default_routes_are_unique_before_gate(self, monkeypatch):
@@ -913,7 +913,7 @@ class TestCombinedDropGate:
         count, errors, writes = self.run_group(self.IP_GROUP, [raw], monkeypatch)
 
         assert count is None
-        assert errors["parse"]
+        assert any("丢弃行合计占比" in reason and "20/21" in reason for _url, reason in errors["parse"])
         assert writes == []
 
     def test_url_extraction_has_independent_log_and_unchanged_gate(self, monkeypatch, caplog):

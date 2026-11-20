@@ -1025,6 +1025,10 @@ class TestYamlPayloadParsing:
         assert parsed == ["good.example"]
         assert parsed.yaml_errors == 2
 
+    def test_yaml_directive_without_document_start_is_rejected_as_yaml(self):
+        with pytest.raises(processor.YamlPayloadError, match="YAML 结构无效"):
+            processor.parse_lines("%YAML 1.2\nfoo: bar")
+
     @pytest.mark.parametrize(
         "content",
         [

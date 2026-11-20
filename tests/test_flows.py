@@ -151,14 +151,14 @@ class TestMainFlow:
         assert not list(rulesets.glob(".staging-*"))
 
     @pytest.mark.parametrize(
-        "raw",
+        ("raw", "expected_error"),
         [
-            b'"payload": [good.example, false, null]',
-            b"{rules: [good.example, false, null]}",
-            b"payload: [missing.example]\npayload: [good.example]",
+            (b'"payload": [good.example, false, null]', "YAML 非字符串或空规则候选 2 项，已拒绝"),
+            (b"{rules: [good.example, false, null]}", "YAML 非字符串或空规则候选 2 项，已拒绝"),
+            (b"payload: [missing.example]\npayload: [good.example]", "YAML 重复映射键: 'payload'"),
         ],
     )
-    def test_invalid_yaml_preserves_previous_generation(self, monkeypatch, work_dir, raw):
+    def test_invalid_yaml_preserves_previous_generation(self, monkeypatch, work_dir, raw, expected_error, capsys):
         sources = SOURCES.replace("https://raw.githubusercontent.com/o/drop/drop.txt\n", "")
         rulesets = self.setup_run(monkeypatch, work_dir, sources=sources)
         main.main()
@@ -171,6 +171,7 @@ class TestMainFlow:
             main.main()
 
         assert exc.value.code == 1
+        assert expected_error in capsys.readouterr().out
         assert product.read_bytes() == before_product
         assert (rulesets / "products.manifest").read_bytes() == before_manifest
 
