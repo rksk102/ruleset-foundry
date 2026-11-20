@@ -973,6 +973,7 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
         return None
     if not new_release_tag_target_valid(release_tag, target):
         return None
+    # 预检与创建之间可能出现同名 tag；复用现有目标，禁止 gh 静默接受其他提交。
     return run_gh(
         [
             "release",
@@ -985,6 +986,7 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             notes,
             "--target",
             target,
+            "--verify-tag",
             "--latest=false",
         ]
     )
