@@ -557,6 +557,45 @@ class TestZipTargetFiles:
 
 
 class TestPublishRelease:
+    def test_missing_tag_is_created_at_build_sha_before_release(self, monkeypatch):
+        build_sha = "a" * 40
+        monkeypatch.setenv("GITHUB_SHA", build_sha)
+        stub = GhStub()
+
+        result = run_with_stub(
+            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        assert result == "ok"
+        create_ref = next(call for call in stub.calls if call[:2] == ["api", "repos/{owner}/{repo}/git/refs"])
+        assert create_ref[2:] == [
+            "--method", "POST", "-f", "ref=refs/tags/rules-test", "-f", f"sha={build_sha}",
+        ]
+        assert "--verify-tag" in stub.calls[-1]
+
+    @pytest.mark.parametrize("concurrent_sha", ["a" * 40, "b" * 40], ids=["matching", "mismatched"])
+    def test_concurrent_tag_target_is_rechecked_before_release(self, monkeypatch, concurrent_sha):
+        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+        stub = GhStub()
+        original = stub.__call__
+
+        def concurrent_create(cmd, strip=True):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/git/refs"]:
+                stub.tag_refs["refs/tags/rules-test"] = concurrent_sha
+            return original(cmd, strip)
+
+        result = run_with_stub(
+            concurrent_create,
+            lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
+        )
+
+        if concurrent_sha == "a" * 40:
+            assert result == "ok"
+            assert stub.release_actions() == ["create"]
+        else:
+            assert result is None
+            assert stub.release_actions() == []
+
     def test_new_release_targets_build_sha_instead_of_moving_default_branch(self, monkeypatch):
         build_sha = "a" * 40
         local_sha = "b" * 40

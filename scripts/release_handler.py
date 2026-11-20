@@ -380,7 +380,7 @@ def tag_commit_sha(tag):
 
 
 def new_release_tag_target_valid(tag, expected_sha):
-    """tag 不存在或最终指向 expected_sha 时才允许创建 Release。"""
+    """确认 tag 已存在且指向 expected_sha，必要时先按该 SHA 创建。"""
     # matching-refs 以空列表表示不存在，避免把单 ref 的 404 与查询失败混为一谈。
     raw = run_gh(
         [
@@ -395,8 +395,25 @@ def new_release_tag_target_valid(tag, expected_sha):
         warning(f"  无法确认同名 tag 是否存在，拒绝创建 Release: {tag}")
         return False
     if not raw:
-        return True
-    actual_sha = _deref_tag_commit(_parse_tag_object(raw))
+        created = run_gh(
+            [
+                "api",
+                "repos/{owner}/{repo}/git/refs",
+                "--method",
+                "POST",
+                "-f",
+                f"ref=refs/tags/{tag}",
+                "-f",
+                f"sha={expected_sha}",
+            ]
+        )
+        if created is None:
+            # 创建冲突也必须重新读取，区分并发相同目标与真正的目标漂移。
+            warning(f"  tag 创建未成功，将重新核对现有目标: {tag}")
+        # 并发创建可能在本调用之前写入其他目标；只能接受构建提交本身。
+        actual_sha = tag_commit_sha(tag)
+    else:
+        actual_sha = _deref_tag_commit(_parse_tag_object(raw))
     if actual_sha != expected_sha:
         warning(f"  同名 tag 目标不匹配或无法确认，拒绝创建 Release: {tag}（{actual_sha or '未知'} != {expected_sha}）")
         return False
