@@ -895,7 +895,7 @@ class TestCombinedDropGate:
         count, errors, writes = self.run_group(self.DOMAIN_GROUP, [raw], monkeypatch)
 
         assert count is None
-        assert errors["parse"]
+        assert any("丢弃行合计占比" in reason and "20/21" in reason for _url, reason in errors["parse"])
         assert writes == []
 
     def test_default_routes_are_unique_before_gate(self, monkeypatch):
@@ -913,7 +913,7 @@ class TestCombinedDropGate:
         count, errors, writes = self.run_group(self.IP_GROUP, [raw], monkeypatch)
 
         assert count is None
-        assert errors["parse"]
+        assert any("丢弃行合计占比" in reason and "20/21" in reason for _url, reason in errors["parse"])
         assert writes == []
 
     def test_url_extraction_has_independent_log_and_unchanged_gate(self, monkeypatch, caplog):
@@ -927,6 +927,23 @@ class TestCombinedDropGate:
 
 
 class TestDomainSyntaxGate:
+    def test_mrs_overlong_candidates_reach_gate_and_preserve_previous_output(self, work_dir, monkeypatch):
+        long_domain = ".".join(["例" * 50] * 4 + ["com"])
+        rejected = [f"{index}.{long_domain}" for index in range(20)]
+        target = work_dir / "rulesets/block/domain/Owner/ads.txt"
+        write(target, "old.example\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target), "policy": "block", "type": "domain",
+            "members": [(0, {"url": "https://example.com/ads.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join([*rejected, "good.example"]).encode()})
+
+        assert count is None
+        assert any("20/21" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "old.example\n"
+
     @pytest.mark.parametrize("syntax", ["port", "adblock"])
     def test_unexpressible_domain_syntax_reaches_drop_gate(self, monkeypatch, work_dir, syntax):
         if syntax == "port":
@@ -980,6 +997,34 @@ class TestIpGateCandidateConservation:
         assert rules == ["192.0.2.0/24"]
         assert errors.count == 1
         assert stats["unrecognized"] == 0
+
+    @pytest.mark.parametrize(
+        ("network", "variant", "comment"),
+        [
+            ("192.0.2.0/24", "192.0.2.123/24", " ! note-"),
+            ("192.0.2.0/24", "192.0.2.123/24", "#note-"),
+            ("2001:db8::/64", "2001:db8::1234/64", "\t#note-"),
+        ],
+        ids=["ipv4-bang", "ipv4-adjacent-hash", "ipv6-tab-hash"],
+    )
+    def test_commented_equivalent_networks_cannot_turn_failure_into_write(
+        self, work_dir, monkeypatch, network, variant, comment,
+    ):
+        lines = [network] + [f"bad-{i}" for i in range(20)]
+        lines.extend(f"{variant}{comment}{i}" for i in range(180))
+        target = work_dir / "rulesets/direct/ipcidr/Owner/cn.txt"
+        write(target, "198.51.100.0/24\n")
+        monkeypatch.setattr(main, "RULESETS_DIR", work_dir / "rulesets")
+        group = {
+            "path": str(target), "policy": "direct", "type": "ipcidr",
+            "members": [(0, {"url": "https://example.com/cn.txt"})],
+        }
+
+        count, errors = main.process_group(group, {0: "\n".join(lines).encode()})
+
+        assert count is None
+        assert any("20/21" in reason for _url, reason in errors["parse"])
+        assert target.read_text(encoding="utf-8") == "198.51.100.0/24\n"
 
     @pytest.mark.parametrize("empty_rule", [None, "IP-CIDR,", "IP-CIDR6,"])
     def test_empty_payload_cannot_turn_threshold_failure_into_write(self, work_dir, monkeypatch, empty_rule):

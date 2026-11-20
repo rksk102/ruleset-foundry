@@ -41,6 +41,9 @@ from utils import (
 )
 
 REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
+
 try:
     RULESETS_DIR = get("paths", "rulesets_dir", default="rulesets")
     MERGED_DIR = get("paths", "merged_output_dir", default="merged-rules")
@@ -80,7 +83,8 @@ def release_assets(release_tag):
             f"repos/{{owner}}/{{repo}}/releases/tags/{release_tag}",
             "--jq",
             '.assets[] | [.name, (.digest // "")] | @tsv',
-        ]
+        ],
+        strip=False,
     )
     if raw is None:
         return None
@@ -351,11 +355,7 @@ def _parse_tag_object(raw):
     return obj_type, obj_sha
 
 
-def tag_commit_sha(tag):
-    """tag 最终指向的提交 SHA；annotated tag 逐层解引用，无法确认时返回 None。"""
-    target = _parse_tag_object(
-        run_gh(["api", f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}", "--jq", TAG_OBJECT_JQ])
-    )
+def _deref_tag_commit(target):
     for _ in range(TAG_DEREF_LIMIT):
         if target is None:
             return None
@@ -368,6 +368,56 @@ def tag_commit_sha(tag):
             run_gh(["api", f"repos/{{owner}}/{{repo}}/git/tags/{obj_sha}", "--jq", TAG_OBJECT_JQ])
         )
     return None
+
+
+def tag_commit_sha(tag):
+    """tag 最终指向的提交 SHA；annotated tag 逐层解引用，无法确认时返回 None。"""
+    return _deref_tag_commit(
+        _parse_tag_object(
+            run_gh(["api", f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}", "--jq", TAG_OBJECT_JQ])
+        )
+    )
+
+
+def new_release_tag_target_valid(tag, expected_sha):
+    """确认 tag 已存在且指向 expected_sha，必要时先按该 SHA 创建。"""
+    # matching-refs 以空列表表示不存在，避免把单 ref 的 404 与查询失败混为一谈。
+    raw = run_gh(
+        [
+            "api",
+            f"repos/{{owner}}/{{repo}}/git/matching-refs/tags/{tag}",
+            "--paginate",
+            "--jq",
+            f'.[] | select(.ref == "refs/tags/{tag}") | {TAG_OBJECT_JQ}',
+        ]
+    )
+    if raw is None:
+        warning(f"  无法确认同名 tag 是否存在，拒绝创建 Release: {tag}")
+        return False
+    if not raw:
+        created = run_gh(
+            [
+                "api",
+                "repos/{owner}/{repo}/git/refs",
+                "--method",
+                "POST",
+                "-f",
+                f"ref=refs/tags/{tag}",
+                "-f",
+                f"sha={expected_sha}",
+            ]
+        )
+        if created is None:
+            # 创建冲突也必须重新读取，区分并发相同目标与真正的目标漂移。
+            warning(f"  tag 创建未成功，将重新核对现有目标: {tag}")
+        # 并发创建可能在本调用之前写入其他目标；只能接受构建提交本身。
+        actual_sha = tag_commit_sha(tag)
+    else:
+        actual_sha = _deref_tag_commit(_parse_tag_object(raw))
+    if actual_sha != expected_sha:
+        warning(f"  同名 tag 目标不匹配或无法确认，拒绝创建 Release: {tag}（{actual_sha or '未知'} != {expected_sha}）")
+        return False
+    return True
 
 
 def commit_time(sha):
@@ -900,6 +950,24 @@ def generate_release_notes(tag_date, tag_time, file_map):
     return notes
 
 
+def _build_commit_sha():
+    sha = os.getenv("GITHUB_SHA")
+    if sha is None:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT or None,
+                capture_output=True, text=True, check=True, timeout=GH_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            warning(f"  无法确认构建提交，拒绝创建 Release: {exc}")
+            return None
+        sha = result.stdout.strip()
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", sha):
+        warning("  构建提交必须为完整 SHA，拒绝创建 Release")
+        return None
+    return sha.lower()
+
+
 def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=None):
     assets = [zip_file, *(extra_assets or [])]
     if exists:
@@ -917,6 +985,12 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             ]
         )
 
+    target = _build_commit_sha()
+    if target is None:
+        return None
+    if not new_release_tag_target_valid(release_tag, target):
+        return None
+    # 预检与创建之间可能出现同名 tag；复用现有目标，禁止 gh 静默接受其他提交。
     return run_gh(
         [
             "release",
@@ -927,6 +1001,9 @@ def publish_release(release_tag, zip_file, title, notes, exists, extra_assets=No
             title,
             "--notes",
             notes,
+            "--target",
+            target,
+            "--verify-tag",
             "--latest=false",
         ]
     )
@@ -1135,5 +1212,4 @@ def main():
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()

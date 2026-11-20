@@ -24,6 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+if __name__ == "__main__":
+    from utils import anchor_cwd_to_repo_root
+
+    anchor_cwd_to_repo_root()
+
 from logger import error, gh_error, info, success, warning
 
 GH_TIMEOUT = 120
@@ -784,7 +790,4 @@ def main(argv=None, runner=None):
 
 
 if __name__ == "__main__":
-    from utils import anchor_cwd_to_repo_root
-
-    anchor_cwd_to_repo_root()
     sys.exit(main())

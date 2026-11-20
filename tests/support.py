@@ -152,6 +152,7 @@ class GhStub:
         self.latest_tag = latest_tag
         self.asset_digests = asset_digests
         self.sha256sums = sha256sums
+        self.tag_refs = {}
 
     def __call__(self, cmd, strip=True):
         self.calls.append(list(cmd))
@@ -166,9 +167,24 @@ class GhStub:
             return "\n".join(f"{name}\t{digest}" for name, digest in self.asset_digests.items())
         if cmd[0] == "release" and len(cmd) > 1 and cmd[1] == "download":
             return self.sha256sums
+        if cmd[:2] == ["api", "repos/{owner}/{repo}/git/refs"] and "--method" in cmd:
+            ref = next(arg.removeprefix("ref=") for arg in cmd if arg.startswith("ref="))
+            if ref in self.tag_refs:
+                return None
+            sha = next(arg.removeprefix("sha=") for arg in cmd if arg.startswith("sha="))
+            self.tag_refs[ref] = sha
+            return "created"
         key = (cmd[0], cmd[1]) if len(cmd) > 1 else (cmd[0],)
         if key in self.responses:
             return self.responses[key]
+        if cmd[0] == "api" and len(cmd) > 1 and "/git/ref/tags/" in cmd[1]:
+            ref = "refs/tags/" + cmd[1].rsplit("/git/ref/tags/", 1)[1]
+            target = self.tag_refs.get(ref)
+            return f"commit\t{target}" if target else None
+        if cmd[0] == "api" and len(cmd) > 1 and "/git/matching-refs/tags/" in cmd[1]:
+            tag = cmd[1].rsplit("/git/matching-refs/tags/", 1)[1]
+            target = self.tag_refs.get(f"refs/tags/{tag}")
+            return f"commit\t{target}" if target else ""
         if key == ("release", "list"):
             if self.latest_tag:
                 return json.dumps([{"tagName": self.latest_tag, "isLatest": True}])

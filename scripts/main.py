@@ -33,8 +33,12 @@ from utils import (
     is_safe_component,
     normalize_policy,
     normalize_type,
+    parse_ip_network,
     redact_url_userinfo,
 )
+
+if __name__ == "__main__":
+    anchor_cwd_to_repo_root()
 
 try:
     SOURCES_FILE = get("paths", "sources_file", default="sources.urls")
@@ -704,7 +708,7 @@ def _unique_gate_lines(lines, rule_type, domain_kind="exact"):
                 kind, payload, _type_name = processor.classify_rule_line(text)
                 candidate = payload if kind == "ip" and payload else text
                 with contextlib.suppress(ValueError):
-                    candidate = str(ipaddress.ip_network(candidate, strict=False))
+                    candidate = str(parse_ip_network(candidate, extract=True))
                 key = candidate.casefold()
         else:
             normalized, _stats = processor.process_domain_detailed([line], domain_kind)
@@ -1352,5 +1356,4 @@ def _main_locked():
 
 
 if __name__ == "__main__":
-    anchor_cwd_to_repo_root()
     main()

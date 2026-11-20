@@ -1,13 +1,80 @@
 import ipaddress
 import struct
+from pathlib import Path
 
+import config_loader
+import manifest
+import merger
 import mrs_format
+import processor
 import pytest
+import release_handler
 from support import compress_zstd, domain_mrs_bytes, ipcidr_mrs_bytes, valid_mrs_bytes
 
 
 def valid_mrs(path, behavior="domain"):
     path.write_bytes(valid_mrs_bytes(behavior))
+
+
+@pytest.mark.parametrize("syntax", ["exact", "suffix", "subdomain", "wildcard"])
+@pytest.mark.parametrize("over_limit", [False, True], ids=["at-limit", "over-limit"])
+def test_parser_representation_obeys_mrs_key_limit(work_dir, syntax, over_limit):
+    fixed = ".".join(["例" * 20] * 4 + ["com"])
+    prefix = {"exact": "", "suffix": "+.", "subdomain": ".", "wildcard": "*."}[syntax]
+    padding = (8 if syntax == "exact" else 6) + int(over_limit)
+    value = prefix + "a" * padding + fixed
+
+    rules, stats = processor.process_domain_detailed(processor.parse_lines(value))
+
+    if over_limit:
+        assert rules == []
+        assert stats["unrecognized"] == 1
+    else:
+        assert rules == [value]
+        assert stats["unrecognized"] == 0
+        txt = work_dir / "boundary.txt"
+        mrs = work_dir / "boundary.mrs"
+        txt.write_text(rules[0] + "\n", encoding="utf-8")
+        mrs.write_bytes(domain_mrs_bytes(rules))
+        mrs_format.verify_product_pair(txt, mrs, "domain")
+        assert mrs_format.validate_mrs(mrs, "domain") == 1
+
+
+def test_accepted_unicode_boundary_survives_merge_and_release_preflight(work_dir, monkeypatch):
+    value = "+." + "a" * 6 + ".".join(["例" * 20] * 4 + ["com"])
+    rules, stats = processor.process_domain_detailed(processor.parse_lines(value))
+    assert rules == [value]
+    assert stats["unrecognized"] == 0
+    source = work_dir / "rulesets"
+    merged = work_dir / "merged"
+    mrs_root = work_dir / "mrs"
+    rel = "block/domain/Owner/boundary.txt"
+    txt = source / rel
+    txt.parent.mkdir(parents=True)
+    txt.write_text(rules[0] + "\n", encoding="utf-8")
+    monkeypatch.setattr(config_loader, "_CONFIG", config_loader._defaults())
+    monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+    monkeypatch.setattr(merger, "OUTPUT_DIR", str(merged))
+    manifest.save_manifest(
+        source / manifest.MANIFEST_NAME, manifest.hash_entries(source, [rel]), generation="boundary",
+    )
+
+    result = merger.process_task_logic("block", "domain", "Owner", "boundary.txt", [rel], "boundary")
+
+    assert result["opt"] == 1
+    manifest.save_manifest(
+        merged / manifest.MANIFEST_NAME, manifest.hash_entries(merged, [rel]), generation="boundary",
+    )
+    merged_rules = [
+        line for line in (merged / rel).read_text(encoding="utf-8").splitlines() if not line.startswith("#")
+    ]
+    assert merged_rules == [value]
+    mrs = mrs_root / Path(rel).with_suffix(".mrs")
+    mrs.parent.mkdir(parents=True)
+    mrs.write_bytes(domain_mrs_bytes(merged_rules))
+    monkeypatch.setattr(release_handler, "RULESETS_DIR", str(source))
+
+    assert release_handler.verify_products(str(merged), str(mrs_root), require_baseline=True) == 1
 
 
 class TestMrsFormat:

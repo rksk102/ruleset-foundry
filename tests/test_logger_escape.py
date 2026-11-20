@@ -1,7 +1,10 @@
 import logging
 from pathlib import Path
 
+import config_loader
 import logger as log
+import pytest
+import utils
 
 LOG_DIR = Path(__file__).resolve().parent.parent / ".tools" / "pytest-logs"
 
@@ -154,6 +157,67 @@ class TestConsoleReadability:
         out = capsys.readouterr().out
         assert "第一行\n第二行" in out
         assert "%0A" not in out
+
+
+class TestLogConfigurationFailure:
+    @pytest.mark.parametrize("failure", ["outside-link", "protected-link", "invalid-config", "unreadable-config"])
+    def test_configuration_failure_uses_console_without_file_side_effects(
+        self, work_dir, monkeypatch, capsys, failure,
+    ):
+        root = work_dir / "repo"
+        root.mkdir()
+        config = root / "config.yaml"
+        config.write_text("paths:\n  log_dir: logs\n", encoding="utf-8")
+        if failure == "invalid-config":
+            config.write_text("behavior: [broken\n", encoding="utf-8")
+        target = root / "docs" if failure == "protected-link" else work_dir / "outside"
+        target.mkdir()
+        for index in range(log.LOG_KEEP_COUNT + 1):
+            (target / f"run-{index:03d}.log").write_text("preserve\n", encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in target.iterdir()}
+        (root / "logs").symlink_to(target, target_is_directory=True)
+        monkeypatch.chdir(root)
+        monkeypatch.setattr(utils, "REPO_ROOT", root)
+        monkeypatch.setattr(config_loader, "_CONFIG_FILE", config)
+        monkeypatch.setattr(log, "_LOG_FILE", None)
+        monkeypatch.setattr(log, "_logger", None)
+        if failure == "unreadable-config":
+            real_open = config_loader.open if hasattr(config_loader, "open") else open
+
+            def unreadable(path, *args, **kwargs):
+                if Path(path) == config:
+                    raise PermissionError("configuration unreadable")
+                return real_open(path, *args, **kwargs)
+
+            monkeypatch.setattr(config_loader, "open", unreadable, raising=False)
+
+        log.error("original operation failed")
+
+        output = capsys.readouterr().out
+        assert {p.name: p.read_bytes() for p in target.iterdir()} == before
+        assert "original operation failed" in output
+        assert "文件日志不可用" in output
+        assert not any(isinstance(handler, logging.FileHandler) for handler in log._logger.handlers)
+        assert sorted(p.name for p in root.iterdir()) == (
+            ["config.yaml", "docs", "logs"] if failure == "protected-link" else ["config.yaml", "logs"]
+        )
+
+    def test_valid_configuration_creates_file_and_preserves_message(self, work_dir, monkeypatch):
+        root = work_dir / "repo"
+        root.mkdir()
+        config = root / "config.yaml"
+        config.write_text("paths:\n  log_dir: run-logs\n", encoding="utf-8")
+        monkeypatch.chdir(root)
+        monkeypatch.setattr(utils, "REPO_ROOT", root)
+        monkeypatch.setattr(config_loader, "_CONFIG_FILE", config)
+        monkeypatch.setattr(log, "_LOG_FILE", None)
+        monkeypatch.setattr(log, "_logger", None)
+
+        log.info("written to validated log directory")
+
+        files = list((root / "run-logs").glob("run-*.log"))
+        assert len(files) == 1
+        assert "written to validated log directory" in files[0].read_text(encoding="utf-8")
 
 
 class TestLogFile:
