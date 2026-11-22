@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -744,6 +745,298 @@ def test_public_artifacts_branch_stages_without_product_manifest():
     assert script.index('cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"') < script.index(removal)
     assert script.index(removal) < script.index('git add -f')
     assert script.index('cd "$WT"') < script.index(removal) < script.index('git worktree remove')
+
+
+@pytest.mark.parametrize("newer_input", [True, False], ids=["different-build-input", "newer-published-run"])
+def test_publish_guard_rejects_old_products_before_writing(work_dir, newer_input, monkeypatch):
+    origin = work_dir / "origin"
+    origin.mkdir()
+    _init_git_repo(origin)
+    (origin / "sources.urls").write_text("first\n", encoding="utf-8")
+    _git(origin, "add", "sources.urls")
+    _git(origin, "commit", "-qm", "build input")
+    built = _git(origin, "rev-parse", "HEAD")
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "-q", "--depth=1", f"file://{origin}", str(checkout))
+
+    if newer_input:
+        (origin / "sources.urls").write_text("second\n", encoding="utf-8")
+        _git(origin, "commit", "-qam", "new sources")
+    else:
+        _git(origin, "switch", "-qc", "artifacts")
+        _git(origin, "commit", "--allow-empty", "-qm", "publish\n\nRuleset-Publish-Generation: 14/1")
+        _git(origin, "switch", "-q", "main")
+
+    result = _run_publish_guard(checkout, built, "13", monkeypatch)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert ("构建输入已变化" if newer_input else "已发布代次更新") in result.stderr
+
+
+def _publish_guard_env(sha, run_number):
+    return {
+        "PUBLISH_GUARD": "true",
+        "PUBLISH_BUILD_GENERATION": f"github-{run_number}-attempt-1",
+        "GITHUB_RUN_ID": run_number,
+        "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_RUN_NUMBER": run_number,
+        "GITHUB_SHA": sha,
+        "GITHUB_REF": "refs/heads/main",
+        "PUBLISH_RULESETS_ID": "1",
+        "PUBLISH_TXT_ID": "2",
+        "PUBLISH_MRS_ID": "3",
+    }
+
+
+def _run_publish_guard(checkout, sha, run_number, monkeypatch):
+    import publish_guard
+
+    with monkeypatch.context() as patch:
+        patch.setattr(publish_guard, "verify_artifacts", lambda: None)
+        for key, value in _publish_guard_env(sha, run_number).items():
+            patch.setenv(key, value)
+        patch.chdir(checkout)
+        try:
+            oid = publish_guard.ensure_current(required=True)
+        except publish_guard.PublishGuardError as exc:
+            return subprocess.CompletedProcess([], 1, "", str(exc))
+    return subprocess.CompletedProcess([], 0, oid + "\n", "")
+
+
+@pytest.fixture
+def generation_checkout(work_dir):
+    origin = work_dir / "origin"
+    origin.mkdir()
+    _init_git_repo(origin)
+    (origin / "scripts").mkdir()
+    for name in ("publish_guard.py", "manifest.py", "utils.py"):
+        shutil.copyfile(REPO / "scripts" / name, origin / "scripts" / name)
+    _git(origin, "add", "scripts")
+    _git(origin, "commit", "-qm", "build input")
+    built = _git(origin, "rev-parse", "HEAD")
+    _git(origin, "switch", "-qc", "artifacts")
+    (origin / "product.txt").write_text("product A\n", encoding="utf-8")
+    _git(origin, "add", "product.txt")
+    _git(origin, "commit", "-qm", "publish\n\nRuleset-Publish-Generation: 12/1")
+    reconciled = _git(origin, "rev-parse", "HEAD")
+    _git(origin, "switch", "-q", "main")
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "-q", "--depth=1", f"file://{origin}", str(checkout))
+    _git(checkout, "fetch", "-q", "--no-tags", "--depth=1", "origin", "artifacts")
+
+    bin_dir = work_dir / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(
+        '#!/bin/bash\n'
+        'case "$2" in\n'
+        '  */artifacts/1) name=rulesets ;;\n'
+        '  */artifacts/2) name=merged-rules ;;\n'
+        '  */artifacts/3) name=merged-rules-mrs ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac\n'
+        'printf \'{"id":%s,"name":"%s-1","digest":"sha256:%064d",'
+        '"expired":false,"workflow_run":{"id":%s,"head_sha":"%s"}}\\n\' '
+        '"${2##*/}" "$name" 0 "$GITHUB_RUN_ID" "$GITHUB_SHA"\n',
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return origin, checkout, built, reconciled, bin_dir
+
+
+def _complete_unchanged_round(checkout, built, reconciled, bin_dir):
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    step = _step(job, "推进已确认发布代次")
+    assert step["env"]["PUBLISH_EXPECTED_ARTIFACTS_OID"] == "${{ steps.publish-guard.outputs.oid }}"
+    assert "steps.product-state.outputs.changed == 'false'" in step["if"]
+    assert "steps.release.outcome == 'success' || inputs.skip_release == true" in step["if"]
+    assert job["steps"].index(step) > job["steps"].index(_step(job, "提交 README 与发布状态"))
+    return subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            **_publish_guard_env(built, "14"),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "PUBLISH_EXPECTED_ARTIFACTS_OID": reconciled,
+        },
+    )
+
+
+def test_unchanged_success_advances_generation_before_an_old_publish_retry(generation_checkout, monkeypatch):
+    origin, checkout, built, reconciled, bin_dir = generation_checkout
+
+    # Run 13 had a successful build of B and failed before publishing. Run 14 is still pending.
+    retry = _run_publish_guard(checkout, built, "13", monkeypatch)
+    assert retry.returncode == 0, retry.stderr
+    assert retry.stdout.strip() == reconciled
+
+    result = _complete_unchanged_round(checkout, built, reconciled, bin_dir)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(origin, "show", "artifacts:product.txt") == "product A"
+    assert _git(origin, "rev-parse", "artifacts^{tree}") == _git(origin, "rev-parse", f"{reconciled}^{{tree}}")
+
+    stale = _run_publish_guard(checkout, built, "13", monkeypatch)
+    assert stale.returncode == 1
+    assert "已发布代次更新" in stale.stderr
+
+
+def test_generation_stamp_rejects_a_reconciled_snapshot_that_has_moved(generation_checkout):
+    origin, checkout, built, reconciled, bin_dir = generation_checkout
+    _git(origin, "switch", "-q", "artifacts")
+    (origin / "product.txt").write_text("other writer\n", encoding="utf-8")
+    _git(origin, "commit", "-qam", "publish by other writer")
+    other = _git(origin, "rev-parse", "HEAD")
+    _git(origin, "switch", "-q", "main")
+
+    result = _complete_unchanged_round(checkout, built, reconciled, bin_dir)
+    assert result.returncode == 1
+    assert "偏离本轮核验的发布基线" in result.stderr
+    assert _git(origin, "rev-parse", "artifacts") == other
+
+
+def test_empty_artifacts_baseline_still_rejects_a_new_branch(work_dir, monkeypatch):
+    origin = work_dir / "origin"
+    origin.mkdir()
+    _init_git_repo(origin)
+    (origin / "config.yaml").write_text("same input\n", encoding="utf-8")
+    _git(origin, "add", "config.yaml")
+    _git(origin, "commit", "-qm", "build input")
+    built = _git(origin, "rev-parse", "HEAD")
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "-q", "--depth=1", f"file://{origin}", str(checkout))
+    _git(origin, "switch", "-qc", "artifacts")
+    _git(origin, "commit", "--allow-empty", "-qm", "other writer")
+    _git(origin, "switch", "-q", "main")
+    _git(checkout, "remote", "remove", "origin")
+    _git(checkout, "remote", "add", "origin", str(origin))
+
+    import publish_guard
+
+    with monkeypatch.context() as patch:
+        patch.setattr(publish_guard, "verify_artifacts", lambda: None)
+        for key, value in _publish_guard_env(built, "13").items():
+            patch.setenv(key, value)
+        patch.setenv("PUBLISH_EXPECTED_ARTIFACTS_OID", "")
+        patch.chdir(checkout)
+        with pytest.raises(publish_guard.PublishGuardError, match="偏离本轮核验"):
+            publish_guard.ensure_current(required=True)
+
+
+def test_publish_guard_allows_generated_state_and_returns_leased_ref(work_dir, monkeypatch):
+    origin = work_dir / "origin"
+    origin.mkdir()
+    _init_git_repo(origin)
+    (origin / "config.yaml").write_text("config\n", encoding="utf-8")
+    _git(origin, "add", "config.yaml")
+    _git(origin, "commit", "-qm", "build input")
+    built = _git(origin, "rev-parse", "HEAD")
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "-q", "--depth=1", f"file://{origin}", str(checkout))
+    (origin / "README.md").write_text("generated\n", encoding="utf-8")
+    (origin / "state").mkdir()
+    (origin / "state" / "release.sha256").write_text("published\n", encoding="utf-8")
+    _git(origin, "add", "README.md", "state")
+    _git(origin, "commit", "-qm", "generated outputs")
+    _git(origin, "branch", "artifacts", built)
+
+    result = _run_publish_guard(checkout, built, "14", monkeypatch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == built
+
+
+@pytest.mark.parametrize(
+    "field", [None, "id", "name", "workflow_run", "expired", "digest"], ids=lambda value: value or "valid"
+)
+def test_download_ids_must_resolve_to_expected_build(monkeypatch, field):
+    import publish_guard
+
+    artifacts = {}
+    for name, oid in (("rulesets-1", 800), ("merged-rules-1", 801), ("merged-rules-mrs-1", 802)):
+        artifacts[oid] = {
+            "id": oid, "name": name, "digest": "sha256:" + "a" * 64,
+            "expired": False, "workflow_run": {"id": 123, "head_sha": "a" * 40},
+        }
+    wrong = {"id": 999, "name": "merged-rules-2", "workflow_run": {"id": 124}, "expired": True,
+             "digest": "sha256:unknown"}
+    if field is not None:
+        artifacts[801][field] = wrong[field]
+    called = []
+
+    def gh(args):
+        oid = int(args[1].rsplit("/", 1)[-1])
+        called.append(oid)
+        return json.dumps(artifacts[oid])
+
+    monkeypatch.setattr(publish_guard, "_gh", gh)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_NUMBER", "1")
+    monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-123-attempt-1")
+    for key, oid in (("RULESETS", "800"), ("TXT", "801"), ("MRS", "802")):
+        monkeypatch.setenv(f"PUBLISH_{key}_ID", oid)
+
+    if field is None:
+        assert publish_guard.verify_artifacts() is None
+        assert called == [800, 801, 802]
+    else:
+        with pytest.raises(publish_guard.PublishGuardError, match="成功构建"):
+            publish_guard.verify_artifacts()
+        assert called == [800, 801]
+
+
+def test_rebase_uses_main_oid_verified_by_the_original_checkout_guard():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    script = _step(job, "提交 README 与发布状态")["run"]
+    assert "git pull --rebase" not in script
+    fetch = script.index('git fetch --no-tags origin "${REF_NAME}"')
+    pinned = script.index('BASE=$(git rev-parse --verify FETCH_HEAD)', fetch)
+    guard = script.index('PUBLISH_EXPECTED_MAIN_OID="$BASE" python scripts/publish_guard.py', pinned)
+    assert script.index('git rebase "$BASE"', guard)
+
+
+def test_publish_force_push_uses_current_guard_lease():
+    job = load_workflow("pipeline.yml")["jobs"]["publish"]
+    script = _step(job, "发布规则产物到 artifacts 分支")["run"]
+    lease = 'LEASE=$(python "$GITHUB_WORKSPACE/scripts/publish_guard.py" --branch-oid)'
+    assert lease in script
+    assert script.index(lease) < script.index('--force-with-lease="refs/heads/${ARTIFACTS_BRANCH}:$LEASE"')
+    assert "git push --force origin" not in script
+
+
+def test_publish_downloads_all_three_outputs_from_selected_build():
+    jobs = load_workflow("pipeline.yml")["jobs"]
+    publish_env = jobs["publish"]["env"]
+    assert publish_env["PUBLISH_BUILD_GENERATION"] == "${{ needs.build.outputs.generation }}"
+    for key in ("rulesets", "txt", "mrs"):
+        assert publish_env[f"PUBLISH_{key.upper()}_ID"] == "${{ needs.build.outputs." + key + "_id }}"
+    names = {
+        "rulesets": ("上传 rulesets 清单（供发布校验）", "下载 rulesets 产物（提供产物清单基线）"),
+        "txt": ("上传 merged-rules 产物", "下载 merged-rules 产物"),
+        "mrs": ("上传 merged-rules-mrs 产物", "下载 merged-rules-mrs 产物"),
+    }
+    for key, (upload_name, download_name) in names.items():
+        upload = _step(jobs["build"], upload_name)
+        download = _step(jobs["publish"], download_name)["with"]
+        assert jobs["build"]["outputs"][f"{key}_id"] == (
+            "${{ steps." + upload["id"] + ".outputs.artifact-id }}"
+        )
+        assert "github.run_attempt" in upload["with"]["name"]
+        assert download["artifact-ids"] == "${{ needs.build.outputs." + key + "_id }}"
+        assert download["digest-mismatch"] == "error"
+        assert "name" not in download and "run-id" not in download and "github-token" not in download
+
+
+def test_build_checks_the_complete_product_set_before_uploading():
+    job = load_workflow("pipeline.yml")["jobs"]["build"]
+    steps = job["steps"]
+    gate = _step(job, "检查同代制品集合与内容")
+    assert steps.index(gate) > steps.index(_step(job, "转换规则集"))
+    assert gate["run"] == "python scripts/release_handler.py --verify-only --require-baseline"
+    for name in ("上传 rulesets 清单（供发布校验）", "上传 merged-rules 产物", "上传 merged-rules-mrs 产物"):
+        assert steps.index(gate) < steps.index(_step(job, name))
 
 
 def test_kernel_bump_amd64_validation_rechecks_live_latest():

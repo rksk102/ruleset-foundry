@@ -23,6 +23,11 @@ jobs:
     name: "1. 同步/合并/转换"
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    outputs:
+      generation: ${{ steps.generation.outputs.value }}
+      rulesets_id: ${{ steps.upload-rulesets.outputs.artifact-id }}
+      txt_id: ${{ steps.upload-txt.outputs.artifact-id }}
+      mrs_id: ${{ steps.upload-mrs.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -46,24 +51,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/scripts
           GH_TOKEN: ${{ github.token }}
         run: python scripts/main.py
-      - name: 上传 rulesets 清单（供发布校验）
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: rulesets
-          path: ${{ steps.product-paths.outputs.rulesets }}/products.manifest
-          retention-days: 1
-          if-no-files-found: error
       - name: 运行合并
         env:
           PYTHONPATH: ${{ github.workspace }}/scripts
         run: python scripts/merger.py
-      - name: 上传 merged-rules 产物
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: merged-rules
-          path: ${{ steps.product-paths.outputs.txt }}/
-          retention-days: 1
-          if-no-files-found: error
       - name: 计算内核缓存键
         id: kernel-key
         env:
@@ -102,10 +93,41 @@ jobs:
         with:
           path: ${{ steps.kernel-key.outputs.path }}
           key: mihomo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-key.outputs.key }}
-      - name: 上传 merged-rules-mrs 产物
+      - name: 检查同代制品集合与内容
+        run: python scripts/release_handler.py --verify-only --require-baseline
+      - name: 记录成功构建代次
+        id: generation
+        env:
+          RULESETS_DIR: ${{ steps.product-paths.outputs.rulesets }}
+          PYTHONPATH: ${{ github.workspace }}/scripts
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from pathlib import Path
+          from manifest import MANIFEST_NAME, load_manifest
+          print("value=" + load_manifest(Path(os.environ["RULESETS_DIR"]) / MANIFEST_NAME).generation)
+          PY
+      - name: 上传 rulesets 清单（供发布校验）
+        id: upload-rulesets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: merged-rules-mrs
+          name: rulesets-${{ github.run_attempt }}
+          path: ${{ steps.product-paths.outputs.rulesets }}/products.manifest
+          retention-days: 1
+          if-no-files-found: error
+      - name: 上传 merged-rules 产物
+        id: upload-txt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: merged-rules-${{ github.run_attempt }}
+          path: ${{ steps.product-paths.outputs.txt }}/
+          retention-days: 1
+          if-no-files-found: error
+      - name: 上传 merged-rules-mrs 产物
+        id: upload-mrs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: merged-rules-mrs-${{ github.run_attempt }}
           path: ${{ steps.product-paths.outputs.mrs }}/
           retention-days: 1
           if-no-files-found: error
@@ -113,7 +135,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: logs-build
+          name: logs-build-${{ github.run_attempt }}
           path: logs/
           retention-days: 7
           if-no-files-found: ignore
@@ -126,7 +148,15 @@ jobs:
     if: (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     outputs:
       release_outcome: ${{ steps.release.outcome }}
+    env:
+      PUBLISH_BUILD_GENERATION: ${{ needs.build.outputs.generation }}
+      PUBLISH_RULESETS_ID: ${{ needs.build.outputs.rulesets_id }}
+      PUBLISH_TXT_ID: ${{ needs.build.outputs.txt_id }}
+      PUBLISH_MRS_ID: ${{ needs.build.outputs.mrs_id }}
+      PUBLISH_GUARD: 'true'
+      GH_TOKEN: ${{ github.token }}
     permissions:
+      actions: read  # 复核首次发布所用的成功构建
       contents: write  # 需要推送 artifacts 分支、README 与 state/release.sha256
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # zizmor: ignore[artipacked] 需要凭据推送 README/state
@@ -148,24 +178,40 @@ jobs:
           TXT_DIR: ${{ steps.product-paths.outputs.txt }}
           MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
         run: rm -rf "$TXT_DIR" "$MRS_DIR"
+      - name: 核对构建归属和当前发布代次
+        id: publish-guard
+        run: |
+          OID=$(python scripts/publish_guard.py --branch-oid)
+          echo "oid=$OID" >> "$GITHUB_OUTPUT"
       - name: 下载 rulesets 产物（提供产物清单基线）
+        id: download-rulesets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: rulesets
+          artifact-ids: ${{ needs.build.outputs.rulesets_id }}
           path: ${{ steps.product-paths.outputs.rulesets }}/
           digest-mismatch: error
       - name: 下载 merged-rules 产物
+        id: download-txt
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: merged-rules
+          artifact-ids: ${{ needs.build.outputs.txt_id }}
           path: ${{ steps.product-paths.outputs.txt }}/
           digest-mismatch: error
       - name: 下载 merged-rules-mrs 产物
+        id: download-mrs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: merged-rules-mrs
+          artifact-ids: ${{ needs.build.outputs.mrs_id }}
           path: ${{ steps.product-paths.outputs.mrs }}/
           digest-mismatch: error
+      - name: 提示重建缺失或无效制品
+        if: >-
+          failure() && (steps.download-rulesets.outcome == 'failure' ||
+          steps.download-txt.outcome == 'failure' || steps.download-mrs.outcome == 'failure')
+        run: |
+          echo '::error::本次构建的制品不可用或未通过下载校验。若制品缺失、过期或损坏，请重新运行完整流水线。'
+      - name: 产物一致性预检
+        run: python scripts/release_handler.py --verify-only --require-baseline
       - name: 检查产物变化
         id: product-state
         env:
@@ -175,15 +221,20 @@ jobs:
           TXT_DIR: ${{ steps.product-paths.outputs.txt }}
           MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
           GH_TOKEN: ${{ github.token }}
+          SKIP_RELEASE: ${{ inputs.skip_release }}
+          BASE_ARTIFACTS_OID: ${{ steps.publish-guard.outputs.oid }}
         run: |
           set -euo pipefail
           CURRENT=$(python scripts/release_handler.py --print-hash)
           echo "current_hash=$CURRENT" >> "$GITHUB_OUTPUT"
           LAST=$(cat state/release.sha256 2>/dev/null || true)
           DETECT=$(python -c "from config_loader import get; print('true' if get('behavior', 'release_change_detection', default=True) else 'false')")
-          if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
-            # --needs-publish 可能先打印 GH CLI 警告；取最后一行布尔值
+          NEEDS=false
+          if [ "$SKIP_RELEASE" != "true" ]; then
+            # 即使本轮有内容变化，已公开版本的资产也必须在分支推送前校验。
             NEEDS=$(python scripts/release_handler.py --needs-publish | tail -n 1)
+          fi
+          if [ "$DETECT" = "true" ] && [ -n "$LAST" ] && [ "$CURRENT" = "$LAST" ]; then
             set +e
             git ls-remote --exit-code --heads origin "${ARTIFACTS_BRANCH}" >/dev/null 2>&1
             RC=$?
@@ -200,6 +251,11 @@ jobs:
             else
               if ! git fetch --no-tags --depth=1 origin "${ARTIFACTS_BRANCH}"; then
                 echo "::error::无法读取 ${ARTIFACTS_BRANCH} 分支，拒绝跳过产物发布"
+                exit 1
+              fi
+              RECONCILED=$(git rev-parse --verify FETCH_HEAD)
+              if [ "$RECONCILED" != "$BASE_ARTIFACTS_OID" ]; then
+                echo '::error::artifacts 分支在核验期间已变化'
                 exit 1
               fi
               if ! MARKER_ENTRY=$(git ls-tree FETCH_HEAD -- "${ARTIFACTS_HASH_MARKER}"); then
@@ -251,16 +307,14 @@ jobs:
           ARTIFACTS_BRANCH: artifacts
           FORCE_RELEASE: ${{ steps.product-state.outputs.force_release }}
         run: python scripts/gen_readme.py
-      - name: 产物一致性预检
-        env:
-          PYTHONPATH: ${{ github.workspace }}/scripts
-        run: python scripts/release_handler.py --verify-only --require-baseline
       - name: 发布规则产物到 artifacts 分支
+        id: publish-products
         if: steps.product-state.outputs.changed == 'true'
         env:
           ARTIFACTS_BRANCH: artifacts
           ARTIFACTS_HASH_MARKER: .product-sha256
           CURRENT_HASH: ${{ steps.product-state.outputs.current_hash }}
+          PUBLISH_EXPECTED_ARTIFACTS_OID: ${{ steps.publish-guard.outputs.oid }}
           TXT_DIR: ${{ steps.product-paths.outputs.txt }}
           MRS_DIR: ${{ steps.product-paths.outputs.mrs }}
         run: |
@@ -273,7 +327,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git checkout --orphan "${ARTIFACTS_BRANCH}"
-            git rm -rf . >/dev/null 2>&1 || true
+            git rm -rf --ignore-unmatch -- . >/dev/null
             mkdir -p "$(dirname "$TXT_DIR")" "$(dirname "$MRS_DIR")"
             cp -r "${GITHUB_WORKSPACE}/${TXT_DIR}" "$TXT_DIR"
             cp -r "${GITHUB_WORKSPACE}/${MRS_DIR}" "$MRS_DIR"
@@ -283,9 +337,12 @@ jobs:
             printf '%s/\n%s/\n' "$TXT_DIR" "$MRS_DIR" > .gitignore
             printf '%s\n' "$CURRENT_HASH" > "${ARTIFACTS_HASH_MARKER}"
             git add -f "$TXT_DIR" "$MRS_DIR" .gitignore "${ARTIFACTS_HASH_MARKER}"
-            git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            git fetch origin "${ARTIFACTS_BRANCH}" 2>/dev/null || true
-            git push --force origin "HEAD:${ARTIFACTS_BRANCH}"
+            git commit -m "chore: 规则产物 $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -m "Ruleset-Publish-Generation: $GITHUB_RUN_NUMBER/${PUBLISH_BUILD_GENERATION##*-}"
+            LEASE=$(python "$GITHUB_WORKSPACE/scripts/publish_guard.py" --branch-oid)
+            git push --force-with-lease="refs/heads/${ARTIFACTS_BRANCH}:$LEASE" origin "HEAD:refs/heads/${ARTIFACTS_BRANCH}"
+            PUBLISHED=$(git rev-parse HEAD)
+            echo "oid=$PUBLISHED" >> "$GITHUB_OUTPUT"
           )
           git worktree remove --force "$WT"
       - name: 发布 Release
@@ -295,11 +352,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/scripts
           FORCE_RELEASE: ${{ steps.product-state.outputs.force_release }}
+          PUBLISH_EXPECTED_ARTIFACTS_OID: ${{ steps.publish-products.outputs.oid || steps.publish-guard.outputs.oid }}
         run: python scripts/release_handler.py
       - name: 提交 README 与发布状态
         if: ${{ steps.release.outcome == 'success' || inputs.skip_release == true }}
         env:
           REF_NAME: ${{ github.ref_name }}
+          PUBLISH_EXPECTED_ARTIFACTS_OID: ${{ steps.publish-products.outputs.oid || steps.publish-guard.outputs.oid }}
         run: |
           set -euo pipefail
           # 主工作区始终停留在触发分支上（产物提交已在独立 worktree 完成），
@@ -314,14 +373,22 @@ jobs:
             echo "README/发布状态无变化"
           else
             git commit -m "chore: 更新发布哈希 [skip ci]"
-            git pull --rebase origin "${REF_NAME}"
-            git push
+            git fetch --no-tags origin "${REF_NAME}"
+            BASE=$(git rev-parse --verify FETCH_HEAD)
+            PUBLISH_EXPECTED_MAIN_OID="$BASE" python scripts/publish_guard.py
+            git rebase "$BASE"
+            git push origin "HEAD:refs/heads/${REF_NAME}"
           fi
+      - name: 推进已确认发布代次
+        if: ${{ (steps.release.outcome == 'success' || inputs.skip_release == true) && steps.product-state.outputs.changed == 'false' }}
+        env:
+          PUBLISH_EXPECTED_ARTIFACTS_OID: ${{ steps.publish-guard.outputs.oid }}
+        run: python scripts/publish_guard.py --record-unchanged
       - name: 上传运行日志
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: logs-publish
+          name: logs-publish-${{ github.run_attempt }}
           path: logs/
           retention-days: 7
           if-no-files-found: ignore
