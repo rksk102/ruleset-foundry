@@ -658,6 +658,7 @@ class ReleaseState:
         if endpoint == "repos/{owner}/{repo}/releases":
             if method == "GET":
                 return "" if self.release is None else json.dumps(self.release)
+            assert method == "POST", cmd
             body = next(x[5:] for x in cmd if x.startswith("body="))
             self.release = {
                 "id": 123, "tag_name": self.tag, "draft": True, "body": body,
@@ -943,14 +944,42 @@ class TestReleaseObjectContracts:
         assert release_state.latest is None
 
     def test_create_failure_propagates(self, release_state, monkeypatch):
-        original = release_state.__call__
-        monkeypatch.setattr(
-            release_handler, "run_gh",
-            lambda cmd: None if cmd[:2] == ["api", "repos/{owner}/{repo}/releases"] else original(cmd),
-        )
-        with pytest.raises(release_handler.ReleaseError):
+        posts = []
+
+        def fail_create(cmd):
+            if cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"]:
+                posts.append(cmd)
+                return None
+            return release_state(cmd)
+
+        monkeypatch.setattr(release_handler, "run_gh", fail_create)
+        with pytest.raises(release_handler.ReleaseError, match="无法创建 Release 草稿"):
             release_state.run()
+        assert len(posts) == 1
         assert release_state.release is None and release_state.latest is None
+
+    def test_created_draft_survives_failed_readback(self, release_state, monkeypatch):
+        api = release_state
+        failed_readbacks = []
+
+        def fail_readback(cmd):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/releases"] and "--paginate" in cmd and api.release:
+                failed_readbacks.append(cmd)
+                return None
+            return api(cmd)
+
+        monkeypatch.setattr(release_handler, "run_gh", fail_readback)
+        with pytest.raises(release_handler.ReleaseError, match="无法确认目标 Release 状态"):
+            api.run()
+        assert len(failed_readbacks) == 1
+        assert api.release["draft"] is True and api.latest is None
+        assert not api.assets
+
+        monkeypatch.setattr(release_handler, "run_gh", api)
+        api.run()
+
+        assert api.release["draft"] is False and api.latest == api.tag
+        assert sum(cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"] for cmd in api.calls) == 1
 
     def test_new_release_identity_uses_product_hash(self, release_state):
         first = release_state.tag
@@ -1094,10 +1123,12 @@ class TestMainOrchestration:
             "sha": "d" * 40, "message": "foreign", "object": {"type": "commit", "sha": "b" * 40},
         }
 
-        with pytest.raises(release_handler.ReleaseError):
-            release_planning_api.run()
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
 
+        assert exc.value.code == 1
         assert release_planning_api.release is None and release_planning_api.latest is None
+        assert not any("POST" in cmd or "PATCH" in cmd for cmd in release_planning_api.calls)
         assert saved == []
 
     def test_publishes_when_hash_changed(self, release_planning_api, monkeypatch):
@@ -1362,6 +1393,40 @@ class TestMainOrchestration:
 
         assert exc.value.code == 1
         assert api.release["draft"] is (stage == "draft")
+        assert api.latest is None and not saved
+
+    @pytest.mark.parametrize("draft", [True, False], ids=["newly-public", "already-public"])
+    def test_asset_bytes_changed_after_verification_block_latest(
+        self, release_planning_api, monkeypatch, caplog, draft,
+    ):
+        api = release_planning_api
+        api.publish_existing(draft=draft)
+        api.latest = None
+        saved = []
+        stub_hash_state(monkeypatch, saved=saved)
+        zip_asset = api.assets[f"merged-rules-{api.tag[6:]}.zip"]
+
+        def download(cmd, max_bytes=None):
+            data = api.bytes(cmd, max_bytes)
+            if not draft and cmd[1].endswith(f"/assets/{zip_asset['id']}"):
+                zip_asset["content"] = b"!" + zip_asset["content"][1:]
+            return data
+
+        def mutate_on_publish(cmd, strip=True):
+            result = api(cmd, strip=strip)
+            if "draft=false" in cmd:
+                zip_asset["content"] = b"!" + zip_asset["content"][1:]
+            return result
+
+        monkeypatch.setattr(release_handler, "run_gh_bytes", download)
+        monkeypatch.setattr(release_handler, "run_gh", mutate_on_publish)
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert api.release["draft"] is False
+        assert "123" in caplog.text and "ZIP 原始字节" in caplog.text
+        assert not any("make_latest=true" in cmd for cmd in api.calls)
         assert api.latest is None and not saved
 
     def test_latest_failure_after_new_release_does_not_save_hash(self, release_planning_api, monkeypatch):
@@ -1739,27 +1804,38 @@ class TestOrphanTagCleanup:
     TAG_OBJECT_SHA = "b" * 40
     TAG_TARGET_SHA = "c" * 40
 
-    def ref_endpoint(self, tag):
-        return f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}"
+    TAG = "rules-aaaaaaaaaaaa"
+    REF_ENDPOINT = f"{REFS_ENDPOINT}{TAG[6:]}"
+    OBJECT_ENDPOINT = f"repos/{{owner}}/{{repo}}/git/tags/{TAG_OBJECT_SHA}"
+    COMMIT_ENDPOINT = f"repos/{{owner}}/{{repo}}/commits/{COMMIT_SHA}"
 
-    def commit_endpoint(self, sha):
-        return f"repos/{{owner}}/{{repo}}/commits/{sha}"
-
-    def tag_object_endpoint(self, sha):
-        return f"repos/{{owner}}/{{repo}}/git/tags/{sha}"
-
-    def object_response(self, obj_type, sha):
-        return f"{obj_type}\t{sha}"
-
-    def hash_tag_stub(self, ref_type, ref_sha, commit_date, extra=None):
+    def hash_tag_stub(self, ref_record, extra=None):
         responses = {
-            ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
-            ("api", self.ref_endpoint("rules-aaaaaaaaaaaa")): self.object_response(ref_type, ref_sha),
+            ("api", self.REFS_ENDPOINT): f"refs/tags/{self.TAG}",
+            ("api", self.REF_ENDPOINT): ref_record,
+            **(extra or {}),
         }
-        if commit_date is not None:
-            responses[("api", self.commit_endpoint(ref_sha))] = commit_date
-        responses.update(extra or {})
         return GhStub(responses=responses)
+
+    def annotated_response(self, *, object_type="commit", date=None):
+        record = {
+            "sha": self.TAG_TARGET_SHA,
+            "digest": "a" * 64,
+            "generation": "github-123-attempt-1",
+            "path": ".github/workflows/pipeline.yml",
+            "repo": "rksk102/ruleset-foundry",
+            "ref": "refs/heads/main",
+        }
+        return json.dumps({
+            "sha": self.TAG_OBJECT_SHA,
+            "tag": self.TAG,
+            "object": {"type": object_type, "sha": self.TAG_TARGET_SHA},
+            "message": release_handler.PROVENANCE_PREFIX + json.dumps(record),
+            "tagger": {"date": date} if date is not None else {},
+        })
+
+    def read_endpoints(self, stub):
+        return [cmd[1] for cmd in stub.calls if cmd[:1] == ["api"] and cmd[1] != "-X"]
 
     def delete_calls(self, stub):
         return [call for call in stub.calls if call[:3] == ["api", "-X", "DELETE"]]
@@ -1797,48 +1873,34 @@ class TestOrphanTagCleanup:
         assert "rules-dddddddddddd" not in flat, "本轮 tag 不参与对账"
         assert "rules-manual" not in flat and "v1.0.0" not in flat
 
-    def test_orphan_hash_tag_with_old_commit_has_unknown_creation_time(self, monkeypatch):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2020-01-01T00:00:00Z")
+    @pytest.mark.parametrize("commit_age", ["2020-01-01T00:00:00Z", "2026-03-01T00:00:00Z"])
+    def test_lightweight_hash_tag_is_kept_regardless_of_commit_age(self, monkeypatch, commit_age):
+        stub = self.hash_tag_stub(f"commit\t{self.COMMIT_SHA}", {("api", self.COMMIT_ENDPOINT): commit_age})
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-dddddddddddd", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        ) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT]
         assert self.delete_calls(stub) == []
-        assert f"commits/{self.COMMIT_SHA}" not in " ".join(stub.commands()), "提交时间不是 ref 创建时间"
-
-    def test_keeps_orphan_hash_tag_with_recent_commit(self, monkeypatch):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2026-03-01T00:00:00Z")
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == [], "未过保留期的 tag 不得删除"
 
     def test_annotated_orphan_tag_without_recorded_creation_time_is_kept(self, monkeypatch):
         stub = self.hash_tag_stub(
-            "tag",
-            self.TAG_OBJECT_SHA,
-            None,
-            extra={
-                ("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response(
-                    "commit", self.TAG_TARGET_SHA
-                ),
-                ("api", self.commit_endpoint(self.TAG_TARGET_SHA)): "2020-01-01T00:00:00Z",
-            },
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response()},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-dddddddddddd", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        ) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
         assert self.delete_calls(stub) == []
-        assert f"commits/{self.TAG_TARGET_SHA}" not in " ".join(stub.commands())
 
     def test_annotated_tag_pointing_at_non_commit_is_kept(self, monkeypatch, caplog):
         stub = self.hash_tag_stub(
-            "tag",
-            self.TAG_OBJECT_SHA,
-            None,
-            extra={("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response("blob", "d" * 40)},
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response(object_type="blob", date="2020-01-01T00:00:00Z")},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
@@ -1846,39 +1908,46 @@ class TestOrphanTagCleanup:
         assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
         assert self.delete_calls(stub) == [], "目标不是提交时必须 fail-safe 保留"
         assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-        assert "rules-aaaaaaaaaaaa" in caplog.text, "保留原因必须可追查"
+        assert self.TAG in caplog.text, "保留原因必须可追查"
 
     def test_unresolvable_tag_object_is_kept_with_warning(self, monkeypatch, caplog):
-        stub = GhStub(
-            fail_when=lambda cmd: "git/ref/tags/" in " ".join(cmd),
-            responses={("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa"},
+        stub = self.hash_tag_stub(f"tag\t{self.TAG_OBJECT_SHA}")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == []
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    def test_unparseable_tag_ref_is_kept(self, monkeypatch, caplog):
+        stub = self.hash_tag_stub("garbage")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT]
+        assert self.delete_calls(stub) == []
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("date", "expired"),
+        [("not-a-date", False), ("2026-03-01T00:00:00Z", False), ("2020-01-01T00:00:00Z", True)],
+        ids=["unparseable", "recent", "expired"],
+    )
+    def test_annotated_orphan_cleanup_uses_tag_date(self, monkeypatch, date, expired):
+        stub = self.hash_tag_stub(
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response(date=date)},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "commits/" not in " ".join(stub.commands()), "对象不明时不得猜测提交"
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-
-    def test_unparsable_commit_object_is_kept(self, monkeypatch, caplog):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, None)
-        stub.responses[("api", self.ref_endpoint("rules-aaaaaaaaaaaa"))] = "garbage"
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-
-    def test_unparsable_commit_date_is_kept(self, monkeypatch, caplog):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "not-a-date")
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == int(expired)
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
+        assert self.delete_calls(stub) == (
+            [["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{self.TAG}"]] if expired else []
+        )
 
     def test_hash_tag_with_release_or_current_is_not_queried(self, monkeypatch):
         refs = "\n".join(

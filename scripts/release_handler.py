@@ -1407,10 +1407,17 @@ def process_release(tag, digest, plan, tag_date, tag_time):
         finally:
             for path in paths:
                 Path(path).unlink(missing_ok=True)
+    release_id = release["id"]
+    if release_asset_records(release_id) != assets:
+        raise ReleaseError(f"设置 latest 前 Release {release_id} 的资产记录已变化")
+    # 草稿公开或复用后，列表元数据仍可能与实际下载内容不同步。
+    reusable, why = verify_release_reusable(tag, tag_id, records=assets)
+    if not reusable:
+        raise ReleaseError(f"设置 latest 前 Release {release_id} 的资产内容复核失败（{why}）")
     _check_release_state(release, tag_object)
-    if release_asset_records(release["id"]) != assets:
-        raise ReleaseError("设置 latest 前目标 Release 资产记录已变化")
-    endpoint = f"repos/{{owner}}/{{repo}}/releases/{release['id']}"
+    if release_asset_records(release_id) != assets:
+        raise ReleaseError(f"设置 latest 前 Release {release_id} 的资产记录已变化")
+    endpoint = f"repos/{{owner}}/{{repo}}/releases/{release_id}"
     if run_gh(["api", endpoint, "--method", "PATCH", "-f", "make_latest=true"]) is None:
         raise ReleaseError("无法将已公开 Release 标记为 latest")
 
