@@ -215,13 +215,13 @@ class TestMrsFormat:
         with pytest.raises(mrs_format.MrsFormatError, match="range"):
             mrs_format.validate_mrs(path, "ipcidr")
 
-    def test_mixed_address_family_range_is_rejected(self, work_dir):
-        path = work_dir / "mixed.mrs"
+    def test_reversed_range_across_mapping_boundary_is_rejected(self, work_dir):
+        path = work_dir / "reversed-boundary.mrs"
         body = (
             b"\x01"
             + struct.pack(">q", 1)
-            + ipaddress.ip_address("1.0.0.0").ipv6_mapped.packed
             + ipaddress.ip_address("2001:db8::1").packed
+            + ipaddress.ip_address("1.0.0.0").ipv6_mapped.packed
         )
         path.write_bytes(compress_zstd(b"MRS\x01\x01" + struct.pack(">qq", 1, 0) + body))
         with pytest.raises(mrs_format.MrsFormatError, match="range"):
@@ -233,7 +233,39 @@ class TestMrsFormat:
         mrs = work_dir / "mapped.mrs"
         mrs.write_bytes(ipcidr_mrs_bytes(["::ffff:192.0.2.0/120"]))
 
+        mrs_format.verify_product_pair(txt, mrs, "ipcidr", forbid_default_route=True)
+
+    def test_ipv6_cidr_crossing_mapping_boundary_is_rejected(self, work_dir):
+        network = "::fffe:0:0/95"
+        txt_root = work_dir / "txt"
+        mrs_root = work_dir / "mrs"
+        rel = Path("direct/ipcidr/Owner/boundary.txt")
+        txt = txt_root / rel
+        txt.parent.mkdir(parents=True)
+        txt.write_text(network + "\n", encoding="utf-8")
+        mrs = mrs_root / rel.with_suffix(".mrs")
+        mrs.parent.mkdir(parents=True)
+        mrs.write_bytes(ipcidr_mrs_bytes([network]))
+
+        with pytest.raises(manifest.ManifestError, match="地址族"):
+            release_handler.validate_product_files(txt_root, mrs_root)
+
+    @pytest.mark.parametrize(
+        ("network", "halves"),
+        [("0.0.0.0/0", ["0.0.0.0/1", "128.0.0.0/1"]), ("::/0", ["::/1", "8000::/1"])],
+        ids=["ipv4", "ipv6"],
+    )
+    @pytest.mark.parametrize("split", [False, True], ids=["explicit", "split"])
+    def test_pair_can_reject_complete_address_family(self, work_dir, network, halves, split):
+        rules = halves if split else [network]
+        txt = work_dir / "full.txt"
+        txt.write_text("\n".join(rules) + "\n", encoding="utf-8")
+        mrs = work_dir / "full.mrs"
+        mrs.write_bytes(ipcidr_mrs_bytes([network], count=len(rules)))
+
         mrs_format.verify_product_pair(txt, mrs, "ipcidr")
+        with pytest.raises(mrs_format.MrsFormatError, match=r"覆盖整个 IPv[46] 地址族"):
+            mrs_format.verify_product_pair(txt, mrs, "ipcidr", forbid_default_route=True)
 
     def test_duplicate_sibling_labels_are_rejected(self, work_dir):
         path = work_dir / "duplicate-labels.mrs"

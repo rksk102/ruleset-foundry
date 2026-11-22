@@ -62,6 +62,10 @@ class CidrErrorSummary(NamedTuple):
     samples: tuple[tuple[str, str], ...]
 
 
+class FullAddressFamilyCoverageError(ValueError):
+    pass
+
+
 def parse_ip_network(entry, strict=False, extract=False):
     candidate = entry.strip()
     if extract:
@@ -100,9 +104,16 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
         else:
             ipv6_nets.append(net)
 
-    v4_result = [str(n) for n in ipaddress.collapse_addresses(ipv4_nets)]
-    v6_result = [str(n) for n in ipaddress.collapse_addresses(ipv6_nets)]
-    return sorted(v4_result) + sorted(v6_result), CidrErrorSummary(error_count, tuple(error_samples))
+    # 显式 /0 沿用输入丢弃；等价区间合成全覆盖必须在写出前失败。
+    result = []
+    for networks in (ipv4_nets, ipv6_nets):
+        family_rules = []
+        for network in ipaddress.collapse_addresses(networks):
+            if network.prefixlen == 0:
+                raise FullAddressFamilyCoverageError(f"规则覆盖整个 IPv{network.version} 地址族: {network}")
+            family_rules.append(str(network))
+        result.extend(sorted(family_rules))
+    return result, CidrErrorSummary(error_count, tuple(error_samples))
 
 
 USERINFO_HIDDEN_PLACEHOLDER = "<URL 已隐藏：userinfo 可能被 / ? # 截断>"

@@ -303,6 +303,26 @@ class TestProcessTaskLogic:
         assert "1.0.0.0/23" in content
         assert "0.0.0.0/0" not in content
 
+    @pytest.mark.parametrize(
+        "halves", [("0.0.0.0/1", "128.0.0.0/1"), ("::/1", "8000::/1")], ids=["ipv4", "ipv6"]
+    )
+    def test_ip_merge_rejects_complete_address_family(self, work_dir, monkeypatch, halves):
+        source = work_dir / "rulesets"
+        output = work_dir / "merged"
+        inputs = ["direct/ipcidr/A/left.txt", "direct/ipcidr/B/right.txt"]
+        for rel, rule in zip(inputs, halves, strict=True):
+            write(source / rel, rule + "\n")
+
+        with pytest.raises(utils.FullAddressFamilyCoverageError, match=r"覆盖整个 IPv[46] 地址族"):
+            self.use_dirs(
+                monkeypatch,
+                source,
+                output,
+                lambda: merger.process_task_logic("direct", "ipcidr", "Owner", "all.txt", inputs, "合并测试"),
+            )
+
+        assert not (output / "direct/ipcidr/Owner/all.txt").exists()
+
     def test_ip_task_reports_bounded_invalid_cidr_samples(self, tmp_path, monkeypatch):
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"
@@ -674,6 +694,38 @@ class TestConflictPolicyReporting:
 
 
 class TestMergerGuards:
+    def test_cleanup_failure_aborts_before_writing_new_generation(self, work_dir, monkeypatch, capsys):
+        source, output = work_dir / "rulesets", work_dir / "merged"
+        rel = "block/domain/Owner/rules.txt"
+        write(source / rel, "a.example\n")
+        manifest.save_manifest(
+            source / manifest.MANIFEST_NAME,
+            manifest.hash_entries(source, [rel]),
+            generation=manifest.expected_generation() or "test-cleanup",
+        )
+        stale = output / "stale.md"
+        write(stale, "stale file\n")
+        unlink = Path.unlink
+
+        def locked_unlink(path, *args, **kwargs):
+            if path == stale:
+                raise OSError("locked")
+            return unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", locked_unlink)
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(output))
+        monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+        assert "清理失败" in capsys.readouterr().out
+        assert stale.read_text(encoding="utf-8") == "stale file\n"
+        assert not (output / rel).exists()
+        assert not (output / manifest.MANIFEST_NAME).exists()
+
     def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch, capsys):
         source = work_dir / "rulesets"
         cfg = work_dir / "config.yaml"

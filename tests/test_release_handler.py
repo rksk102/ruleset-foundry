@@ -3,11 +3,13 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import manifest
 import pytest
@@ -203,13 +205,13 @@ class TestParseSha256sums:
 
 
 class TestReleaseReusable:
-    def test_reusable_when_digests_match(self, publish_workspace, monkeypatch):
+    def test_reusable_when_digests_match(self, publish_workspace, release_planning_api, monkeypatch):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is True, why
 
-    def test_rejects_wrong_file_hash(self, publish_workspace, monkeypatch):
+    def test_rejects_wrong_file_hash(self, publish_workspace, release_planning_api, monkeypatch):
         stub, _zip = remote_release_stub(
             publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
@@ -218,14 +220,14 @@ class TestReleaseReusable:
         assert ok is False
         assert "逐文件哈希" in why
 
-    def test_rejects_zip_digest_mismatch(self, publish_workspace, monkeypatch):
+    def test_rejects_zip_digest_mismatch(self, publish_workspace, release_planning_api, monkeypatch):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", corrupt_zip_digest=True)
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is False
         assert "zip 的远端 digest" in why
 
-    def test_rejects_mismatched_nonempty_api_digest(self, publish_workspace, monkeypatch):
+    def test_rejects_mismatched_nonempty_api_digest(self, publish_workspace, release_planning_api, monkeypatch):
         stub, zip_name = remote_release_stub(publish_workspace, "abc123abc123")
         stub.asset_digests[zip_name] = "sha256:" + "0" * 64
         patch_remote_release(monkeypatch, stub)
@@ -233,7 +235,7 @@ class TestReleaseReusable:
         assert ok is False
         assert "zip 的远端 digest" in why
 
-    def test_rejects_missing_digest(self, publish_workspace, monkeypatch):
+    def test_rejects_missing_digest(self, publish_workspace, release_planning_api, monkeypatch):
         stub, zip_name = remote_release_stub(
             publish_workspace, "abc123abc123", corrupt_file="merged-rules/block/domain/A/x.txt"
         )
@@ -243,19 +245,23 @@ class TestReleaseReusable:
         assert ok is False
         assert "逐文件哈希" in why
 
-    def test_allows_empty_api_digests_when_all_content_matches(self, publish_workspace, monkeypatch):
+    def test_allows_empty_api_digests_when_all_content_matches(
+        self, publish_workspace, release_planning_api, monkeypatch
+    ):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", empty_digests=True)
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is True, why
 
-    def test_crlf_sha256sums_uses_raw_bytes_for_digest(self, publish_workspace, monkeypatch):
+    def test_crlf_sha256sums_uses_raw_bytes_for_digest(self, publish_workspace, release_planning_api, monkeypatch):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", newline="\r\n")
         patch_remote_release(monkeypatch, stub)
         ok, why = release_handler.verify_release_reusable("rules-abc123abc123", "abc123abc123")
         assert ok is True, why
 
-    def test_invalid_utf8_is_a_reuse_failure_not_an_exception(self, publish_workspace, monkeypatch):
+    def test_invalid_utf8_is_a_reuse_failure_not_an_exception(
+        self, publish_workspace, release_planning_api, monkeypatch
+    ):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")
         invalid = b"\xff\xfe"
         stub.asset_bytes["SHA256SUMS"] = invalid
@@ -267,7 +273,7 @@ class TestReleaseReusable:
         assert ok is False
         assert "UTF-8" in why
 
-    def test_rejects_wrong_zip_with_self_consistent_sums(self, publish_workspace, monkeypatch):
+    def test_rejects_wrong_zip_with_self_consistent_sums(self, publish_workspace, release_planning_api, monkeypatch):
         entries = [
             (rel, b"remote-tampered" if rel.endswith(".txt") else data)
             for rel, data in workspace_product_bytes(publish_workspace).items()
@@ -280,7 +286,7 @@ class TestReleaseReusable:
         assert ok is False
         assert "ZIP" in why
 
-    def test_rejects_duplicate_zip_entries(self, publish_workspace, monkeypatch):
+    def test_rejects_duplicate_zip_entries(self, publish_workspace, release_planning_api, monkeypatch):
         entries = list(workspace_product_bytes(publish_workspace).items())
         entries.append(("merged-rules/block/domain/A/x.txt", b"x"))
         with pytest.warns(UserWarning, match="Duplicate name"):
@@ -293,7 +299,9 @@ class TestReleaseReusable:
         assert "重复" in why
 
     @pytest.mark.parametrize("extra_name", ["../escape.txt", "merged-rules/A/extra.txt"])
-    def test_rejects_traversal_and_extra_zip_entries(self, publish_workspace, monkeypatch, extra_name):
+    def test_rejects_traversal_and_extra_zip_entries(
+        self, publish_workspace, release_planning_api, monkeypatch, extra_name
+    ):
         entries = list(workspace_product_bytes(publish_workspace).items())
         entries.append((extra_name, b"extra"))
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123", zip_entries=entries)
@@ -307,7 +315,7 @@ class TestReleaseReusable:
         ("limit_name", "value"),
         [("MAX_ZIP_ENTRIES", 1), ("MAX_ZIP_ENTRY_SIZE", 0), ("MAX_ZIP_TOTAL_SIZE", 1)],
     )
-    def test_enforces_zip_read_limits(self, publish_workspace, monkeypatch, limit_name, value):
+    def test_enforces_zip_read_limits(self, publish_workspace, release_planning_api, monkeypatch, limit_name, value):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")
         patch_remote_release(monkeypatch, stub)
         monkeypatch.setattr(release_handler, limit_name, value, raising=False)
@@ -348,7 +356,9 @@ class TestReleaseReusable:
 
         assert ok is True, why
 
-    def test_entry_limit_is_checked_before_zipfile_initialization(self, publish_workspace, monkeypatch):
+    def test_entry_limit_is_checked_before_zipfile_initialization(
+        self, publish_workspace, release_planning_api, monkeypatch
+    ):
         stub, zip_name = remote_release_stub(publish_workspace, "abc123abc123")
         local_hashes = {
             rel: hashlib.sha256(data).hexdigest() for rel, data in workspace_product_bytes(publish_workspace).items()
@@ -364,7 +374,7 @@ class TestReleaseReusable:
         assert ok is False
         assert "限制" in why
 
-    def test_oversized_zip_asset_is_reused_failure(self, publish_workspace, monkeypatch):
+    def test_oversized_zip_asset_is_reused_failure(self, publish_workspace, release_planning_api, monkeypatch):
         stub, _zip = remote_release_stub(publish_workspace, "abc123abc123")
         patch_remote_release(monkeypatch, stub)
         monkeypatch.setattr(release_handler, "MAX_ZIP_ASSET_BYTES", 1)
@@ -380,14 +390,14 @@ class TestReleaseReusable:
         assert release_handler.needs_release_repair("new") is True
 
     def test_needs_repair_when_digests_do_not_match(self, monkeypatch):
-        tag = expected_tag("new")
+        tag = current_expected_tag()
         stub = GhStub(latest_tag=tag)
         monkeypatch.setattr(release_handler, "run_gh", stub)
         monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad"))
         assert release_handler.needs_release_repair("new") is True
 
     def test_no_repair_when_tag_and_digests_match(self, monkeypatch):
-        tag = expected_tag("new")
+        tag = current_expected_tag()
         stub = GhStub(latest_tag=tag)
         monkeypatch.setattr(release_handler, "run_gh", stub)
         monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
@@ -395,20 +405,20 @@ class TestReleaseReusable:
 
 
 class TestNeedsPublishMode:
-    def test_prints_false_when_unchanged_and_release_complete(self, monkeypatch, capsys):
+    def test_prints_false_when_unchanged_and_release_complete(self, release_planning_api, monkeypatch, capsys):
+        release_planning_api.publish_existing()
+        capsys.readouterr()
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
-        monkeypatch.setattr(release_handler, "needs_release_repair", lambda *a, **k: False)
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
 
         release_handler.main()
 
         assert capsys.readouterr().out.strip() == "false"
 
-    def test_prints_true_when_repair_needed(self, monkeypatch, capsys):
+    def test_prints_true_when_repair_needed(self, release_planning_api, monkeypatch, capsys):
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 1, 1))
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: "h")
-        monkeypatch.setattr(release_handler, "needs_release_repair", lambda *a, **k: True)
         monkeypatch.setattr(sys, "argv", ["release_handler.py", "--needs-publish"])
 
         release_handler.main()
@@ -556,255 +566,6 @@ class TestZipTargetFiles:
         assert not (zip_workspace / "merged-rules-2026-10-05.zip").exists()
 
 
-class TestPublishRelease:
-    def test_missing_tag_is_created_at_build_sha_before_release(self, monkeypatch):
-        build_sha = "a" * 40
-        monkeypatch.setenv("GITHUB_SHA", build_sha)
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result == "ok"
-        create_ref = next(call for call in stub.calls if call[:2] == ["api", "repos/{owner}/{repo}/git/refs"])
-        assert create_ref[2:] == [
-            "--method", "POST", "-f", "ref=refs/tags/rules-test", "-f", f"sha={build_sha}",
-        ]
-        assert "--verify-tag" in stub.calls[-1]
-
-    @pytest.mark.parametrize("concurrent_sha", ["a" * 40, "b" * 40], ids=["matching", "mismatched"])
-    def test_concurrent_tag_target_is_rechecked_before_release(self, monkeypatch, concurrent_sha):
-        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-        stub = GhStub()
-        original = stub.__call__
-
-        def concurrent_create(cmd, strip=True):
-            if cmd[:2] == ["api", "repos/{owner}/{repo}/git/refs"]:
-                stub.tag_refs["refs/tags/rules-test"] = concurrent_sha
-            return original(cmd, strip)
-
-        result = run_with_stub(
-            concurrent_create,
-            lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        if concurrent_sha == "a" * 40:
-            assert result == "ok"
-            assert stub.release_actions() == ["create"]
-        else:
-            assert result is None
-            assert stub.release_actions() == []
-
-    def test_new_release_targets_build_sha_instead_of_moving_default_branch(self, monkeypatch):
-        build_sha = "a" * 40
-        local_sha = "b" * 40
-        monkeypatch.setenv("GITHUB_SHA", build_sha)
-        monkeypatch.setattr(
-            release_handler.subprocess, "run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, local_sha + "\n", ""),
-        )
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result == "ok"
-        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
-        assert "--target" in create
-        assert create[create.index("--target") + 1] == build_sha
-        assert "--latest=false" in create
-
-    def test_orphan_tag_with_different_target_prevents_remote_creation(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-        endpoint = "repos/{owner}/{repo}/git/matching-refs/tags/rules-test"
-        stub = GhStub(responses={("api", endpoint): f"commit\t{'b' * 40}"})
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result is None
-        assert stub.release_actions() == []
-
-    def test_orphan_tag_target_lookup_failure_prevents_remote_creation(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-        stub = GhStub(fail_when=lambda cmd: cmd[0] == "api" and "matching-refs/tags/rules-test" in cmd[1])
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result is None
-        assert stub.release_actions() == []
-
-    def test_matching_annotated_orphan_tag_allows_release_creation(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-        endpoint = "repos/{owner}/{repo}/git/matching-refs/tags/rules-test"
-        object_endpoint = f"repos/{{owner}}/{{repo}}/git/tags/{'b' * 40}"
-        stub = GhStub(
-            responses={
-                ("api", endpoint): f"tag\t{'b' * 40}",
-                ("api", object_endpoint): f"commit\t{'a' * 40}",
-            }
-        )
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result == "ok"
-        assert stub.calls[0][:2] == ["api", endpoint]
-        assert stub.release_actions() == ["create"]
-
-    def test_local_creation_resolves_full_sha_from_repo_head(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_SHA", raising=False)
-        sha = "c" * 40
-        git_calls = []
-
-        def run(command, **kwargs):
-            git_calls.append((command, kwargs))
-            return subprocess.CompletedProcess(command, 0, sha + "\n", "")
-
-        monkeypatch.setattr(release_handler.subprocess, "run", run)
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result == "ok"
-        assert git_calls[0][0] == ["git", "rev-parse", "HEAD"]
-        assert git_calls[0][1]["cwd"] == release_handler.REPO_ROOT
-        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
-        assert create[create.index("--target") + 1] == sha
-
-    @pytest.mark.parametrize("sha", ["", "abc123", "main", "a" * 41])
-    def test_invalid_build_sha_prevents_remote_creation(self, monkeypatch, sha):
-        monkeypatch.setenv("GITHUB_SHA", sha)
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result is None
-        assert stub.calls == []
-
-    def test_unavailable_local_head_prevents_remote_creation(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_SHA", raising=False)
-
-        def fail(command, **kwargs):
-            raise subprocess.CalledProcessError(128, command, stderr="not a git repository")
-
-        monkeypatch.setattr(release_handler.subprocess, "run", fail)
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, False),
-        )
-
-        assert result is None
-        assert stub.calls == []
-
-    def test_existing_release_keeps_tag_when_build_sha_changes(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_SHA", "invalid-for-new-release")
-        stub = GhStub()
-
-        result = run_with_stub(
-            stub, lambda: release_handler.publish_release("rules-test", ZIP, "title", NOTES, True),
-        )
-
-        assert result == "ok"
-        assert stub.release_actions() == ["upload", "edit"]
-        assert not any("--target" in call or "--latest" in call for call in stub.calls)
-
-    def test_existing_release_updates_in_place(self):
-        stub = GhStub()
-        result = run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, True),
-        )
-        assert result == "ok"
-        assert stub.calls[0] == ["release", "upload", "rules-2026-10-05", ZIP, "--clobber"]
-        assert stub.calls[1] == [
-            "release",
-            "edit",
-            "rules-2026-10-05",
-            "--title",
-            "title",
-            "--notes",
-            NOTES,
-        ]
-        assert len(stub.calls) == 2
-
-    def test_extra_assets_uploaded_alongside_zip(self):
-        stub = GhStub()
-        run_with_stub(
-            stub,
-            lambda: release_handler.publish_release(
-                "rules-2026-10-05", ZIP, "title", NOTES, True, extra_assets=["SHA256SUMS"]
-            ),
-        )
-        assert stub.calls[0] == ["release", "upload", "rules-2026-10-05", ZIP, "SHA256SUMS", "--clobber"]
-
-    def test_extra_assets_included_on_create(self):
-        stub = GhStub()
-        run_with_stub(
-            stub,
-            lambda: release_handler.publish_release(
-                "rules-2026-10-05", ZIP, "title", NOTES, False, extra_assets=["SHA256SUMS"]
-            ),
-        )
-        create = next(c for c in stub.calls if c[1] == "create")
-        assert ZIP in create and "SHA256SUMS" in create
-
-    def test_missing_release_created(self, monkeypatch):
-        def unexpected_process(*args, **kwargs):
-            raise AssertionError("普通发布测试不应读取真实 Git HEAD 或启动外部进程")
-
-        monkeypatch.setattr(release_handler.subprocess, "run", unexpected_process)
-        stub = GhStub()
-        result = run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, False),
-        )
-        assert result == "ok"
-        assert stub.release_actions() == ["create"]
-        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
-        assert create[:4] == ["release", "create", "rules-2026-10-05", ZIP]
-        assert create[create.index("--target") + 1] == "a" * 40
-        assert "--latest" not in create
-        assert "--latest=false" in create
-
-    def test_upload_failure_skips_edit(self):
-        stub = GhStub(fail_when=lambda cmd: cmd[1] == "upload")
-        result = run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, True),
-        )
-        assert result is None
-        assert [c[1] for c in stub.calls] == ["upload"]
-
-    def test_edit_failure_propagates(self):
-        stub = GhStub(fail_when=lambda cmd: cmd[1] == "edit")
-        result = run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, True),
-        )
-        assert result is None
-        assert [c[1] for c in stub.calls] == ["upload", "edit"]
-
-    def test_create_failure_propagates(self):
-        stub = GhStub(fail_when=lambda cmd: cmd[1] == "create")
-        result = run_with_stub(
-            stub,
-            lambda: release_handler.publish_release("rules-2026-10-05", ZIP, "title", NOTES, False),
-        )
-        assert result is None
-
-
 @pytest.fixture
 def publish_workspace(work_dir, monkeypatch):
     monkeypatch.setattr(release_handler, "REPO_ROOT", "")
@@ -820,10 +581,13 @@ def expected_tag(product_hash):
     return "rules-" + hashlib.sha256(product_hash.encode()).hexdigest()[:12]
 
 
+def current_expected_tag():
+    return "rules-" + release_handler.release_content_digest()[:12]
+
+
 def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
     monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: (current, 1, 1))
     monkeypatch.setattr(release_handler, "load_last_hash", lambda: last)
-    monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: (True, "ok"))
     monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
     if saved is not None:
         monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
@@ -831,50 +595,547 @@ def stub_hash_state(monkeypatch, current="new", last=None, saved=None):
         monkeypatch.setattr(release_handler, "save_last_hash", lambda h: None)
 
 
+class ReleaseState:
+    def __init__(self, root, tag):
+        self.root = root
+        self.tag = tag
+        self.sha = os.environ["GITHUB_SHA"]
+        self.tags = {}
+        self.tag_objects = {}
+        self.builds = {}
+        self.release = None
+        self.assets = {}
+        self.next_asset_id = 1
+        self.latest = None
+        self.calls = []
+
+    def add_tag(self, sha=None, tag=None, generation=""):
+        tag = tag or self.tag
+        oid = hashlib.sha256(tag.encode()).hexdigest()[:40]
+        record = {
+            "sha": sha or self.sha, "digest": release_handler.release_content_digest(), "generation": generation,
+            "repo": "rksk102/ruleset-foundry", "ref": "refs/heads/main",
+            "path": ".github/workflows/pipeline.yml",
+        }
+        obj = {
+            "sha": oid, "tag": tag, "object": {"type": "commit", "sha": record["sha"]},
+            "message": release_handler.PROVENANCE_PREFIX + json.dumps(record, sort_keys=True, separators=(",", ":")),
+        }
+        self.tag_objects[oid] = self.tags[tag] = obj
+
+    def add_asset(self, name, content, state="uploaded"):
+        self.assets[name] = {
+            "name": name, "id": self.next_asset_id, "state": state, "size": len(content),
+            "digest": "sha256:" + hashlib.sha256(content).hexdigest() if state == "uploaded" else None,
+            "content": content,
+        }
+        self.next_asset_id += 1
+
+    def add_build(self, run_id, attempt, sha):
+        repo = {"full_name": "rksk102/ruleset-foundry"}
+        self.builds[run_id, attempt] = {
+            "id": run_id, "run_attempt": attempt, "head_branch": "main", "head_sha": sha,
+            "path": ".github/workflows/pipeline.yml", "event": "schedule",
+            "repository": repo, "head_repository": repo,
+        }
+
+    def __call__(self, cmd, strip=True):
+        self.calls.append(cmd)
+        if cmd[:2] == ["release", "edit"]:
+            self.latest = self.tag
+            return "ok"
+        if cmd[:2] == ["release", "list"]:
+            return "[]"
+        if cmd[:2] == ["api", "-X"]:
+            cmd = ["api", cmd[3], *cmd[1:3], *cmd[4:]]
+        if cmd[0] != "api":
+            return "ok"
+        endpoint = cmd[1]
+        method = "GET"
+        for flag in ("--method", "-X"):
+            if flag in cmd:
+                method = cmd[cmd.index(flag) + 1]
+        if endpoint == "repos/{owner}/{repo}/releases":
+            if method == "GET":
+                return "" if self.release is None else json.dumps(self.release)
+            assert method == "POST", cmd
+            body = next(x[5:] for x in cmd if x.startswith("body="))
+            self.release = {
+                "id": 123, "tag_name": self.tag, "draft": True, "body": body,
+                "target_commitish": next(x[17:] for x in cmd if x.startswith("target_commitish=")),
+                "author": {"login": "github-actions[bot]"},
+                "upload_url": "https://uploads.github.com/repos/rksk102/ruleset-foundry/releases/123/assets{?name,label}",
+            }
+            return json.dumps(self.release)
+        if endpoint == "repos/{owner}/{repo}/releases/123/assets":
+            return "\n".join(json.dumps({k: v for k, v in a.items() if k != "content"}) for a in self.assets.values())
+        if endpoint.startswith("https://uploads.github.com/") and "--input" in cmd:
+            path = Path(cmd[cmd.index("--input") + 1])
+            if self.release is None or not self.release["draft"] or path.name in self.assets:
+                return None
+            self.add_asset(path.name, path.read_bytes())
+            return "{}"
+        if endpoint == "repos/{owner}/{repo}/releases/123":
+            if method == "PATCH" and "draft=false" in cmd:
+                self.release["draft"] = False
+            if method == "PATCH" and "make_latest=true" in cmd:
+                self.latest = self.tag
+            return json.dumps(self.release)
+        if endpoint == f"repos/{{owner}}/{{repo}}/releases/tags/{self.tag}":
+            if self.release is None:
+                return None
+            return "\n".join(f"{name}\t" for name in self.assets)
+        if method == "DELETE":
+            if endpoint.startswith("repos/{owner}/{repo}/releases/assets/"):
+                asset_id = int(endpoint.rsplit("/", 1)[-1])
+                name = next((a["name"] for a in self.assets.values() if a["id"] == asset_id), None)
+                if name is None:
+                    return None
+                del self.assets[name]
+            return ""
+        if endpoint == "repos/{owner}/{repo}/git/tags":
+            sha = next(x[7:] for x in cmd if x.startswith("object="))
+            tag = next(x[4:] for x in cmd if x.startswith("tag="))
+            message = next(x[8:] for x in cmd if x.startswith("message="))
+            oid = hashlib.sha256((tag + sha + message).encode()).hexdigest()[:40]
+            self.tag_objects[oid] = {
+                "sha": oid, "tag": tag, "object": {"type": "commit", "sha": sha}, "message": message,
+            }
+            return json.dumps(self.tag_objects[oid])
+        if endpoint == "repos/{owner}/{repo}/git/refs":
+            tag = next(x[14:] for x in cmd if x.startswith("ref=refs/tags/"))
+            oid = next(x[4:] for x in cmd if x.startswith("sha="))
+            if tag in self.tags:
+                return None
+            self.tags[tag] = self.tag_objects[oid]
+            return "created"
+        if endpoint.startswith("repos/{owner}/{repo}/git/matching-refs/tags/"):
+            tag = endpoint.removeprefix("repos/{owner}/{repo}/git/matching-refs/tags/")
+            if tag == "rules-":
+                return "\n".join(f"refs/tags/{name}" for name in self.tags) if "--jq" in cmd else ""
+            obj = self.tags.get(tag)
+            if obj is None:
+                if re.fullmatch(r"rules-[0-9a-f]{12}", tag):
+                    return ""
+                raise release_handler.ReleaseError(f"未知 tag: {tag}")
+            return f"{'tag' if 'sha' in obj else 'commit'}\t{obj.get('sha', obj['object']['sha'])}"
+        if endpoint.startswith("repos/{owner}/{repo}/git/tags/"):
+            object_sha = endpoint.rsplit("/", 1)[-1]
+            obj = self.tag_objects.get(object_sha) or next(
+                (obj for obj in self.tags.values() if obj["sha"] == object_sha), None,
+            )
+            return json.dumps(obj) if obj is not None else None
+        attempt_path = re.fullmatch(r"repos/\{owner\}/\{repo\}/actions/runs/(\d+)/attempts/(\d+)(/jobs)?", endpoint)
+        if attempt_path:
+            run = self.builds.get((int(attempt_path[1]), int(attempt_path[2])))
+            if run is None:
+                return None
+            return f"{run['head_sha']}\tsuccess" if attempt_path[3] else json.dumps(run)
+        raise AssertionError(cmd)
+
+    def commands(self):
+        return [" ".join(call) for call in self.calls]
+
+    def bytes(self, cmd, max_bytes=None):
+        if cmd[0] == "release":
+            name = cmd[cmd.index("-p") + 1]
+            asset = self.assets.get(name)
+        elif cmd[0] == "api":
+            asset_id = int(cmd[1].rsplit("/", 1)[-1])
+            asset = next((a for a in self.assets.values() if a["id"] == asset_id), None)
+        else:
+            raise AssertionError(cmd)
+        if asset is None:
+            return None
+        content = asset["content"]
+        return None if max_bytes is not None and len(content) > max_bytes else content
+
+    def publish_current_bytes(self):
+        zip_name, file_map = release_handler.zip_target_files(self.tag[6:])
+        sums_name = release_handler.write_sha256sums(zip_name, file_map)
+        for name in (zip_name, sums_name):
+            path = Path(name)
+            self.add_asset(name, path.read_bytes())
+            path.unlink()
+
+    def publish_existing(self, draft=False, generation="", *, lightweight_legacy=False):
+        if lightweight_legacy:
+            self.tags[self.tag] = {"object": {"type": "commit", "sha": self.sha}}
+        else:
+            self.add_tag(generation=generation)
+        self.publish_current_bytes()
+        first_provenance = self.tags[self.tag].get("message", "").splitlines()[:1]
+        self.release = {
+            "id": 123, "tag_name": self.tag, "draft": draft,
+            "body": first_provenance[0] if first_provenance else "旧版自动构建说明", "target_commitish": self.sha,
+            "author": {"login": "github-actions[bot]"},
+            "upload_url": "https://uploads.github.com/repos/rksk102/ruleset-foundry/releases/123/assets{?name,label}",
+        }
+        self.latest = self.tag if not draft else None
+        return self.release
+
+    def run(self):
+        plan = release_handler.prepare_release_plan(self.tag, release_handler.release_content_digest())
+        release_handler.process_release(
+            self.tag, release_handler.release_content_digest(), plan, "2026-11-21", "20:00:00"
+        )
+
+
+@pytest.fixture(autouse=True)
+def release_test_environment(monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("PUBLISH_BUILD_GENERATION", raising=False)
+    monkeypatch.delenv("PUBLISH_GUARD", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "rksk102/ruleset-foundry")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+
+
+@pytest.fixture
+def release_state(publish_workspace, monkeypatch):
+    state = ReleaseState(publish_workspace, current_expected_tag())
+    monkeypatch.setattr(release_handler, "run_gh", state)
+    monkeypatch.setattr(release_handler, "run_gh_bytes", state.bytes)
+    return state
+
+
+class TestReleaseObjectContracts:
+    def test_missing_tag_is_created_at_build_sha_before_release(self, release_state, monkeypatch):
+        build_sha = "a" * 40
+        monkeypatch.setenv("GITHUB_SHA", build_sha)
+
+        release_state.run()
+
+        tag = release_state.tags[release_state.tag]
+        create_ref = next(call for call in release_state.calls if call[:2] == ["api", "repos/{owner}/{repo}/git/refs"])
+        assert f"ref=refs/tags/{release_state.tag}" in create_ref
+        assert f"sha={tag['sha']}" in create_ref
+        assert tag["object"]["sha"] == build_sha
+        assert release_state.release["target_commitish"] == build_sha
+
+    @pytest.mark.parametrize("concurrent_sha", ["a" * 40, "b" * 40], ids=["matching", "mismatched"])
+    def test_concurrent_tag_target_is_rechecked_before_release(self, release_state, monkeypatch, concurrent_sha):
+        original = release_state.__call__
+
+        def concurrent_create(cmd, strip=True):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/git/refs"]:
+                release_state.add_tag(sha=concurrent_sha)
+            return original(cmd, strip=strip)
+
+        monkeypatch.setattr(release_handler, "run_gh", concurrent_create)
+        if concurrent_sha == "a" * 40:
+            release_state.run()
+            assert release_state.latest == release_state.tag
+        else:
+            with pytest.raises(release_handler.ReleaseError, match="拒绝"):
+                release_state.run()
+            assert release_state.release is None
+
+    def test_new_release_targets_build_sha_instead_of_moving_default_branch(self, release_state, monkeypatch):
+        build_sha = "a" * 40
+        monkeypatch.setenv("GITHUB_SHA", build_sha)
+        release_state.run()
+        assert release_state.release["target_commitish"] == build_sha
+        assert release_state.tags[release_state.tag]["object"]["sha"] == build_sha
+
+    def test_orphan_tag_with_different_target_prevents_remote_creation(self, release_state):
+        release_state.tags[release_state.tag] = {
+            "sha": "d" * 40, "tag": release_state.tag,
+            "object": {"type": "commit", "sha": "b" * 40}, "message": "unknown",
+        }
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release is None
+
+    def test_orphan_tag_target_lookup_failure_prevents_remote_creation(self, release_state, monkeypatch):
+        monkeypatch.setattr(release_handler, "run_gh", lambda cmd: None)
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release is None
+
+    def test_matching_annotated_orphan_tag_allows_release_creation(self, release_state):
+        release_state.add_tag()
+        release_state.run()
+        assert release_state.release["draft"] is False
+        assert release_state.latest == release_state.tag
+
+    def test_local_creation_resolves_full_sha_from_repo_head(self, release_state, monkeypatch):
+        monkeypatch.delenv("GITHUB_SHA")
+        sha = "c" * 40
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, sha + "\n", "")
+
+        monkeypatch.setattr(release_handler.subprocess, "run", run)
+        release_state.run()
+        assert calls[0][0] == ["git", "rev-parse", "HEAD"]
+        assert calls[0][1]["cwd"] == (release_handler.REPO_ROOT or None)
+        assert release_state.tags[release_state.tag]["object"]["sha"] == sha
+
+    @pytest.mark.parametrize("sha", ["", "abc123", "main", "a" * 41])
+    def test_invalid_build_sha_prevents_remote_creation(self, release_state, monkeypatch, sha):
+        monkeypatch.setenv("GITHUB_SHA", sha)
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release is None and release_state.latest is None
+
+    def test_unavailable_local_head_prevents_remote_creation(self, release_state, monkeypatch):
+        monkeypatch.delenv("GITHUB_SHA")
+        def fail(command, **kwargs):
+            raise subprocess.CalledProcessError(128, command, stderr="not a git repository")
+        monkeypatch.setattr(release_handler.subprocess, "run", fail)
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release is None
+
+    def test_existing_release_keeps_tag_when_build_sha_changes(self, release_state, monkeypatch):
+        release_state.publish_existing()
+        original_tag = release_state.tags[release_state.tag]
+        monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+
+        release_state.run()
+
+        assert release_state.tags[release_state.tag] is original_tag
+        assert not any("--input" in call for call in release_state.calls)
+
+    def test_existing_release_updates_in_place(self, release_state):
+        release_state.publish_existing()
+        before = {name: item["content"] for name, item in release_state.assets.items()}
+        release_state.run()
+        assert release_state.latest == release_state.tag
+        assert before == {name: item["content"] for name, item in release_state.assets.items()}
+        assert not any("--clobber" in call for call in release_state.calls)
+
+    def test_extra_assets_uploaded_alongside_zip(self, release_state):
+        release_state.run()
+        uploads = [call for call in release_state.calls if "--input" in call]
+        assert len(uploads) == 2
+        assert {call[call.index("--input") + 1] for call in uploads} == set(release_state.assets)
+
+    def test_extra_assets_included_on_create(self, release_state):
+        release_state.run()
+        assert set(release_state.assets) == release_handler.expected_assets(release_state.tag[6:])
+
+    def test_missing_release_created(self, release_state, monkeypatch):
+        def unexpected_process(*args, **kwargs):
+            raise AssertionError("CI 构建 SHA 已提供，不应读取本地 HEAD")
+        monkeypatch.setattr(release_handler.subprocess, "run", unexpected_process)
+        release_state.run()
+        assert release_state.release["draft"] is False
+        assert release_state.latest == release_state.tag
+
+    def test_upload_failure_skips_edit(self, release_state, monkeypatch):
+        original = release_state.__call__
+        monkeypatch.setattr(
+            release_handler, "run_gh", lambda cmd: None if "--input" in cmd else original(cmd)
+        )
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release["draft"] is True and release_state.latest is None
+
+    def test_edit_failure_propagates(self, release_state, monkeypatch):
+        original = release_state.__call__
+        monkeypatch.setattr(
+            release_handler, "run_gh", lambda cmd: None if "make_latest=true" in cmd else original(cmd)
+        )
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.latest is None
+
+    def test_create_failure_propagates(self, release_state, monkeypatch):
+        posts = []
+
+        def fail_create(cmd):
+            if cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"]:
+                posts.append(cmd)
+                return None
+            return release_state(cmd)
+
+        monkeypatch.setattr(release_handler, "run_gh", fail_create)
+        with pytest.raises(release_handler.ReleaseError, match="无法创建 Release 草稿"):
+            release_state.run()
+        assert len(posts) == 1
+        assert release_state.release is None and release_state.latest is None
+
+    def test_created_draft_survives_failed_readback(self, release_state, monkeypatch):
+        api = release_state
+        failed_readbacks = []
+
+        def fail_readback(cmd):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/releases"] and "--paginate" in cmd and api.release:
+                failed_readbacks.append(cmd)
+                return None
+            return api(cmd)
+
+        monkeypatch.setattr(release_handler, "run_gh", fail_readback)
+        with pytest.raises(release_handler.ReleaseError, match="无法确认目标 Release 状态"):
+            api.run()
+        assert len(failed_readbacks) == 1
+        assert api.release["draft"] is True and api.latest is None
+        assert not api.assets
+
+        monkeypatch.setattr(release_handler, "run_gh", api)
+        api.run()
+
+        assert api.release["draft"] is False and api.latest == api.tag
+        assert sum(cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"] for cmd in api.calls) == 1
+
+    def test_new_release_identity_uses_product_hash(self, release_state):
+        first = release_state.tag
+        product = release_state.root / "merged-rules/block/domain/A/x.txt"
+        product.write_bytes(product.read_bytes() + b"# description\n")
+        assert current_expected_tag() != first
+
+    def test_complete_assets_with_bad_digest_are_reuploaded(self, release_state):
+        release_state.publish_existing()
+        release_state.assets[f"merged-rules-{release_state.tag[6:]}.zip"]["digest"] = "sha256:" + "0" * 64
+        with pytest.raises(release_handler.ReleaseError, match="禁止覆盖"):
+            release_state.run()
+        assert not any("--input" in call for call in release_state.calls)
+
+    def test_incomplete_release_for_same_hash_is_repaired(self, release_state):
+        release_state.publish_existing(draft=True)
+        release_state.assets.pop("SHA256SUMS")
+        release_state.run()
+        assert release_state.release["draft"] is False
+        assert release_state.latest == release_state.tag
+
+    def test_republishes_when_asset_incomplete(self, release_state):
+        release_state.publish_existing()
+        release_state.assets.pop("SHA256SUMS")
+        with pytest.raises(release_handler.ReleaseError, match="禁止覆盖"):
+            release_state.run()
+        assert release_state.latest == release_state.tag
+
+    def test_annotated_tag_is_dereferenced_to_its_commit(self, monkeypatch):
+        stub = GhStub(responses={
+            ("api", "repos/{owner}/{repo}/git/matching-refs/tags/rules-"): "refs/tags/rules-aaaaaaaaaaaa"
+        })
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-current", datetime.datetime.now(datetime.UTC)
+        ) == 0
+        assert not any("/commits/" in call for call in stub.commands())
+
+    def test_deletes_orphan_hash_tag_whose_commit_is_old(self, monkeypatch):
+        stub = GhStub(responses={
+            ("api", "repos/{owner}/{repo}/git/matching-refs/tags/rules-"): "refs/tags/rules-aaaaaaaaaaaa"
+        })
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-current", datetime.datetime.now(datetime.UTC)
+        ) == 0
+        assert stub.release_actions() == []
+
+
+class TestDraftRecovery:
+    def test_cross_commit_orphan_tag_resumes_with_verified_build(self, release_state, monkeypatch):
+        original_sha = "b" * 40
+        release_state.add_tag(sha=original_sha, generation="github-123-attempt-1")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-124-attempt-2")
+        original = release_state.__call__
+
+        def platform(cmd, strip=True):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/actions/runs/123/attempts/1"]:
+                return json.dumps({
+                    "id": 123, "run_attempt": 1, "head_branch": "main", "head_sha": original_sha,
+                    "path": release_handler.WORKFLOW_PATH, "event": "schedule",
+                    "repository": {"full_name": "rksk102/ruleset-foundry"},
+                    "head_repository": {"full_name": "rksk102/ruleset-foundry"},
+                })
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/actions/runs/123/attempts/1/jobs"]:
+                return f"{original_sha}\tsuccess"
+            return original(cmd, strip=strip)
+
+        monkeypatch.setattr(release_handler, "run_gh", platform)
+        release_state.run()
+
+        assert release_state.latest == release_state.tag
+        assert release_state.release["draft"] is False
+        assert release_state.release["target_commitish"] == original_sha
+
+    def test_new_release_uses_draft_then_publishes_and_marks_latest(self, release_state):
+        release_state.run()
+
+        assert release_state.release["draft"] is False
+        assert release_state.latest == release_state.tag
+        assert set(release_state.assets) == release_handler.expected_assets(release_state.tag[6:])
+        assert not any("--clobber" in c for c in release_state.calls)
+
+    def test_ref_create_failure_is_recovered_from_tag_object(self, release_state, monkeypatch):
+        original = release_state.__call__
+        def failed_ref(cmd, strip=True):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/git/refs"]:
+                release_state.add_tag()
+                return None
+            return original(cmd)
+        monkeypatch.setattr(release_handler, "run_gh", failed_ref)
+
+        release_state.run()
+
+        assert release_state.latest == release_state.tag
+
+    def test_unknown_orphan_tag_cannot_resume(self, release_state):
+        release_state.tags[release_state.tag] = {
+            "sha": "d" * 40, "tag": release_state.tag,
+            "object": {"type": "commit", "sha": "b" * 40}, "message": "unknown",
+        }
+
+        with pytest.raises(release_handler.ReleaseError):
+            release_state.run()
+        assert release_state.release is None and release_state.latest is None
+
+    def test_upload_rechecks_guard(self, release_state, monkeypatch):
+        checks = []
+        monkeypatch.setattr(release_handler.publish_guard, "ensure_current", lambda: checks.append("guard"))
+
+        release_state.run()
+
+        assert len(checks) >= 3
+
+
+@pytest.fixture
+def release_planning_api(publish_workspace, monkeypatch):
+    state = ReleaseState(publish_workspace, current_expected_tag())
+    monkeypatch.setattr(release_handler, "run_gh", state)
+    monkeypatch.setattr(release_handler, "run_gh_bytes", state.bytes)
+    monkeypatch.setattr(release_handler, "latest_rules_release_tag", lambda: state.latest)
+    return state
+
+
 class TestMainOrchestration:
-    def test_invalid_build_sha_does_not_create_release_or_advance_state(self, publish_workspace, monkeypatch):
+    def test_invalid_build_sha_does_not_create_release_or_advance_state(self, release_planning_api, monkeypatch):
         monkeypatch.setenv("GITHUB_SHA", "short-sha")
         saved = []
         stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
-        stub = GhStub(release_exists=False)
 
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+        with pytest.raises(SystemExit):
+            release_handler.main()
 
-        assert exc.value.code == 1
-        assert "create" not in stub.release_actions()
-        assert not any("--latest" in call for call in stub.calls)
+        assert release_planning_api.release is None and release_planning_api.latest is None
         assert saved == []
-        assert not list(publish_workspace.glob("merged-rules-*.zip"))
-        assert not (publish_workspace / "SHA256SUMS").exists()
 
-    def test_mismatched_orphan_tag_does_not_create_release_or_advance_state(self, publish_workspace, monkeypatch):
-        product_hash = "e" * 64
-        release_id = release_handler.release_id_for_hash(product_hash)
-        endpoint = f"repos/{{owner}}/{{repo}}/git/matching-refs/tags/rules-{release_id}"
+    def test_mismatched_orphan_tag_does_not_create_release_or_advance_state(self, release_planning_api, monkeypatch):
         saved = []
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-        stub = GhStub(
-            release_exists=False,
-            responses={("api", endpoint): f"commit\t{'b' * 40}"},
-        )
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        release_planning_api.tags[release_planning_api.tag] = {
+            "sha": "d" * 40, "message": "foreign", "object": {"type": "commit", "sha": "b" * 40},
+        }
 
         with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+            release_handler.main()
 
         assert exc.value.code == 1
-        assert "create" not in stub.release_actions()
-        assert not any("--latest" in call for call in stub.calls)
+        assert release_planning_api.release is None and release_planning_api.latest is None
+        assert not any("POST" in cmd or "PATCH" in cmd for cmd in release_planning_api.calls)
         assert saved == []
-        assert not list(publish_workspace.glob("merged-rules-*.zip"))
-        assert not (publish_workspace / "SHA256SUMS").exists()
 
-    def test_publishes_when_hash_changed(self, publish_workspace, monkeypatch):
-        stub = GhStub(responses={"release": "ok"})
+    def test_publishes_when_hash_changed(self, release_planning_api, monkeypatch):
         saved = []
         stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
         assert saved == ["new"], "发布成功后应保存新哈希"
         assert not [f for f in os.listdir(".") if f.startswith("merged-rules-") and f.endswith(".zip")], (
@@ -882,226 +1143,411 @@ class TestMainOrchestration:
         )
         assert not os.path.exists("SHA256SUMS"), "发布后应删除临时 SHA256SUMS"
 
-    def test_new_release_identity_uses_product_hash(self, publish_workspace, monkeypatch):
-        product_hash = "b" * 64
-        release_id = hashlib.sha256(product_hash.encode()).hexdigest()[:12]
-        stub = GhStub(release_exists=False)
-        stub_hash_state(monkeypatch, current=product_hash, last=None)
-
-        run_with_stub(stub, release_handler.main)
-
-        create = next(call for call in stub.calls if call[:2] == ["release", "create"])
-        assert create[2] == f"rules-{release_id}"
-        assert create[3] == f"merged-rules-{release_id}.zip"
-
-    def test_retry_reuses_complete_release_for_same_hash(self, publish_workspace, monkeypatch):
-        product_hash = "a" * 64
+    def test_comment_changes_release_version_without_changing_semantic_hash(self, release_planning_api, monkeypatch):
+        product_hash = release_handler.combined_products_hash(*release_handler.product_dirs())[0]
         saved = []
-        stub = GhStub()
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
+        stub_hash_state(monkeypatch, current=product_hash, last=None, saved=saved)
+        release_handler.main()
+        first_tag = release_planning_api.tag
 
-        run_with_stub(stub, release_handler.main)
+        product = release_planning_api.root / "merged-rules/block/domain/A/x.txt"
+        product.write_bytes(b"# Desc: changed\n" + product.read_bytes())
+        assert release_handler.combined_products_hash(*release_handler.product_dirs())[0] == product_hash
+        second_tag = current_expected_tag()
+        assert first_tag != second_tag
 
-        actions = stub.release_actions()
-        assert actions.count("edit") == 1, "复用完整 Release 时应重新标记 latest"
-        assert "create" not in actions and "upload" not in actions, "同哈希 Release 资产完整时不得重复上传"
-        assert saved == [product_hash], "复用完整 Release 后仍应推进状态哈希"
+        release_planning_api.tag = second_tag
+        release_planning_api.release = None
+        release_planning_api.assets = {}
+        release_handler.main()
+        assert saved == [product_hash, product_hash]
+        assert release_planning_api.latest == second_tag
 
-    def test_reuse_latest_failure_does_not_save_hash(self, publish_workspace, monkeypatch):
-        product_hash = "d" * 64
-        saved = []
-        stub = GhStub(fail_when=lambda cmd: cmd[:2] == ["release", "edit"])
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
-
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
-
-        assert exc.value.code == 1
-        assert saved == [], "latest 标记失败时不得保存哈希"
-        assert "upload" not in stub.release_actions()
-
-    def test_incomplete_release_for_same_hash_is_repaired(self, publish_workspace, monkeypatch):
-        product_hash = "c" * 64
-        release_id = hashlib.sha256(product_hash.encode()).hexdigest()[:12]
-        saved = []
-        stub = GhStub(asset_names=f"merged-rules-{release_id}.zip")
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-
-        run_with_stub(stub, release_handler.main)
-
-        assert "upload" in stub.release_actions(), "缺少 SHA256SUMS 时应修复现有 Release"
-        assert saved == [product_hash]
-
-    def test_complete_assets_with_bad_digest_are_reuploaded(self, publish_workspace, monkeypatch):
-        product_hash = "e" * 64
-        saved = []
-        stub = GhStub()
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-        checks = iter([(False, "bad"), (True, "ok")])
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: next(checks))
-
-        run_with_stub(stub, release_handler.main)
-
-        actions = stub.release_actions()
-        assert "upload" in actions and "create" not in actions
-        assert saved == [product_hash]
-
-    def test_content_confirmation_failure_does_not_mark_latest(self, publish_workspace, monkeypatch):
+    def test_retry_reuses_complete_release_for_same_hash(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
+        release_planning_api.latest = None
         saved = []
         stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: (False, "bad content"))
 
-        stub = GhStub()
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        assert exc.value.code == 1
-        assert not any("--latest" in call for call in stub.calls)
-        assert saved == []
+        assert release_planning_api.latest == release_planning_api.tag
+        assert not any("--input" in call for call in release_planning_api.calls)
+        assert saved == ["new"]
 
-    def test_latest_failure_after_new_release_does_not_save_hash(self, publish_workspace, monkeypatch):
+    def test_reuse_latest_failure_does_not_save_hash(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
+        release_planning_api.latest = None
         saved = []
-        stub = GhStub(fail_when=lambda cmd: cmd[1] == "edit" and "--latest" in cmd)
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: None if "make_latest=true" in cmd else release_planning_api(cmd),
+        )
+
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert saved == []
+        assert not any("--input" in call for call in release_planning_api.calls)
+
+    def test_incomplete_public_release_is_not_repaired_in_place(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
+        release_planning_api.assets.pop("SHA256SUMS")
+        saved = []
         stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
 
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
-
-        assert exc.value.code == 1
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert not any("--input" in call for call in release_planning_api.calls)
         assert saved == []
 
-    def test_force_release_reuses_complete_release_without_duplicate(self, publish_workspace, monkeypatch):
-        stub = GhStub(responses={"release": "ok"})
+    @pytest.mark.parametrize("why", ["bad digest", "remote asset lookup failed"])
+    def test_public_asset_verification_failure_stops_before_writes(self, release_planning_api, monkeypatch, why):
+        release_planning_api.publish_existing()
+        saved = []
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, why))
+
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert not any("--input" in call for call in release_planning_api.calls)
+        assert saved == []
+
+    def test_content_confirmation_failure_does_not_mark_latest(self, release_planning_api, monkeypatch):
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad content"))
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        with pytest.raises(release_handler.ReleaseError):
+            release_planning_api.run()
+        assert release_planning_api.release["draft"] is True and release_planning_api.latest is None
+
+    @pytest.mark.parametrize("force", [False, True], ids=["unchanged", "forced"])
+    def test_published_release_reused_when_original_actions_run_was_deleted(
+        self, release_planning_api, monkeypatch, force,
+    ):
+        api = release_planning_api
+        api.publish_existing(generation="github-123-attempt-1")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-124-attempt-1")
+        monkeypatch.setenv("FORCE_RELEASE", "true" if force else "false")
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+
+        release_handler.main()
+
+        assert api.latest == api.tag
+        assert saved == (["same"] if force else [])
+        assert not any("--input" in call or "/actions/runs/123/" in call[1] for call in api.calls)
+
+    def test_lightweight_legacy_published_release_is_reused_without_rewriting_tag(
+        self, release_planning_api, monkeypatch,
+    ):
+        api = release_planning_api
+        api.publish_existing(lightweight_legacy=True)
+        api.latest = None
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-124-attempt-1")
+        saved = []
+        stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+
+        release_handler.main()
+
+        assert api.latest == api.tag and saved == ["same"]
+        assert api.tags[api.tag]["object"] == {"type": "commit", "sha": api.sha}
+        assert not any("--input" in cmd or "/git/tags" in cmd[1] for cmd in api.calls if len(cmd) > 1)
+
+    @pytest.mark.parametrize("field", ["author", "target_commitish"])
+    def test_lightweight_legacy_published_rejects_mismatched_release_owner(self, release_state, field):
+        api = release_state
+        api.publish_existing(lightweight_legacy=True)
+        api.release[field] = {"login": "other-account"} if field == "author" else "b" * 40
+
+        with pytest.raises(release_handler.ReleaseError, match="旧版已公开"):
+            api.run()
+
+        assert not any("--method" in cmd or "--input" in cmd for cmd in api.calls)
+
+    def test_lightweight_legacy_published_with_asset_mismatch_stays_rejected(self, release_state):
+        api = release_state
+        api.publish_existing(lightweight_legacy=True)
+        api.add_asset("SHA256SUMS", b"different content")
+
+        with pytest.raises(release_handler.ReleaseError, match="禁止覆盖资产"):
+            api.run()
+
+        assert api.assets["SHA256SUMS"]["content"] == b"different content"
+        assert not any("--method" in cmd or "--input" in cmd for cmd in api.calls)
+
+    def test_lightweight_legacy_draft_cannot_be_completed(self, release_state):
+        release_state.publish_existing(draft=True, lightweight_legacy=True)
+        release_state.add_asset("SHA256SUMS", b"", "starter")
+        original = dict(release_state.assets["SHA256SUMS"])
+
+        with pytest.raises(release_handler.ReleaseError, match="首次构建归属"):
+            release_state.run()
+
+        assert release_state.release["draft"] and release_state.latest is None
+        assert release_state.assets["SHA256SUMS"] == original
+        assert not any("--method" in cmd or "--input" in cmd for cmd in release_state.calls)
+
+    @pytest.mark.parametrize(
+        ("name", "pending_state"), [("SHA256SUMS", "starter"), ("zip", "starter")], ids=["sums-starter", "zip-starter"],
+    )
+    def test_draft_upload_failure_with_pending_asset_is_recoverable(
+        self, release_planning_api, monkeypatch, name, pending_state,
+    ):
+        api = release_planning_api
+        if name == "zip":
+            name = f"merged-rules-{api.tag[6:]}.zip"
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-123-attempt-1")
+        api.add_build(123, 1, api.sha)
+        saved = []
+        stub_hash_state(monkeypatch, saved=saved)
+
+        def upload_failure(cmd, strip=True):
+            if "--input" in cmd and cmd[cmd.index("--input") + 1] == name:
+                api.add_asset(name, b"", pending_state)
+                return None
+            return api(cmd, strip=strip)
+
+        monkeypatch.setattr(release_handler, "run_gh", upload_failure)
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+        assert exc.value.code == 1
+        assert api.release["draft"] and api.latest is None and not saved
+        pending_id = api.assets[name]["id"]
+        other_assets = {key: value for key, value in api.assets.items() if key != name}
+
+        monkeypatch.setattr(release_handler, "run_gh", api)
+        monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-124-attempt-1")
+        release_handler.main()
+
+        assert not api.release["draft"] and api.latest == api.tag
+        assert api.release["target_commitish"] == api.sha
+        assert saved == ["new"]
+        assert api.assets[name]["state"] == "uploaded" and api.assets[name]["id"] != pending_id
+        assert all(api.assets[key] == value for key, value in other_assets.items())
+
+    def test_open_draft_asset_is_preserved_and_rechecked(self, release_state):
+        api = release_state
+        api.publish_existing(draft=True)
+        sums = api.assets["SHA256SUMS"]["content"]
+        api.add_asset("SHA256SUMS", b"", "open")
+        open_id = api.assets["SHA256SUMS"]["id"]
+
+        with pytest.raises(release_handler.ReleaseError, match="仍处于上传中"):
+            api.run()
+        assert api.assets["SHA256SUMS"]["id"] == open_id
+        assert api.release["draft"] and api.latest is None
+        assert not any("DELETE" in cmd or "--input" in cmd for cmd in api.calls)
+
+        api.assets["SHA256SUMS"].update(
+            state="uploaded", size=len(sums), content=sums, digest="sha256:" + hashlib.sha256(sums).hexdigest(),
+        )
+        api.run()
+        assert api.latest == api.tag and not api.release["draft"]
+        assert api.assets["SHA256SUMS"]["id"] == open_id
+
+    def test_foreign_draft_does_not_delete_incomplete_asset(self, release_state, monkeypatch):
+        api = release_state
+        api.publish_existing(draft=True, generation="github-123-attempt-1")
+        api.add_build(123, 1, api.sha)
+        api.release["author"] = {"login": "other-account"}
+        api.add_asset("SHA256SUMS", b"", "starter")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-123-attempt-1")
+
+        with pytest.raises(release_handler.ReleaseError, match="草稿的首次构建归属与 tag 不一致"):
+            api.run()
+
+        assert api.assets["SHA256SUMS"]["state"] == "starter"
+        assert not any("DELETE" in cmd or "--input" in cmd for cmd in api.calls)
+
+    @pytest.mark.parametrize("stage", ["draft", "published"])
+    def test_new_asset_after_verification_blocks_promotion(self, release_planning_api, monkeypatch, stage):
+        api = release_planning_api
+        api.publish_existing(draft=True)
+        saved = []
+        stub_hash_state(monkeypatch, saved=saved)
+        zip_id = api.assets[f"merged-rules-{api.tag[6:]}.zip"]["id"]
+
+        def download(cmd, max_bytes=None):
+            data = api.bytes(cmd, max_bytes)
+            if stage == "draft" and cmd[1].endswith(f"/assets/{zip_id}"):
+                api.add_asset("unexpected.txt", b"other content")
+            return data
+
+        def mutate_after_publish(cmd, strip=True):
+            result = api(cmd, strip=strip)
+            if stage == "published" and "draft=false" in cmd:
+                api.add_asset("unexpected.txt", b"other content")
+            return result
+
+        monkeypatch.setattr(release_handler, "run_gh_bytes", download)
+        monkeypatch.setattr(release_handler, "run_gh", mutate_after_publish)
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert api.release["draft"] is (stage == "draft")
+        assert api.latest is None and not saved
+
+    @pytest.mark.parametrize("draft", [True, False], ids=["newly-public", "already-public"])
+    def test_asset_bytes_changed_after_verification_block_latest(
+        self, release_planning_api, monkeypatch, caplog, draft,
+    ):
+        api = release_planning_api
+        api.publish_existing(draft=draft)
+        api.latest = None
+        saved = []
+        stub_hash_state(monkeypatch, saved=saved)
+        zip_asset = api.assets[f"merged-rules-{api.tag[6:]}.zip"]
+
+        def download(cmd, max_bytes=None):
+            data = api.bytes(cmd, max_bytes)
+            if not draft and cmd[1].endswith(f"/assets/{zip_asset['id']}"):
+                zip_asset["content"] = b"!" + zip_asset["content"][1:]
+            return data
+
+        def mutate_on_publish(cmd, strip=True):
+            result = api(cmd, strip=strip)
+            if "draft=false" in cmd:
+                zip_asset["content"] = b"!" + zip_asset["content"][1:]
+            return result
+
+        monkeypatch.setattr(release_handler, "run_gh_bytes", download)
+        monkeypatch.setattr(release_handler, "run_gh", mutate_on_publish)
+        with pytest.raises(SystemExit) as exc:
+            release_handler.main()
+
+        assert exc.value.code == 1
+        assert api.release["draft"] is False
+        assert "123" in caplog.text and "ZIP 原始字节" in caplog.text
+        assert not any("make_latest=true" in cmd for cmd in api.calls)
+        assert api.latest is None and not saved
+
+    def test_latest_failure_after_new_release_does_not_save_hash(self, release_planning_api, monkeypatch):
+        saved = []
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: None if "make_latest=true" in cmd else release_planning_api(cmd),
+        )
+
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert saved == []
+
+    def test_force_release_reuses_complete_release_without_duplicate(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
+        release_planning_api.latest = None
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
         monkeypatch.setenv("FORCE_RELEASE", "true")
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        assert saved == ["same"], "FORCE_RELEASE=true 时内容无变化也应保存哈希"
-        actions = stub.release_actions()
-        assert actions.count("edit") == 1
-        assert "create" not in actions and "upload" not in actions
+        assert saved == ["same"]
+        assert not any("--input" in call for call in release_planning_api.calls)
         assert not os.path.exists("SHA256SUMS")
 
-    def test_empty_api_digests_do_not_clobber_on_consecutive_runs(self, publish_workspace, monkeypatch):
-        product_hash = "f" * 64
-        tag_id = release_handler.release_id_for_hash(product_hash)
-        stub, _zip = remote_release_stub(publish_workspace, tag_id, empty_digests=True)
-        stub.latest_tag = f"rules-{tag_id}"
-        patch_remote_release(monkeypatch, stub)
+    def test_empty_api_digests_do_not_clobber_on_consecutive_runs(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
+        for asset in release_planning_api.assets.values():
+            asset["digest"] = None
         saved = []
-        real_verify = release_handler.verify_release_reusable
-        stub_hash_state(monkeypatch, current=product_hash, last="old", saved=saved)
-        monkeypatch.setattr(release_handler, "verify_release_reusable", real_verify)
+        stub_hash_state(monkeypatch, current="new", last="old", saved=saved)
 
-        run_with_stub(stub, release_handler.main)
-        monkeypatch.setattr(release_handler, "load_last_hash", lambda: product_hash)
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
+        monkeypatch.setattr(release_handler, "load_last_hash", lambda: "new")
+        release_handler.main()
 
-        actions = stub.release_actions()
-        assert "upload" not in actions and "create" not in actions
-        assert actions.count("edit") == 1
-        assert saved == [product_hash]
+        assert not any("--input" in call for call in release_planning_api.calls)
+        assert release_planning_api.latest == release_planning_api.tag
+        assert saved == ["new"]
 
     @pytest.mark.parametrize("corrupt", [False, True], ids=["matching-content", "wrong-content"])
     def test_empty_digests_at_process_boundary_keep_reuse_and_confirmation_safe(
-        self, publish_workspace, monkeypatch, corrupt,
+        self, release_planning_api, monkeypatch, corrupt,
     ):
-        product_hash = release_handler.combined_products_hash(
-            *release_handler.product_dirs(), format_tag=manifest.MANIFEST_MAGIC,
-        )[0]
-        tag_id = release_handler.release_id_for_hash(product_hash)
-        stub, _zip = remote_release_stub(
-            publish_workspace, tag_id, empty_digests=True,
-            corrupt_file="merged-rules/block/domain/A/x.txt" if corrupt else None,
-        )
-        stub.latest_tag = f"rules-{tag_id}"
+        release_planning_api.publish_existing()
+        for asset in release_planning_api.assets.values():
+            asset["digest"] = None
+        if corrupt:
+            zip_asset = release_planning_api.assets[f"merged-rules-{release_planning_api.tag[6:]}.zip"]
+            zip_asset["content"] += b"remote-tampered"
         saved = []
         downloaded = []
-
-        def run(command, **kwargs):
-            output = stub(command[1:], strip=False)
-            if output is None:
-                raise subprocess.CalledProcessError(1, command, stderr="not found")
-            return subprocess.CompletedProcess(command, 0, output + "\n", "")
-
+        real_download = release_planning_api.bytes
         def download(command, max_bytes=None):
-            name = command[command.index("-p") + 1]
-            data = stub.asset_bytes[name]
-            downloaded.append(name)
-            assert max_bytes is not None and len(data) <= max_bytes
-            return data
-
-        monkeypatch.setattr(release_handler.subprocess, "run", run)
+            result = real_download(command, max_bytes)
+            if result is not None:
+                downloaded.append(command)
+            return result
         monkeypatch.setattr(release_handler, "run_gh_bytes", download)
         monkeypatch.setattr(release_handler, "load_last_hash", lambda: saved[-1] if saved else "previous")
         monkeypatch.setattr(release_handler, "save_last_hash", saved.append)
-        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
-        monkeypatch.setattr(sys, "argv", ["release_handler.py"])
 
         if corrupt:
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(SystemExit):
                 release_handler.main()
-            assert exc.value.code == 1
-            assert saved == []
-            assert not any("--latest" in call for call in stub.calls)
+            assert saved == [] and not any("--input" in call for call in release_planning_api.calls)
         else:
             release_handler.main()
             release_handler.main()
-            assert saved == [product_hash]
-            assert "create" not in stub.release_actions()
-            assert "upload" not in stub.release_actions()
-            assert "--clobber" not in [arg for call in stub.calls for arg in call]
-        assert "SHA256SUMS" in downloaded
-        assert f"merged-rules-{tag_id}.zip" in downloaded
+            semantic_hash = release_handler.combined_products_hash(
+                *release_handler.product_dirs(), format_tag=manifest.MANIFEST_MAGIC
+            )[0]
+            assert saved == [semantic_hash]
+            assert not any("--input" in call for call in release_planning_api.calls)
+        assert downloaded, "空 digest 仍须实际读取 ZIP/SHA 字节"
 
-    def test_skips_when_hash_unchanged(self, publish_workspace, monkeypatch):
-        stub = GhStub(latest_tag=expected_tag("same"))
+    def test_skips_when_hash_unchanged(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing()
         stub_hash_state(monkeypatch, current="same", last="same")
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
+        before = len(release_planning_api.calls)
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        mutating = [
-            c
-            for c in stub.calls
-            if c[0] == "release" and len(c) > 1 and c[1] in ("create", "upload", "edit", "delete")
-        ]
-        assert mutating == [], "内容无变化且当天 Release 完整时不应做任何发布变更"
+        assert not any("--method" in call or "--input" in call for call in release_planning_api.calls[before:])
 
     def unchanged_listing(self, *extra):
         """内容不变轮次的 Release 列表：当前标签 isLatest，且可附加过期记录。"""
-        now_id = hashlib.sha256(b"same").hexdigest()[:12]
+        now_id = current_expected_tag()[len("rules-") :]
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         return release_listing(
             {"tagName": f"rules-{now_id}", "createdAt": old, "isLatest": True},
             *extra,
         )
 
-    def test_unchanged_round_still_retries_cleanup(self, publish_workspace, monkeypatch):
+    def test_unchanged_round_still_retries_cleanup(self, publish_workspace, release_planning_api, monkeypatch):
         """9b：内容不变且 latest 健康时也必须执行保留期清理，而不是提前返回。"""
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
         stub = GhStub(responses={("release", "list"): listing})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+        release_planning_api.publish_existing()
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[:2] == ["release", "list"] else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert "release delete rules-19990101-0000 --yes" in flat, "内容不变轮次仍必须清理过期 Release"
         assert "git/refs/tags/rules-19990101-0000" in flat, "过期 Release 的 tag 也应一并清理"
         actions = stub.release_actions()
-        assert actions.count("delete") == 1
+        assert flat.count("release delete ") == 1
         assert "create" not in actions and "upload" not in actions, "内容不变时不得重新打包上传"
         assert "edit" not in actions, "latest 已健康时不得重新标记 latest"
         assert saved == [], "内容不变时不得保存哈希（保持原语义，避免无谓重发）"
 
-    def test_unchanged_round_cleanup_failure_is_not_fatal(self, publish_workspace, monkeypatch):
+    def test_unchanged_round_cleanup_failure_is_not_fatal(self, publish_workspace, release_planning_api, monkeypatch):
         """9b：清理失败在内容不变轮次同样只告警，不得中断运行或触发补发。"""
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
@@ -1116,8 +1562,13 @@ class TestMainOrchestration:
         stub = GhStub(fail_when=fail_delete, responses={("release", "list"): listing})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+        release_planning_api.publish_existing()
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
         assert len(attempts) == 1, "清理必须被尝试"
         actions = stub.release_actions()
@@ -1125,7 +1576,9 @@ class TestMainOrchestration:
         assert "git/refs/tags/" not in " ".join(stub.commands()), "Release 删除失败时不得继续删 tag"
         assert saved == []
 
-    def test_cleanup_failure_is_retried_by_next_unchanged_round(self, publish_workspace, monkeypatch):
+    def test_cleanup_failure_is_retried_by_next_unchanged_round(
+        self, publish_workspace, release_planning_api, monkeypatch
+    ):
         """9b：上一轮清理失败后，内容不变的下一轮必须重试清理并成功。"""
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = self.unchanged_listing({"tagName": "rules-19990101-0000", "createdAt": old})
@@ -1140,75 +1593,98 @@ class TestMainOrchestration:
         stub = GhStub(fail_when=fail_first_delete, responses={("release", "list"): listing})
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
+        release_planning_api.publish_existing()
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
+        release_handler.main()
 
         assert len(attempts) == 2, "两轮都必须尝试清理"
-        assert "git/refs/tags/rules-19990101-0000" in " ".join(stub.commands()), "第二轮重试应完成清理"
+        assert "git/refs/tags/rules-19990101-0000" in " ".join(
+            [*stub.commands(), *release_planning_api.commands()]
+        ), "第二轮重试应完成清理"
         actions = stub.release_actions()
         assert "create" not in actions and "upload" not in actions, "重试清理不得触发重新发布"
         assert saved == [], "内容不变的两轮都不得保存哈希"
 
-    def test_republishes_when_release_missing(self, publish_workspace, monkeypatch):
-        """哈希未变但最近一次 Release 不存在（如强制补发失败/被删）时应补发自愈。"""
-        stub = GhStub(release_exists=False, responses={"release": "ok"})
+    def test_failed_tag_deletion_retried_after_release_is_deleted(self, release_planning_api, monkeypatch):
+        api = release_planning_api
+        old_tag = api.tag
+        api.add_tag(generation="github-123-attempt-1")
+        api.tags[old_tag]["tagger"] = {"date": "2026-01-01T00:00:00Z"}
+        now = datetime.datetime(2026, 2, 1, tzinfo=datetime.UTC)
+        release_exists = True
+        delete_enabled = False
+        ref_deletes = []
+
+        def platform(cmd, strip=True):
+            nonlocal release_exists
+            if cmd[:2] == ["release", "list"]:
+                if not release_exists:
+                    return "[]"
+                return release_listing({"tagName": old_tag, "createdAt": "2026-01-01T00:00:00Z"})
+            if cmd[:2] == ["release", "delete"]:
+                release_exists = False
+                return ""
+            if cmd[:3] == ["api", "-X", "DELETE"]:
+                assert cmd[3] == f"repos/{{owner}}/{{repo}}/git/refs/tags/{old_tag}"
+                ref_deletes.append(cmd[3])
+                return "" if delete_enabled else None
+            return api(cmd, strip=strip)
+
+        monkeypatch.setattr(release_handler, "run_gh", platform)
+        assert release_handler.cleanup_old_releases("rules-111111111111", now) == 0
+        assert not release_exists and ref_deletes
+        ref_deletes.clear()
+        delete_enabled = True
+
+        assert release_handler.cleanup_old_releases("rules-111111111111", now) == 1
+        assert len(ref_deletes) == 1
+
+    def test_republishes_when_release_missing(self, release_planning_api, monkeypatch):
         saved = []
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
         assert saved == ["same"]
-        assert any(call[1] in ("create", "upload") for call in stub.calls if call[0] == "release")
+        assert release_planning_api.latest == release_planning_api.tag
 
-    def test_republishes_when_asset_incomplete(self, publish_workspace, monkeypatch):
-        """哈希未变但最近一次 Release 缺 SHA256SUMS 时应补发自愈。"""
-        tag = expected_tag("same")
-        release_id = tag.removeprefix("rules-")
-        stub = GhStub(latest_tag=tag, asset_names=f"merged-rules-{release_id}.zip")
+    def test_draft_with_missing_asset_is_completed_not_clobbered(self, release_planning_api, monkeypatch):
+        release_planning_api.publish_existing(draft=True)
+        release_planning_api.assets.pop("SHA256SUMS")
         saved = []
-        real_verify = release_handler.verify_release_reusable
         stub_hash_state(monkeypatch, current="same", last="same", saved=saved)
-        checks = []
 
-        def verify_before_repair(*args):
-            checks.append(args)
-            return real_verify(*args) if len(checks) == 1 else (True, "ok")
+        release_handler.main()
 
-        monkeypatch.setattr(release_handler, "verify_release_reusable", verify_before_repair)
+        assert saved == ["same"] and release_planning_api.latest == release_planning_api.tag
+        assert not any("--clobber" in call for call in release_planning_api.calls)
 
-        run_with_stub(stub, release_handler.main)
-
-        assert saved == ["same"]
-        assert any(call[1] in ("create", "upload") for call in stub.calls if call[0] == "release")
-
-    def test_aborts_when_product_counts_differ(self, publish_workspace, monkeypatch):
-        stub = GhStub()
+    def test_aborts_when_product_counts_differ(self, release_planning_api, monkeypatch):
         monkeypatch.setattr(release_handler, "combined_products_hash", lambda *a, **k: ("h", 3, 2))
 
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert release_planning_api.release is None
 
-        assert exc.value.code == 1
-        assert stub.calls == []
-
-    def test_failed_publish_exits_and_removes_zip(self, publish_workspace, monkeypatch):
-        stub = GhStub(
-            fail_when=lambda cmd: len(cmd) > 1 and cmd[1] in ("create", "upload", "edit"),
-            responses={("release", "view"): None},
-        )
+    def test_failed_publish_exits_and_removes_zip(self, release_planning_api, monkeypatch):
         saved = []
         stub_hash_state(monkeypatch, current="new", last=None, saved=saved)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad"))
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
 
-        with pytest.raises(SystemExit) as exc:
-            run_with_stub(stub, release_handler.main)
+        with pytest.raises(SystemExit):
+            release_handler.main()
+        assert saved == [] and release_planning_api.latest is None
+        assert not list(release_planning_api.root.glob("merged-rules-*.zip"))
+        assert not (release_planning_api.root / "SHA256SUMS").exists()
 
-        assert exc.value.code == 1
-        assert saved == [], "发布失败不得保存哈希，否则下次不会重试"
-        assert "create" in stub.release_actions()
-
-    def test_prunes_old_releases_and_keeps_current(self, publish_workspace, monkeypatch):
-        now_id = hashlib.sha256(b"new").hexdigest()[:12]
+    def test_prunes_old_releases_and_keeps_current(self, publish_workspace, release_planning_api, monkeypatch):
+        now_id = current_expected_tag()[len("rules-") :]
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": f"rules-{now_id}", "createdAt": old},
@@ -1217,16 +1693,20 @@ class TestMainOrchestration:
         )
         stub = GhStub(responses={("release", "list"): listing})
         stub_hash_state(monkeypatch)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert "release delete rules-19990101-0000 --yes" in flat
         assert f"release delete rules-{now_id}" not in flat, "本轮标签不得被删"
         assert "git/refs/tags/rules-19990101-0000" in flat, "删除 release 后应同时删 tag"
         assert "v1.0.0" not in flat, "非 rules- 前缀的 Release 一律不得触碰"
 
-    def test_prune_never_touches_manual_releases(self, publish_workspace, monkeypatch):
+    def test_prune_never_touches_manual_releases(self, publish_workspace, release_planning_api, monkeypatch):
         old = (release_handler.beijing_now() - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "v1.0.0", "createdAt": old},
@@ -1236,14 +1716,18 @@ class TestMainOrchestration:
         )
         stub = GhStub(responses={("release", "list"): listing})
         stub_hash_state(monkeypatch)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert "delete" not in flat, f"人工 Release 不得被删: {flat}"
         assert "git/refs/tags" not in flat
 
-    def test_prune_delete_failure_is_not_fatal(self, publish_workspace, monkeypatch):
+    def test_prune_delete_failure_is_not_fatal(self, publish_workspace, release_planning_api, monkeypatch):
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "rules-19990101-0000", "createdAt": old},
@@ -1254,39 +1738,46 @@ class TestMainOrchestration:
         )
         saved = []
         stub_hash_state(monkeypatch, saved=saved)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert flat.count("release delete") == 2, "首个删除失败后仍应继续清理其余旧 Release"
         assert "git/refs/tags" not in flat, "Release 删除失败时不得继续删 tag"
         assert saved == ["new"], "清理失败不得跳过 state/release.sha256 的写入"
-        zip_name = f"merged-rules-{hashlib.sha256(b'new').hexdigest()[:12]}.zip"
+        zip_name = f"merged-rules-{current_expected_tag()[len('rules-') :]}.zip"
         assert not os.path.exists(zip_name), "清理失败后 main() 仍应执行到收尾"
         assert not os.path.exists("SHA256SUMS"), "收尾应同时清理临时 SHA256SUMS"
 
-    def test_step_summary_written(self, publish_workspace, monkeypatch):
+    def test_step_summary_written(self, publish_workspace, release_planning_api, monkeypatch):
         summary = publish_workspace / "summary.md"
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-        stub = GhStub()
         stub_hash_state(monkeypatch)
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
         text = summary.read_text(encoding="utf-8")
         assert "发布报告" in text
         assert "文本规则" in text and "MRS 规则" in text
 
-    def test_unparsable_release_listing_degrades_to_warning(self, publish_workspace, monkeypatch):
+    def test_unparsable_release_listing_degrades_to_warning(self, publish_workspace, release_planning_api, monkeypatch):
         stub = GhStub(responses={("release", "list"): "not-json"})
         stub_hash_state(monkeypatch)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert "release delete" not in flat, "列表无法解析时不得误删任何 Release"
 
-    def test_unparsable_entry_is_skipped_and_others_pruned(self, publish_workspace, monkeypatch):
+    def test_unparsable_entry_is_skipped_and_others_pruned(self, publish_workspace, release_planning_api, monkeypatch):
         old = (release_handler.beijing_now() - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         listing = release_listing(
             {"tagName": "rules-broken", "createdAt": "not-a-date"},
@@ -1294,10 +1785,14 @@ class TestMainOrchestration:
         )
         stub = GhStub(responses={("release", "list"): listing})
         stub_hash_state(monkeypatch)
+        monkeypatch.setattr(
+            release_handler, "run_gh",
+            lambda cmd: stub(cmd) if cmd[0] == "release" else release_planning_api(cmd),
+        )
 
-        run_with_stub(stub, release_handler.main)
+        release_handler.main()
 
-        flat = " ".join(stub.commands())
+        flat = " ".join([*stub.commands(), *release_planning_api.commands()])
         assert "release delete rules-19990101-0000 --yes" in flat
         assert "rules-broken" not in flat, "无法解析的记录应跳过而非中断清理"
 
@@ -1309,27 +1804,38 @@ class TestOrphanTagCleanup:
     TAG_OBJECT_SHA = "b" * 40
     TAG_TARGET_SHA = "c" * 40
 
-    def ref_endpoint(self, tag):
-        return f"repos/{{owner}}/{{repo}}/git/ref/tags/{tag}"
+    TAG = "rules-aaaaaaaaaaaa"
+    REF_ENDPOINT = f"{REFS_ENDPOINT}{TAG[6:]}"
+    OBJECT_ENDPOINT = f"repos/{{owner}}/{{repo}}/git/tags/{TAG_OBJECT_SHA}"
+    COMMIT_ENDPOINT = f"repos/{{owner}}/{{repo}}/commits/{COMMIT_SHA}"
 
-    def commit_endpoint(self, sha):
-        return f"repos/{{owner}}/{{repo}}/commits/{sha}"
-
-    def tag_object_endpoint(self, sha):
-        return f"repos/{{owner}}/{{repo}}/git/tags/{sha}"
-
-    def object_response(self, obj_type, sha):
-        return f"{obj_type}\t{sha}"
-
-    def hash_tag_stub(self, ref_type, ref_sha, commit_date, extra=None):
+    def hash_tag_stub(self, ref_record, extra=None):
         responses = {
-            ("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa",
-            ("api", self.ref_endpoint("rules-aaaaaaaaaaaa")): self.object_response(ref_type, ref_sha),
+            ("api", self.REFS_ENDPOINT): f"refs/tags/{self.TAG}",
+            ("api", self.REF_ENDPOINT): ref_record,
+            **(extra or {}),
         }
-        if commit_date is not None:
-            responses[("api", self.commit_endpoint(ref_sha))] = commit_date
-        responses.update(extra or {})
         return GhStub(responses=responses)
+
+    def annotated_response(self, *, object_type="commit", date=None):
+        record = {
+            "sha": self.TAG_TARGET_SHA,
+            "digest": "a" * 64,
+            "generation": "github-123-attempt-1",
+            "path": ".github/workflows/pipeline.yml",
+            "repo": "rksk102/ruleset-foundry",
+            "ref": "refs/heads/main",
+        }
+        return json.dumps({
+            "sha": self.TAG_OBJECT_SHA,
+            "tag": self.TAG,
+            "object": {"type": object_type, "sha": self.TAG_TARGET_SHA},
+            "message": release_handler.PROVENANCE_PREFIX + json.dumps(record),
+            "tagger": {"date": date} if date is not None else {},
+        })
+
+    def read_endpoints(self, stub):
+        return [cmd[1] for cmd in stub.calls if cmd[:1] == ["api"] and cmd[1] != "-X"]
 
     def delete_calls(self, stub):
         return [call for call in stub.calls if call[:3] == ["api", "-X", "DELETE"]]
@@ -1367,57 +1873,34 @@ class TestOrphanTagCleanup:
         assert "rules-dddddddddddd" not in flat, "本轮 tag 不参与对账"
         assert "rules-manual" not in flat and "v1.0.0" not in flat
 
-    def test_deletes_orphan_hash_tag_whose_commit_is_old(self, monkeypatch):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2020-01-01T00:00:00Z")
+    @pytest.mark.parametrize("commit_age", ["2020-01-01T00:00:00Z", "2026-03-01T00:00:00Z"])
+    def test_lightweight_hash_tag_is_kept_regardless_of_commit_age(self, monkeypatch, commit_age):
+        stub = self.hash_tag_stub(f"commit\t{self.COMMIT_SHA}", {("api", self.COMMIT_ENDPOINT): commit_age})
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 1
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-dddddddddddd", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        ) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT]
+        assert self.delete_calls(stub) == []
 
-        assert self.delete_calls(stub) == [
-            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-aaaaaaaaaaaa"]
-        ]
-        flat = " ".join(stub.commands())
-        assert f"commits/{self.COMMIT_SHA}" in flat, "新格式 tag 必须按目标提交时间判断年龄"
-
-    def test_keeps_orphan_hash_tag_with_recent_commit(self, monkeypatch):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "2026-03-01T00:00:00Z")
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == [], "未过保留期的 tag 不得删除"
-
-    def test_annotated_tag_is_dereferenced_to_its_commit(self, monkeypatch):
+    def test_annotated_orphan_tag_without_recorded_creation_time_is_kept(self, monkeypatch):
         stub = self.hash_tag_stub(
-            "tag",
-            self.TAG_OBJECT_SHA,
-            None,
-            extra={
-                ("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response(
-                    "commit", self.TAG_TARGET_SHA
-                ),
-                ("api", self.commit_endpoint(self.TAG_TARGET_SHA)): "2020-01-01T00:00:00Z",
-            },
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response()},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 1
-
-        flat = " ".join(stub.commands())
-        assert f"git/tags/{self.TAG_OBJECT_SHA}" in flat, "annotated tag 必须先解引用 tag 对象"
-        assert f"commits/{self.TAG_TARGET_SHA}" in flat, "必须用解引用后的提交时间判断年龄"
-        assert self.delete_calls(stub) == [
-            ["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/tags/rules-aaaaaaaaaaaa"]
-        ]
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-dddddddddddd", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        ) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
+        assert self.delete_calls(stub) == []
 
     def test_annotated_tag_pointing_at_non_commit_is_kept(self, monkeypatch, caplog):
         stub = self.hash_tag_stub(
-            "tag",
-            self.TAG_OBJECT_SHA,
-            None,
-            extra={("api", self.tag_object_endpoint(self.TAG_OBJECT_SHA)): self.object_response("blob", "d" * 40)},
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response(object_type="blob", date="2020-01-01T00:00:00Z")},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
@@ -1425,39 +1908,46 @@ class TestOrphanTagCleanup:
         assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
         assert self.delete_calls(stub) == [], "目标不是提交时必须 fail-safe 保留"
         assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-        assert "rules-aaaaaaaaaaaa" in caplog.text, "保留原因必须可追查"
+        assert self.TAG in caplog.text, "保留原因必须可追查"
 
     def test_unresolvable_tag_object_is_kept_with_warning(self, monkeypatch, caplog):
-        stub = GhStub(
-            fail_when=lambda cmd: "git/ref/tags/" in " ".join(cmd),
-            responses={("api", self.REFS_ENDPOINT): "refs/tags/rules-aaaaaaaaaaaa"},
+        stub = self.hash_tag_stub(f"tag\t{self.TAG_OBJECT_SHA}")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.delete_calls(stub) == []
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    def test_unparseable_tag_ref_is_kept(self, monkeypatch, caplog):
+        stub = self.hash_tag_stub("garbage")
+        monkeypatch.setattr(release_handler, "run_gh", stub)
+        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT]
+        assert self.delete_calls(stub) == []
+        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("date", "expired"),
+        [("not-a-date", False), ("2026-03-01T00:00:00Z", False), ("2020-01-01T00:00:00Z", True)],
+        ids=["unparseable", "recent", "expired"],
+    )
+    def test_annotated_orphan_cleanup_uses_tag_date(self, monkeypatch, date, expired):
+        stub = self.hash_tag_stub(
+            f"tag\t{self.TAG_OBJECT_SHA}",
+            {("api", self.OBJECT_ENDPOINT): self.annotated_response(date=date)},
         )
         monkeypatch.setattr(release_handler, "run_gh", stub)
         cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
 
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "commits/" not in " ".join(stub.commands()), "对象不明时不得猜测提交"
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-
-    def test_unparsable_commit_object_is_kept(self, monkeypatch, caplog):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, None)
-        stub.responses[("api", self.ref_endpoint("rules-aaaaaaaaaaaa"))] = "garbage"
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
-
-    def test_unparsable_commit_date_is_kept(self, monkeypatch, caplog):
-        stub = self.hash_tag_stub("commit", self.COMMIT_SHA, "not-a-date")
-        monkeypatch.setattr(release_handler, "run_gh", stub)
-        cutoff = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
-
-        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == 0
-        assert self.delete_calls(stub) == []
-        assert "1 个无法确认创建时间的孤立 tag" in caplog.text
+        assert release_handler.cleanup_orphan_rules_tags(set(), "rules-dddddddddddd", cutoff) == int(expired)
+        assert self.read_endpoints(stub) == [self.REFS_ENDPOINT, self.REF_ENDPOINT, self.OBJECT_ENDPOINT]
+        assert self.delete_calls(stub) == (
+            [["api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/tags/{self.TAG}"]] if expired else []
+        )
 
     def test_hash_tag_with_release_or_current_is_not_queried(self, monkeypatch):
         refs = "\n".join(
@@ -1472,9 +1962,25 @@ class TestOrphanTagCleanup:
         )
 
         assert cleaned == 0
-        flat = " ".join(stub.commands())
-        assert "rules-aaaaaaaaaaaa" not in flat, "有 Release 的新格式 tag 不得查询/删除"
-        assert "rules-bbbbbbbbbbbb" not in flat, "本轮 tag 不得查询/删除"
+        protected_calls = [
+            cmd for cmd in stub.calls[1:]
+            if "rules-aaaaaaaaaaaa" in cmd[1] or "rules-bbbbbbbbbbbb" in cmd[1]
+        ]
+        assert protected_calls == [], "有 Release 和本轮 tag 不得查询或删除对象"
+
+    def test_untrusted_annotated_orphan_is_kept(self, release_planning_api, monkeypatch, caplog):
+        api = release_planning_api
+        api.add_tag(generation="github-123-attempt-1")
+        api.tags[api.tag]["tagger"] = {"date": "2020-01-01T00:00:00Z"}
+        monkeypatch.setenv("GITHUB_REPOSITORY", "other/repository")
+
+        assert release_handler.cleanup_orphan_rules_tags(
+            set(), "rules-dddddddddddd", datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+        ) == 0
+
+        assert "无法确认创建时间" in caplog.text
+        assert not any("DELETE" in cmd for cmd in api.calls)
+        assert not any("/actions/" in cmd[1] for cmd in api.calls if len(cmd) > 1)
 
     def test_orphan_delete_is_retried_by_next_reconciliation(self, monkeypatch):
         delete_attempts = []
@@ -1865,9 +2371,24 @@ class TestAssetConfirmation:
         monkeypatch.setattr(release_handler, "zip_target_files", lambda d: ("z.zip", {}))
         monkeypatch.setattr(release_handler, "write_sha256sums", lambda *a: "SHA256SUMS")
         monkeypatch.setattr(release_handler, "generate_release_notes", lambda *a: "notes")
-        monkeypatch.setattr(release_handler, "publish_release", lambda *a, **k: "ok")
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: (True, "ok"))
-        monkeypatch.setattr(release_handler, "release_asset_names", lambda tag: names)
+        monkeypatch.setattr(release_handler, "process_release", lambda *a: calls.append("release"))
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (True, "ok"))
+        def prepare(_tag, _digest):
+            if names is None:
+                raise release_handler.ReleaseError("无法确认资产")
+            if not set(self.FULL) <= names:
+                raise release_handler.ReleaseError(f"缺少资产 {sorted(set(self.FULL) - names)}")
+            return ({"id": 123, "draft": False}, {}, "d" * 40, assets(123))
+        monkeypatch.setattr(release_handler, "prepare_release_plan", prepare)
+        def assets(_release_id):
+            if names is None:
+                raise release_handler.ReleaseError("无法确认资产")
+            return {name: {"id": 1, "name": name, "state": "uploaded", "digest": None} for name in names}
+        monkeypatch.setattr(release_handler, "release_asset_records", assets)
+        monkeypatch.setattr(
+            release_handler, "latest_rules_release_tag",
+            lambda: "rules-" + release_handler.release_content_digest()[:12],
+        )
         monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
         monkeypatch.setattr(release_handler, "save_last_hash", lambda *a: None)
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "")
@@ -1881,7 +2402,7 @@ class TestAssetConfirmation:
 
         release_handler.main()
 
-        assert calls == ["enforce"]
+        assert calls == ["enforce", "release"]
 
     def test_publish_without_assets_is_a_failure(self, monkeypatch, caplog):
         monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
@@ -1922,74 +2443,63 @@ class TestAssetConfirmation:
         assert "无法确认" in caplog.text
         assert saved == []
 
-    def test_asset_query_is_retried_before_succeeding(self, monkeypatch):
-        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
-        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+    def retry_draft_confirmation(self, monkeypatch, failure):
+        tag = "rules-test"
+        release = {"id": 123, "tag_name": tag, "draft": True}
+        assets = {name: {"name": name, "id": index, "state": "uploaded", "digest": None}
+                  for index, name in enumerate(release_handler.expected_assets("test"), 1)}
         attempts = []
-        saved = []
-        self.stub_release_flow(monkeypatch, [], names=None)
+        published = []
 
-        def flaky(tag):
-            attempts.append(tag)
-            return None if len(attempts) == 1 else set(self.FULL)
+        def records(_release_id):
+            attempts.append("assets")
+            if failure == "query" and len(attempts) == 1:
+                raise release_handler.ReleaseError("暂时无法读取")
+            return {} if failure == "empty" and len(attempts) == 1 else assets
 
-        monkeypatch.setattr(release_handler, "release_asset_names", flaky)
-        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+        def verify(*_args, **_kwargs):
+            attempts.append("content")
+            valid = bool(_kwargs["records"]) and not (
+                failure == "content" and attempts.count("content") == 1
+            )
+            return valid, "内容一致" if valid else "不一致"
 
-        release_handler.main()
+        def publish(cmd, **_kwargs):
+            published.append(cmd)
+            return json.dumps({"id": 123, "tag_name": tag, "draft": False})
 
-        assert len(attempts) == 2
-        assert saved == ["new-hash"]
+        monkeypatch.setattr(release_handler, "release_asset_records", records)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", verify)
+        monkeypatch.setattr(release_handler, "find_release", lambda _tag: release)
+        monkeypatch.setattr(release_handler, "_release_tag_ref", lambda _tag: "a" * 40)
+        monkeypatch.setattr(release_handler, "run_gh", publish)
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
+        release_handler._complete_draft(tag, release, "a" * 40, {}, [])
+        assert published and published[0][0] == "api"
+        return attempts
+
+    def test_asset_query_is_retried_before_succeeding(self, monkeypatch):
+        assert self.retry_draft_confirmation(monkeypatch, "query").count("assets") == 3
 
     def test_zero_asset_count_is_retried_before_succeeding(self, monkeypatch):
-        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
-        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
-        attempts = []
-        saved = []
-        self.stub_release_flow(monkeypatch, [], names=None)
-
-        def flaky(tag):
-            attempts.append(tag)
-            return set() if len(attempts) == 1 else set(self.FULL)
-
-        monkeypatch.setattr(release_handler, "release_asset_names", flaky)
-        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
-
-        release_handler.main()
-
-        assert len(attempts) == 2
-        assert saved == ["new-hash"]
+        assert self.retry_draft_confirmation(monkeypatch, "empty").count("assets") == 3
 
     def test_content_mismatch_after_upload_is_a_failure(self, monkeypatch):
-        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
         saved = []
-        self.stub_release_flow(monkeypatch, [], names=self.FULL)
-        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a: (False, "bad zip"))
+        assets = {name: {"name": name, "id": index, "state": "uploaded", "digest": None}
+                  for index, name in enumerate(release_handler.expected_assets("test"), 1)}
+        monkeypatch.setattr(release_handler, "release_asset_records", lambda _id: assets)
+        monkeypatch.setattr(release_handler, "verify_release_reusable", lambda *a, **k: (False, "bad zip"))
         monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
+        monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)
 
-        with pytest.raises(SystemExit) as exc:
-            release_handler.main()
+        with pytest.raises(release_handler.ReleaseError, match="bad zip"):
+            release_handler._complete_draft("rules-test", {"id": 123}, "a" * 40, assets, [])
 
-        assert exc.value.code == 1
         assert saved == []
 
     def test_content_confirmation_is_retried_before_succeeding(self, monkeypatch):
-        monkeypatch.setattr(release_handler, "CHANGE_DETECTION", True)
-        attempts = []
-        saved = []
-        self.stub_release_flow(monkeypatch, [], names=self.FULL)
-
-        def verify(*args):
-            attempts.append(args)
-            return (len(attempts) > 1, "mismatch" if len(attempts) == 1 else "ok")
-
-        monkeypatch.setattr(release_handler, "verify_release_reusable", verify)
-        monkeypatch.setattr(release_handler, "save_last_hash", lambda h: saved.append(h))
-
-        release_handler.main()
-
-        assert len(attempts) == 2
-        assert saved == ["new-hash"]
+        assert self.retry_draft_confirmation(monkeypatch, "content").count("content") == 2
 
     def test_release_asset_names_parses_gh_output(self, monkeypatch):
         monkeypatch.setattr(release_handler, "run_gh", lambda cmd: "z.zip\nSHA256SUMS\n")

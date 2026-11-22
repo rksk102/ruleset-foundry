@@ -417,8 +417,12 @@ def main():
 
     if os.path.exists(OUTPUT_DIR):
         info("  清理输出目录...")
-        for path, why in clean_directory(OUTPUT_DIR):
-            warning(f"  清理失败（可能残留陈旧产物）: {path} -> {why}")
+        cleanup_errors = clean_directory(OUTPUT_DIR)
+        if cleanup_errors:
+            for path, why in cleanup_errors:
+                error(f"  清理失败: {path} -> {why}")
+            gh_error("合并输出清理失败，中止本轮合并")
+            sys.exit(1)
     else:
         os.makedirs(OUTPUT_DIR)
 

@@ -6,8 +6,9 @@ import manifest
 import merger
 import pytest
 import release_handler
-from support import GhStub, domain_mrs_bytes, ipcidr_mrs_bytes
+from support import domain_mrs_bytes, ipcidr_mrs_bytes
 from support import write_text as write
+from test_release_handler import ReleaseState, current_expected_tag
 
 
 def mrs_of(entries):
@@ -104,33 +105,13 @@ class TestCleanOrphans:
 class ReleaseRun:
     """在 work_dir 内运行 release_handler，gh 与发布状态全部旁路。"""
 
-    def __init__(self, root):
+    def __init__(self, root, *, ci_build=None):
         self.root = root
-        self.stub = GhStub(release_exists=False)
-
-    def _run_gh(self, cmd, strip=True):
-        result = self.stub(cmd, strip=strip)
-        if result is not None and cmd[0] == "release" and len(cmd) > 1 and cmd[1] in ("create", "upload"):
-            zip_name = next((part for part in cmd if part.endswith(".zip")), None)
-            sums = self.root / "SHA256SUMS"
-            if zip_name and (self.root / zip_name).is_file() and sums.is_file():
-                self.stub.asset_digests = {
-                    zip_name: "sha256:" + release_handler.file_sha256(self.root / zip_name),
-                    "SHA256SUMS": "sha256:" + release_handler.file_sha256(sums),
-                }
-        return result
-
-    def _run_gh_bytes(self, cmd, max_bytes=None):
-        self.stub.calls.append(list(cmd))
-        if cmd[:2] == ["release", "download"] and "-p" in cmd:
-            asset = self.root / cmd[cmd.index("-p") + 1]
-            if not asset.is_file() or (max_bytes is not None and asset.stat().st_size > max_bytes):
-                return None
-            return asset.read_bytes()
-        return None
+        self.ci_build = ci_build
 
     def __enter__(self):
         self._cwd = os.getcwd()
+        self._patch = pytest.MonkeyPatch()
         self._saved = (
             release_handler.REPO_ROOT,
             release_handler.TARGET_CONFIG,
@@ -145,8 +126,20 @@ class ReleaseRun:
         release_handler.TARGET_CONFIG = {"merged-rules": ".txt", "merged-rules-mrs": ".mrs"}
         release_handler.CHANGE_DETECTION = True
         release_handler.KEEP_DAYS = 3
-        release_handler.run_gh = self._run_gh
-        release_handler.run_gh_bytes = self._run_gh_bytes
+        os.chdir(self.root)
+        state = ReleaseState(self.root, current_expected_tag())
+        self.state = state
+        self._patch.setenv("GITHUB_REPOSITORY", "rksk102/ruleset-foundry")
+        self._patch.setenv("GITHUB_REF", "refs/heads/main")
+        self._patch.delenv("PUBLISH_GUARD", raising=False)
+        if self.ci_build is None:
+            self._patch.delenv("GITHUB_ACTIONS", raising=False)
+        else:
+            run_id, attempt = self.ci_build
+            self._patch.setenv("GITHUB_ACTIONS", "true")
+            state.add_build(run_id, attempt, os.environ["GITHUB_SHA"])
+        release_handler.run_gh = state
+        release_handler.run_gh_bytes = state.bytes
         release_handler.load_last_hash = lambda: None
         release_handler.save_last_hash = lambda _hash: None
         os.chdir(self.root)
@@ -163,6 +156,7 @@ class ReleaseRun:
             release_handler.load_last_hash,
             release_handler.save_last_hash,
         ) = self._saved
+        self._patch.undo()
         os.chdir(self._cwd)
         return False
 
@@ -211,7 +205,7 @@ class TestReleaseBaseline:
         build_products(work_dir, rulesets + merges, manifest_file=False)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-            assert run.stub.calls == []
+            assert run.state.calls == []
         assert release_handler.BASELINE_MISSING in caplog.text
 
     def test_empty_manifest_is_fatal(self, work_dir, caplog):
@@ -258,7 +252,7 @@ class TestReleaseBaseline:
         build_products(work_dir, rulesets, manifest_entries=rulesets)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-            assert run.stub.calls == []
+            assert run.state.calls == []
 
     def test_mrs_products_must_match_one_to_one(self, work_dir):
         rulesets, merges = self.sample()
@@ -267,7 +261,7 @@ class TestReleaseBaseline:
         build_products(work_dir, txt, mrs, manifest_entries=rulesets[:2])
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-            assert run.stub.calls == []
+            assert run.state.calls == []
         with ReleaseRun(work_dir), pytest.raises(manifest.ManifestError) as exc:
             release_handler.verify_products()
         assert "逐一对应" in str(exc.value)
@@ -276,14 +270,42 @@ class TestReleaseBaseline:
         rulesets, merges = self.sample()
         build_products(work_dir, rulesets + merges, manifest_entries=rulesets)
         with ReleaseRun(work_dir) as run:
-            assert run.run() is None
-            assert ("release", "create") in run.stub.actions()
+            assert run.run() is None, run.state.release
+            assert run.state.release is not None and not run.state.release["draft"]
 
     def test_verify_products_counts_baseline(self, work_dir):
         rulesets, merges = self.sample()
         build_products(work_dir, rulesets + merges, manifest_entries=rulesets)
         with ReleaseRun(work_dir):
             assert release_handler.verify_products() == len(rulesets) + len(merges)
+
+    def test_selected_build_generation_survives_a_publish_only_rerun(self, work_dir, monkeypatch):
+        rulesets, merges = self.sample()
+        build_products(work_dir, rulesets + merges, manifest_entries=rulesets)
+        generation = "github-123-attempt-1"
+        write_v2_manifest(work_dir / "rulesets", entries=rulesets, generation=generation)
+        write_v2_manifest(work_dir / "merged-rules", generation=generation)
+        monkeypatch.setenv("GITHUB_RUN_ID", "123")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", generation)
+        with ReleaseRun(work_dir, ci_build=(123, 1)) as run:
+            assert release_handler.verify_products(require_baseline=True) == len(rulesets) + len(merges)
+            assert run.run() is None
+            assert run.state.latest == run.state.tag
+            tag = run.state.tags[run.state.tag]
+            assert f'"generation":"{generation}"' in tag["message"]
+            write_v2_manifest(work_dir / "merged-rules", generation="github-123-attempt-2")
+            with pytest.raises(manifest.ManifestError, match="跨轮混合产物"):
+                release_handler.verify_products(require_baseline=True)
+
+    @pytest.mark.parametrize("directory", ["merged-rules", "merged-rules-mrs"])
+    def test_complete_valid_pairs_with_unlisted_files_are_rejected(self, work_dir, directory):
+        rulesets, merges = self.sample()
+        build_products(work_dir, rulesets + merges, manifest_entries=rulesets)
+        write(work_dir / directory / "extra.json", '{"case": "extra file"}\n')
+
+        with ReleaseRun(work_dir), pytest.raises(manifest.ManifestError, match=r"多出.*extra\.json"):
+            release_handler.verify_products(require_baseline=True)
 
     def test_allow_partial_filters_merge_products_without_baseline_inputs(self, work_dir, monkeypatch):
         write(work_dir / "rulesets" / "products.manifest", "")
@@ -319,8 +341,8 @@ class TestReleaseBaseline:
         rulesets, merges = self.sample()
         build_products(work_dir, rulesets + merges, manifest_file=False, rulesets_dir=False)
         with ReleaseRun(work_dir) as run:
-            assert run.run() is None
-            assert ("release", "create") in run.stub.actions()
+            assert run.run() is None, run.state.release
+            assert run.state.release is not None and not run.state.release["draft"]
 
     def test_pair_check_still_applies_without_baseline(self, work_dir):
         rulesets, merges = self.sample()
@@ -328,7 +350,7 @@ class TestReleaseBaseline:
         build_products(work_dir, txt, mrs_of([rulesets[0], *merges]), manifest_file=False, rulesets_dir=False)
         with ReleaseRun(work_dir) as run:
             assert run.run() == 1
-            assert run.stub.calls == []
+            assert run.state.calls == []
 
 
 class TestMergerInputs:

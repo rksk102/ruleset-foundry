@@ -1181,18 +1181,21 @@ class TestConvertOutput:
             convert_mrs.main()
         assert exc.value.code == 0
 
-    def test_stale_output_is_not_credit_for_current_conversion(self, monkeypatch, work_dir):
-        self.run_conversion(monkeypatch, work_dir, b"ignored")
-        stale = work_dir / "dst" / "rules.mrs"
-        stale.write_bytes(b"stale-mrs")
+    @pytest.mark.parametrize("stale_name", ["rules.mrs", "stale.md"])
+    def test_cleanup_failure_aborts_even_when_conversion_would_succeed(self, monkeypatch, work_dir, capsys, stale_name):
+        self.run_conversion(monkeypatch, work_dir, valid_mrs_bytes())
+        output = work_dir / "dst"
+        stale = output / stale_name
+        stale.write_bytes(b"stale-output")
         monkeypatch.setattr(convert_mrs, "clean_directory", lambda _path: [(str(stale), "locked")])
-        monkeypatch.setattr(convert_mrs.subprocess, "run", lambda *_a, **_k: None)
 
         with pytest.raises(SystemExit) as exc:
             convert_mrs.main()
 
         assert exc.value.code == 1
-        assert stale.read_bytes() == b"stale-mrs"
+        assert "清理失败" in capsys.readouterr().out
+        assert stale.read_bytes() == b"stale-output"
+        assert list(output.iterdir()) == [stale]
 
     def test_undecodable_kernel_output_fails_single_file(self, monkeypatch, work_dir):
         self.run_conversion(monkeypatch, work_dir, b"ignored")

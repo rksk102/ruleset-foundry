@@ -18,6 +18,23 @@ class TestGeneration:
         assert manifest.current_generation() == manifest.expected_generation()
         assert manifest.current_generation() != first
 
+    def test_publish_reuses_the_selected_attempt_from_the_same_run(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_RUN_ID", "123")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", "github-123-attempt-2")
+
+        assert manifest.expected_publish_generation() == "github-123-attempt-2"
+        assert manifest.current_generation() == "github-123-attempt-3"
+
+    @pytest.mark.parametrize("selected", ["", "github-321-attempt-2", "github-123-attempt-4"])
+    def test_publish_rejects_missing_foreign_or_future_build(self, monkeypatch, selected):
+        monkeypatch.setenv("GITHUB_RUN_ID", "123")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+        monkeypatch.setenv("PUBLISH_BUILD_GENERATION", selected)
+
+        with pytest.raises(manifest.ManifestError, match="成功构建"):
+            manifest.expected_publish_generation()
+
     def test_local_generation_behavior_is_unchanged(self, monkeypatch):
         monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
         monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)

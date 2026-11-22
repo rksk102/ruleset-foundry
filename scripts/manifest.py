@@ -10,6 +10,7 @@ MANIFEST_NAME = "products.manifest"
 MANIFEST_MAGIC = "# ruleset-foundry products manifest v2"
 _MANIFEST_LINE_RE = re.compile(r"^(?P<sha>[0-9a-f]{64})\s+(?P<path>\S.*)$")
 _GENERATION_PREFIX = "# generation: "
+_GITHUB_ATTEMPT = re.compile(r"github-([1-9][0-9]{0,19})-attempt-([1-9][0-9]{0,19})")
 
 
 class ManifestError(Exception):
@@ -55,6 +56,22 @@ def current_generation():
 
 def expected_generation():
     return _github_generation()
+
+
+def expected_publish_generation():
+    selected = os.getenv("PUBLISH_BUILD_GENERATION")
+    if selected is None:
+        return expected_generation()
+    build = _GITHUB_ATTEMPT.fullmatch(selected)
+    current = _GITHUB_ATTEMPT.fullmatch(expected_generation() or "")
+    if (
+        build is None
+        or current is None
+        or build[1] != current[1]
+        or int(build[2]) > int(current[2])
+    ):
+        raise ManifestError("发布必须使用同一 run 中已成功构建的 generation；请重新运行完整流水线")
+    return selected
 
 
 def load_manifest(path):
@@ -125,6 +142,29 @@ def collect_files(root, suffix=".txt"):
             continue
         files.add(str(rel).replace("\\", "/"))
     return files
+
+
+def verify_directory_set(root, expected, context):
+    def fail(exc):
+        raise ManifestError(f"{context}: 无法读取产物目录 {root}: {exc}") from exc
+
+    root = Path(root)
+    actual = set()
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ManifestError(f"{context}: 产物根必须是普通目录: {root}")
+    if root.exists():
+        for directory, dirs, files in os.walk(root, onerror=fail):
+            for name in (*dirs, *files):
+                path = Path(directory) / name
+                rel = path.relative_to(root).as_posix()
+                if path.is_symlink() or "\\" in rel:
+                    raise ManifestError(f"{context}: 产物路径非法: {rel}")
+                if path.is_dir():
+                    continue
+                if not path.is_file():
+                    raise ManifestError(f"{context}: 非普通文件产物: {rel}")
+                actual.add(rel)
+    verify_matches(expected, actual, context)
 
 
 def diff_against(manifest_entries, actual_rel_paths):

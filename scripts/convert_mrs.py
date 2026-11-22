@@ -694,10 +694,14 @@ def main():
 
     get_latest_mihomo()
 
-    group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
+    cleanup_errors = clean_directory(DST_ROOT)
+    if cleanup_errors:
+        for stale, why in cleanup_errors:
+            error(f"  清理失败: {stale} -> {why}")
+        gh_error("MRS 输出清理失败，中止本轮转换")
+        sys.exit(1)
 
-    for stale, why in clean_directory(DST_ROOT):
-        warning(f"  清理失败（可能残留陈旧 .mrs）: {stale} -> {why}")
+    group_start(f"转换: {SRC_ROOT} -> {DST_ROOT}")
 
     files_map = []
     for root, dirs, files in os.walk(SRC_ROOT):

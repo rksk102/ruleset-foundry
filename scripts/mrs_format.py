@@ -219,9 +219,13 @@ def _validate_domain_tree(leaves, bitmap, labels):
     return frozenset(keys)
 
 
-def _unmap_ip(address):
-    """MRS 的 16 字节地址以 IPv4-mapped IPv6 保存 IPv4；TXT/MRS 比较前统一还原。"""
-    return address.ipv4_mapped or address if address.version == 6 else address
+def _normalize_range(start, end):
+    # mihomo 读回 MRS 时逐端 Unmap；跨界范围会成为无效的混合地址族，必须拒绝。
+    if start.version == 6:
+        start = start.ipv4_mapped or start
+    if end.version == 6:
+        end = end.ipv4_mapped or end
+    return start, end
 
 
 def _validate_body(reader, behavior):
@@ -231,8 +235,10 @@ def _validate_body(reader, behavior):
         records = _records(reader, _int64(reader), 32)
         ranges = []
         for offset in range(0, len(records), 32):
-            start = _unmap_ip(ipaddress.ip_address(records[offset : offset + 16]))
-            end = _unmap_ip(ipaddress.ip_address(records[offset + 16 : offset + 32]))
+            start, end = _normalize_range(
+                ipaddress.ip_address(records[offset : offset + 16]),
+                ipaddress.ip_address(records[offset + 16 : offset + 32]),
+            )
             if start.version != end.version or start > end:
                 raise MrsFormatError("MRS IP range 地址族或起止顺序无效")
             ranges.append((int(start), int(end), start.version))
@@ -310,8 +316,7 @@ def _text_network(rule):
         network = ipaddress.ip_network(rule, strict=False)
     except ValueError as exc:
         raise MrsFormatError(f"TXT 含无效 CIDR: {rule!r}") from exc
-    start = _unmap_ip(network.network_address)
-    end = _unmap_ip(network.broadcast_address)
+    start, end = _normalize_range(network.network_address, network.broadcast_address)
     if start.version != end.version:
         raise MrsFormatError(f"TXT 含无法归一化的地址族: {rule!r}")
     return int(start), int(end), start.version
@@ -328,7 +333,8 @@ def _merge_ranges(ranges):
     return tuple(merged)
 
 
-def verify_product_pair(txt_path, mrs_path, behavior):
+def verify_product_pair(txt_path, mrs_path, behavior, *, forbid_default_route=False):
+    """发布预检可拒绝整族覆盖，包括由多条 CIDR 组成的覆盖。"""
     try:
         lines = Path(txt_path).read_text(encoding="utf-8").splitlines()
     except UnicodeError as exc:
@@ -356,5 +362,10 @@ def verify_product_pair(txt_path, mrs_path, behavior):
             continue
         networks.append(_text_network(rule))
         count += 1
-    if count != actual.count or _merge_ranges(networks) != actual.ranges:
+    merged = _merge_ranges(networks)
+    if count != actual.count or merged != actual.ranges:
         raise MrsFormatError(f"TXT/MRS 内容不对应: {txt_path} <-> {mrs_path}")
+    if forbid_default_route:
+        for start, end, version in merged:
+            if start == 0 and end == (1 << (32 if version == 4 else 128)) - 1:
+                raise MrsFormatError(f"TXT/MRS 覆盖整个 IPv{version} 地址族: {txt_path} <-> {mrs_path}")

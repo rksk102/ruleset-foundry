@@ -150,6 +150,30 @@ class TestMainFlow:
         assert (rulesets / "products.manifest").read_bytes() == before_manifest
         assert not list(rulesets.glob(".staging-*"))
 
+    def test_complete_ip_address_family_aborts_even_with_partial_enabled(self, monkeypatch, work_dir, capsys):
+        sources = SOURCES + "[policy:direct]\n[type:ipcidr]\nhttps://raw.githubusercontent.com/o/ip/ip.txt\n"
+        rulesets = self.setup_run(
+            monkeypatch, work_dir, sources=sources, payloads={**PAYLOADS, "ip.txt": b"192.0.2.0/24\n"}
+        )
+        main.main()
+        files = [rulesets / rel for rel in self.disk_entries(rulesets)] + [rulesets / manifest.MANIFEST_NAME]
+        before = {path: path.read_bytes() for path in files}
+        capsys.readouterr()
+        self.setup_run(
+            monkeypatch, work_dir, sources=sources,
+            payloads={**PAYLOADS, "keep.txt": b"new.example\n", "ip.txt": b"0.0.0.0/1\n128.0.0.0/1\n"},
+            allow_partial=True,
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        output = capsys.readouterr().out
+        assert "::error::拒绝生成" in output and "覆盖整个 IPv4 地址族" in output
+        assert {path: path.read_bytes() for path in files} == before
+        assert not list(rulesets.glob(".staging-*"))
+
     @pytest.mark.parametrize(
         ("raw", "expected_error"),
         [

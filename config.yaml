@@ -42,6 +42,12 @@ merges:
       - "policy/domain/Loyalsoldier/proxy.txt"
       - "policy/domain/Loyalsoldier/proxy-list.txt"
 
+quickstart:
+  # 引用 merges 的输出路径，相对于 merged_output_dir
+  block: "block/domain/rksk102/all-adblock.txt"
+  direct: "direct/ipcidr/rksk102/all-cnip.txt"
+  policy: "policy/domain/rksk102/all-proxy.txt"
+
 behavior:
   # 产物哈希与上次发布一致时跳过发布
   release_change_detection: true
