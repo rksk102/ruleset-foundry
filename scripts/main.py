@@ -23,6 +23,7 @@ from utils import (
     REPO_ROOT,
     USERINFO_HIDDEN_PLACEHOLDER,
     WINDOWS_RESERVED_NAMES,
+    FullAddressFamilyCoverageError,
     anchor_cwd_to_repo_root,
     atomic_write,
     beijing_now,
@@ -1289,7 +1290,11 @@ def _main_locked():
     try:
         expected_files = []
         for group in groups:
-            count, errors = process_group(group, raw_by_index, err_by_index, write_root=staging)
+            try:
+                count, errors = process_group(group, raw_by_index, err_by_index, write_root=staging)
+            except FullAddressFamilyCoverageError as exc:
+                gh_error(f"拒绝生成 {group['path']}: {exc}")
+                sys.exit(1)
             for url, reason in errors["download"]:
                 stats.download_errors.append((url, reason))
                 warning(f"  下载失败: {url} | {reason}")
