@@ -126,8 +126,14 @@ def _literal_ip(host):
 
 
 def _is_public_address(addr):
-    """仅接受全局可路由且非多播/未指定的地址；回环、私网、链路本地、保留段全部拒绝。"""
-    return addr.is_global and not addr.is_multicast and not addr.is_unspecified
+    # ipaddress 的全局分类可能包含保留段和 IPv6 站点本地地址。
+    return (
+        addr.is_global
+        and not addr.is_multicast
+        and not addr.is_unspecified
+        and not addr.is_reserved
+        and not (isinstance(addr, ipaddress.IPv6Address) and addr.is_site_local)
+    )
 
 
 class TargetResolutionRejected(aiohttp.ClientConnectionError):
@@ -1023,7 +1029,13 @@ async def download_one(session, task):
                         if not location:
                             warning(f"  重定向缺少 Location: {redact_url_userinfo(url)} -> HTTP {resp.status}")
                             return (task, None, f"HTTP {resp.status}（重定向缺少 Location）")
-                        next_url = urljoin(url, location)
+                        try:
+                            next_url = urljoin(url, location)
+                        except ValueError:
+                            # 解析异常可能包含上游 Location 中的未脱敏内容。
+                            reason = "重定向 Location 解析失败"
+                            warning(f"  {reason}")
+                            return task, None, reason
                         if not _is_https_url(next_url):
                             warning(
                                 f"  拒绝非 HTTPS 重定向: {redact_url_userinfo(url)}"

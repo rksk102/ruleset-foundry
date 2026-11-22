@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import socket
 from datetime import UTC
 
@@ -199,6 +200,19 @@ class TestHttpsRedirects:
         assert len(session.calls) == main.MAX_REDIRECTS + 1
 
 
+@pytest.mark.parametrize(
+    ("address", "allowed"),
+    [
+        pytest.param("fec0::1", False, id="site-local-ipv6"),
+        pytest.param("200::1", False, id="reserved-ipv6"),
+        pytest.param("2606:4700:4700::1111", True, id="public-ipv6"),
+        pytest.param(f"::ffff:{PUBLIC_IPV4}", True, id="mapped-public-ipv4"),
+    ],
+)
+def test_public_ip_address_classification(address, allowed):
+    assert main._is_public_address(ipaddress.ip_address(address)) is allowed
+
+
 class TestTargetAddressValidation:
     """每一跳请求前按 IP 属性/端口/userinfo 校验，且主机名必须由连接器 resolver 解析后再判定。"""
 
@@ -386,7 +400,16 @@ class TestConnectorResolverPolicy:
 
     @pytest.mark.parametrize(
         "addresses",
-        [[], ["10.0.0.7"], [PUBLIC_IPV4, "127.0.0.1"], ["169.254.169.254"], ["fe80::1"], ["::1"]],
+        [
+            [],
+            ["10.0.0.7"],
+            [PUBLIC_IPV4, "127.0.0.1"],
+            ["169.254.169.254"],
+            ["fe80::1"],
+            ["::1"],
+            pytest.param(["fec0::1"], id="site-local-ipv6"),
+            pytest.param([PUBLIC_IPV4, "200::1"], id="mixed-public-and-reserved"),
+        ],
     )
     def test_non_public_mixed_or_empty_resolution_rejected(self, addresses):
         wrapper, _inner = self.resolver([[resolve_result(address) for address in addresses]])
@@ -501,6 +524,36 @@ class TestUserinfoNeverRequestedOrEchoed:
         assert password not in out
         assert prefix not in out
         assert [call["url"] for call in session.calls] == [TASK["url"]]
+
+
+def test_redirect_parse_failure_reports_only_fixed_reason(monkeypatch, work_dir):
+    marker = "synthetic-parser-detail"
+    reason = "重定向 Location 解析失败"
+    session = FakeSession(FakeResponse(302, [], {"Location": "/next.txt"}))
+    warnings = []
+    summary = work_dir / "summary.md"
+
+    def fail_to_join(_base, _location):
+        raise ValueError(marker)
+
+    monkeypatch.setattr(main, "urljoin", fail_to_join)
+    monkeypatch.setattr(main, "warning", warnings.append)
+    monkeypatch.setattr(main, "section", lambda _message: None)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    task, content, err = asyncio.run(main.download_one(session, TASK))
+    stats = main.SyncStats()
+    stats.download_errors.append((task["url"], err))
+    main.generate_summary(stats)
+    summary_text = summary.read_text(encoding="utf-8")
+
+    assert content is None
+    assert [call["url"] for call in session.calls] == [TASK["url"]]
+    assert err == reason
+    assert warnings[0].strip() == reason
+    assert all(marker not in warning for warning in warnings)
+    assert f"| `{TASK['url']}` | {reason} |" in summary_text
+    assert marker not in summary_text
 
 
 class TestTransientDnsRetry:
