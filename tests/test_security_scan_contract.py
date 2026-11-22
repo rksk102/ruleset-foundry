@@ -1,9 +1,12 @@
 """安全扫描工作流与 OSV 例外策略的契约。"""
 
+import os
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
@@ -75,7 +78,7 @@ def test_all_github_actions_use_expected_upstream_commits():
     assert all(SHA_RE.fullmatch(ref.rsplit("@", 1)[1]) for ref in uses)
 
 
-def test_scan_args_and_missing_result_gate_match_reusable_workflow():
+def test_scan_args_preserve_lockfile_and_output_contract():
     scanner = scan_step("Run scanner")
     assert args_lines(scanner) == [
         "--output=results.json",
@@ -86,11 +89,47 @@ def test_scan_args_and_missing_result_gate_match_reusable_workflow():
     assert scanner["env"]["GOTOOLCHAIN"] == "auto"
     assert scanner["continue-on-error"] is True
 
+
+def test_result_gate_runs_after_scanner_before_reporter():
+    steps = scan_job()["steps"]
     check = scan_step("Check that the scan completed")
-    assert check["if"] == "${{ steps.scan.outcome == 'failure' }}"
-    assert check["env"]["RESULTS"] == "results.json"
-    assert '-s "${RESULTS}"' in check["run"]
-    assert "exit 1" in check["run"]
+    assert steps.index(scan_step("Run scanner")) < steps.index(check)
+    assert steps.index(check) < steps.index(scan_step("Run osv-scanner-reporter"))
+    assert "if" not in check
+    assert "if" not in scan_step("Run osv-scanner-reporter")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_code"),
+    [
+        (None, 1),
+        ("", 1),
+        ('{"results":[', 1),
+        ("[]", 1),
+        ("{}", 1),
+        ('{"results":{}}', 1),
+        ('{"results":[NaN]}', 1),
+        ('{"results":[]}', 0),
+        ('{"results":[{"source":{"path":"uv.lock"},"packages":[]}]}', 0),
+    ],
+    ids=[
+        "missing", "empty", "truncated", "not-object", "no-results",
+        "not-array", "non-json-number", "clean", "populated",
+    ],
+)
+def test_result_gate_rejects_unusable_scanner_output(work_dir, content, expected_code):
+    check = scan_step("Check that the scan completed")
+    if content is not None:
+        (work_dir / "results.json").write_text(content, encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", "-e", "-c", check["run"]], cwd=work_dir,
+        env={**os.environ, **check.get("env", {})}, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == expected_code, result.stdout + result.stderr
+    if expected_code:
+        assert "::error::" in result.stdout
 
 
 def test_reporter_preserves_workspace_paths_and_vulnerability_gate():

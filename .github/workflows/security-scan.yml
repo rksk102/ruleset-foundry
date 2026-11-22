@@ -37,16 +37,24 @@ jobs:
             --format=json
             --lockfile=uv.lock
             --config=osv-scanner.toml
-      # 扫描失败和发现漏洞都会返回非零；只有实际写出结果时才交给 reporter 判定。
+      # 镜像入口可能把零包的退出码转为成功，reporter 也会把无法读取的输入当作空结果。
       - name: "Check that the scan completed"
-        if: ${{ steps.scan.outcome == 'failure' }}
-        env:
-          RESULTS: results.json
         run: |
-          if [ ! -s "${RESULTS}" ]; then
-            echo "::error::OSV-Scanner failed without writing ${RESULTS}, so there are no results to report on. Failing the job rather than reporting no vulnerabilities found. See the \"Run scanner\" step for the cause."
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          def reject_constant(value):
+              raise ValueError(f"Invalid JSON number: {value}")
+
+          try:
+              output = json.loads(Path("results.json").read_text(encoding="utf-8"), parse_constant=reject_constant)
+              if not isinstance(output, dict) or not isinstance(output.get("results"), list):
+                  raise ValueError("Expected a results array")
+          except (OSError, ValueError, RecursionError):
+              print("::error::OSV-Scanner did not produce valid results.json. See the Run scanner step.")
+              raise SystemExit(1)
+          PY
       - name: "Run osv-scanner-reporter"
         uses: docker://ghcr.io/google/osv-scanner-action@sha256:3fa25659351c9a5527b30d73b6f3c2ee0bcac106d6220948211d87379d08f243  # v2.7.1
         with:
