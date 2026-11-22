@@ -8,10 +8,17 @@ import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github" / "workflows" / "security-scan.yml"
-OSV_REUSABLE = (
-    "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml"
-)
+SETUP_PYTHON_ENV = REPO / ".github" / "actions" / "setup-python-env" / "action.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+OSV_IMAGE = (
+    "docker://ghcr.io/google/osv-scanner-action"
+    "@sha256:3fa25659351c9a5527b30d73b6f3c2ee0bcac106d6220948211d87379d08f243"
+)
+EXPECTED_ACTIONS = {
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    "github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d",
+}
 
 
 def load_workflow():
@@ -19,10 +26,15 @@ def load_workflow():
 
 
 def scan_job():
-    workflow = load_workflow()
-    job = workflow["jobs"]["osv-scanner"]
-    assert job["uses"].startswith(f"{OSV_REUSABLE}@")
-    return job
+    return load_workflow()["jobs"]["osv-scanner"]
+
+
+def scan_step(name):
+    return next(step for step in scan_job()["steps"] if step.get("name") == name)
+
+
+def args_lines(step):
+    return [line.strip() for line in step["with"]["args"].splitlines() if line.strip()]
 
 
 def test_triggers_include_weekly_schedule_and_dispatch():
@@ -34,28 +46,91 @@ def test_triggers_include_weekly_schedule_and_dispatch():
     assert "workflow_dispatch" in trigger
 
 
-def test_reusable_workflow_is_pinned_to_40_char_sha():
-    ref = scan_job()["uses"].split("@", 1)[1]
-    assert SHA_RE.fullmatch(ref), f"reusable workflow 未钉扎 40 位 SHA: {ref!r}"
+def test_setup_uv_pins_exact_approved_version():
+    action = yaml.safe_load(SETUP_PYTHON_ENV.read_text(encoding="utf-8"))
+    setup = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("astral-sh/setup-uv@")
+    )
+    assert SHA_RE.fullmatch(setup["uses"].rsplit("@", 1)[1])
+    assert setup["with"]["version"] == "0.13.9"
 
 
-def test_scan_args_cover_lockfile_and_config():
-    with_args = scan_job()["with"]
-    args = with_args["scan-args"]
-    lines = [line.strip() for line in args.splitlines() if line.strip()]
-    assert "--lockfile=uv.lock" in lines
-    assert "--config=osv-scanner.toml" in lines
-    assert with_args["fail-on-vuln"] is True
-    assert with_args["upload-sarif"] is True
+def test_scanner_and_reporter_use_pinned_oci_digest():
+    job = scan_job()
+    assert job["runs-on"] == "ubuntu-latest"
+    assert "uses" not in job
+    for name in ("Run scanner", "Run osv-scanner-reporter"):
+        assert scan_step(name)["uses"] == OSV_IMAGE
 
 
-def test_permissions_grant_security_events_write():
+def test_all_github_actions_use_expected_upstream_commits():
+    uses = {
+        step["uses"]
+        for step in scan_job()["steps"]
+        if step.get("uses") and not step["uses"].startswith("docker://")
+    }
+    assert uses == EXPECTED_ACTIONS
+    assert all(SHA_RE.fullmatch(ref.rsplit("@", 1)[1]) for ref in uses)
+
+
+def test_scan_args_and_missing_result_gate_match_reusable_workflow():
+    scanner = scan_step("Run scanner")
+    assert args_lines(scanner) == [
+        "--output=results.json",
+        "--format=json",
+        "--lockfile=uv.lock",
+        "--config=osv-scanner.toml",
+    ]
+    assert scanner["env"]["GOTOOLCHAIN"] == "auto"
+    assert scanner["continue-on-error"] is True
+
+    check = scan_step("Check that the scan completed")
+    assert check["if"] == "${{ steps.scan.outcome == 'failure' }}"
+    assert check["env"]["RESULTS"] == "results.json"
+    assert '-s "${RESULTS}"' in check["run"]
+    assert "exit 1" in check["run"]
+
+
+def test_reporter_preserves_workspace_paths_and_vulnerability_gate():
+    reporter = scan_step("Run osv-scanner-reporter")
+    assert reporter["with"]["entrypoint"] == "/root/osv-reporter"
+    assert args_lines(reporter) == [
+        "--output=results.sarif",
+        "--new=results.json",
+        "--gh-annotations=false",
+        "--fail-on-vuln=true",
+    ]
+    assert all(not line.startswith(("--output=/", "--new=/")) for line in args_lines(reporter))
+
+
+def test_sarif_upload_and_artifact_failure_semantics_are_preserved():
+    artifact = scan_step("Upload artifact")
+    assert artifact["id"] == "upload_artifact"
+    assert artifact["if"] == "${{ !cancelled() }}"
+    assert artifact["with"]["name"] == "OSV Scanner SARIF file"
+    assert artifact["with"]["path"] == "results.sarif"
+    assert artifact["with"]["retention-days"] == 5
+
+    upload = scan_step("Upload to code-scanning")
+    assert upload["if"] == "${{ !cancelled() }}"
+    assert upload["with"]["sarif_file"] == "results.sarif"
+
+    troubleshooter = scan_step("Error troubleshooter")
+    assert troubleshooter["if"] == "${{ always() && steps.upload_artifact.outcome == 'failure' }}"
+    assert "exit 1" in troubleshooter["run"]
+
+
+def test_permissions_grant_only_existing_security_events_write():
     workflow = load_workflow()
-    job = workflow["jobs"]["osv-scanner"]
-    assert job["permissions"]["security-events"] == "write"
-    assert job["permissions"]["actions"] == "read"
-    assert job["permissions"]["contents"] == "read"
-    assert "security-events" not in workflow["permissions"]
+    job = scan_job()
+    assert job["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "security-events": "write",
+    }
+    assert workflow["permissions"] == {"actions": "read", "contents": "read"}
 
 
 def test_ignored_vulns_have_reason_and_ignore_until():

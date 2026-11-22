@@ -16,14 +16,68 @@ concurrency:
 jobs:
   osv-scanner:
     name: "OSV 依赖漏洞扫描"
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932  # v2.7.1
-    with:
-      scan-args: |-
-        --lockfile=uv.lock
-        --config=osv-scanner.toml
-      fail-on-vuln: true
-      upload-sarif: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: "Run scanner"
+        id: scan
+        uses: docker://ghcr.io/google/osv-scanner-action@sha256:3fa25659351c9a5527b30d73b6f3c2ee0bcac106d6220948211d87379d08f243  # v2.7.1
+        continue-on-error: true
+        env:
+          GOTOOLCHAIN: auto
+        with:
+          args: |-
+            --output=results.json
+            --format=json
+            --lockfile=uv.lock
+            --config=osv-scanner.toml
+      # 扫描失败和发现漏洞都会返回非零；只有实际写出结果时才交给 reporter 判定。
+      - name: "Check that the scan completed"
+        if: ${{ steps.scan.outcome == 'failure' }}
+        env:
+          RESULTS: results.json
+        run: |
+          if [ ! -s "${RESULTS}" ]; then
+            echo "::error::OSV-Scanner failed without writing ${RESULTS}, so there are no results to report on. Failing the job rather than reporting no vulnerabilities found. See the \"Run scanner\" step for the cause."
+            exit 1
+          fi
+      - name: "Run osv-scanner-reporter"
+        uses: docker://ghcr.io/google/osv-scanner-action@sha256:3fa25659351c9a5527b30d73b6f3c2ee0bcac106d6220948211d87379d08f243  # v2.7.1
+        with:
+          entrypoint: /root/osv-reporter
+          args: |-
+            --output=results.sarif
+            --new=results.json
+            --gh-annotations=false
+            --fail-on-vuln=true
+      - name: "Upload artifact"
+        id: upload_artifact
+        if: "${{ !cancelled() }}"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: OSV Scanner SARIF file
+          path: results.sarif
+          retention-days: 5
+      - name: "Upload to code-scanning"
+        if: "${{ !cancelled() }}"
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          sarif_file: results.sarif
+      - name: "Print Code Scanning URL"
+        if: "${{ !cancelled() }}"
+        run: |
+          echo "View the OSV-Scanner results in the 'Security' tab of this repository."
+          echo "${{ github.server_url }}/${{ github.repository }}/security/code-scanning?query=is%3Aopen+branch:${GITHUB_REF_NAME}+tool%3Aosv-scanner"
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+      - name: "Error troubleshooter"
+        if: "${{ always() && steps.upload_artifact.outcome == 'failure' }}"
+        run: |
+          echo "::error::Artifact upload failed. This may be a result of an error from the scanning step."
+          exit 1
