@@ -994,7 +994,46 @@ def test_rebase_uses_main_oid_verified_by_the_original_checkout_guard():
     fetch = script.index('git fetch --no-tags origin "${REF_NAME}"')
     pinned = script.index('BASE=$(git rev-parse --verify FETCH_HEAD)', fetch)
     guard = script.index('PUBLISH_EXPECTED_MAIN_OID="$BASE" python scripts/publish_guard.py', pinned)
-    assert script.index('git rebase "$BASE"', guard)
+    rebase = script.index('git rebase --onto "$BASE" "$GITHUB_SHA"', guard)
+    assert rebase < script.index('git push origin "HEAD:refs/heads/${REF_NAME}"', rebase)
+
+
+def test_publish_state_step_replays_only_generated_commit_in_shallow_clone(work_dir):
+    origin = work_dir / "origin"
+    origin.mkdir()
+    _init_git_repo(origin)
+    (origin / "README.md").write_text("build readme\n", encoding="utf-8")
+    (origin / "scripts").mkdir()
+    (origin / "scripts" / "publish_guard.py").write_text(
+        'import os\nassert os.environ["PUBLISH_EXPECTED_MAIN_OID"] == os.environ["EXPECTED_BASE"]\n',
+        encoding="utf-8",
+    )
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-qm", "build inputs")
+    built = _git(origin, "rev-parse", "HEAD")
+    checkout = work_dir / "checkout"
+    _git(work_dir, "clone", "--depth=1", f"file://{origin}", str(checkout))
+    (origin / "README.md").write_text("newer readme\n", encoding="utf-8")
+    _git(origin, "commit", "-qam", "newer generated readme")
+    base = _git(origin, "rev-parse", "HEAD")
+    _git(origin, "switch", "--detach")
+    _git(checkout, "fetch", "--no-tags", "--depth=1", "origin", base)
+    assert {
+        built, base,
+    } <= set((checkout / ".git" / "shallow").read_text(encoding="utf-8").splitlines())
+    (checkout / "state").mkdir()
+    (checkout / "state" / "release.sha256").write_text("new state\n", encoding="utf-8")
+
+    step = _step(load_workflow("pipeline.yml")["jobs"]["publish"], "提交 README 与发布状态")
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], cwd=checkout, capture_output=True, text=True,
+        env={**os.environ, "GITHUB_SHA": built, "REF_NAME": "main", "EXPECTED_BASE": base},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(origin, "rev-parse", "main^") == base
+    assert _git(origin, "show", "main:README.md") == "newer readme"
+    assert _git(origin, "show", "main:state/release.sha256") == "new state"
 
 
 def test_publish_force_push_uses_current_guard_lease():

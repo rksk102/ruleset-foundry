@@ -376,7 +376,8 @@ jobs:
             git fetch --no-tags origin "${REF_NAME}"
             BASE=$(git rev-parse --verify FETCH_HEAD)
             PUBLISH_EXPECTED_MAIN_OID="$BASE" python scripts/publish_guard.py
-            git rebase "$BASE"
+            # 浅历史可能隐藏共同祖先，只重放构建提交之后生成的状态提交。
+            git rebase --onto "$BASE" "$GITHUB_SHA"
             git push origin "HEAD:refs/heads/${REF_NAME}"
           fi
       - name: 推进已确认发布代次
