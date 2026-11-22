@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import config_loader
+import main
 import pytest
 import utils
 
@@ -338,6 +339,66 @@ class TestResolvedConfigPaths:
 
         assert config_loader.load_config()["paths"]["log_dir"] == "alias/logs"
         assert not (root / "data" / "logs").exists()
+
+    def test_windows_separator_path_is_consumed_as_normalized_repo_relative_path(self, work_dir, monkeypatch):
+        root, _outside = self.prepare(work_dir, monkeypatch)
+        sources = root / "nested" / "sources.urls"
+        sources.parent.mkdir()
+        sources.write_text("https://example.com/ads.txt\n", encoding="utf-8")
+        use_config(root, monkeypatch, path_config({"sources_file": "nested\\sources.urls"}))
+        monkeypatch.chdir(root)
+
+        configured_path = config_loader.load_config()["paths"]["sources_file"]
+        monkeypatch.setattr(main, "SOURCES_FILE", configured_path)
+        tasks = main.parse_sources()
+
+        assert configured_path == "nested/sources.urls"
+        assert [task["url"] for task in tasks] == ["https://example.com/ads.txt"]
+
+
+class TestQuickstartReferences:
+    def config_body(self, references):
+        body = (
+            "merges:\n"
+            "  - strategy: block\n"
+            "    type: domain\n"
+            "    owner: rksk102\n"
+            "    filename: all-adblock.txt\n"
+            "    inputs: ['block/domain/rksk102/ads.txt']\n"
+            "  - strategy: direct\n"
+            "    type: ipcidr\n"
+            "    owner: rksk102\n"
+            "    filename: all-cnip.txt\n"
+            "    inputs: ['direct/ipcidr/rksk102/cn.txt']\n"
+            "  - strategy: policy\n"
+            "    type: domain\n"
+            "    owner: rksk102\n"
+            "    filename: all-proxy.txt\n"
+            "    inputs: ['policy/domain/rksk102/proxy.txt']\n"
+            "quickstart:\n"
+        )
+        return body + "".join(f"  {strategy}: {reference}\n" for strategy, reference in references.items())
+
+    def test_unknown_task_reference_is_rejected_during_config_load(self, work_dir, monkeypatch):
+        body = self.config_body({
+            "block": "block/domain/rksk102/other.txt",
+            "direct": "direct/ipcidr/rksk102/all-cnip.txt",
+            "policy": "policy/domain/rksk102/all-proxy.txt",
+        })
+        use_config(work_dir, monkeypatch, body)
+
+        with pytest.raises(config_loader.ConfigError, match=r"quickstart\.block.*未匹配"):
+            config_loader.load_config()
+
+    def test_partial_quickstart_references_are_rejected_during_config_load(self, work_dir, monkeypatch):
+        body = self.config_body({
+            "block": "block/domain/rksk102/all-adblock.txt",
+            "direct": "direct/ipcidr/rksk102/all-cnip.txt",
+        })
+        use_config(work_dir, monkeypatch, body)
+
+        with pytest.raises(config_loader.ConfigError, match=r"quickstart.*policy"):
+            config_loader.load_config()
 
 
 class TestMergeFieldWhitelist:

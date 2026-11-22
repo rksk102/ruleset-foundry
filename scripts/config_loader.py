@@ -40,6 +40,9 @@ _TYPES = {
     ("paths", "merged_output_dir"): str,
     ("paths", "mrs_output_dir"): str,
     ("paths", "log_dir"): str,
+    ("quickstart", "block"): str,
+    ("quickstart", "direct"): str,
+    ("quickstart", "policy"): str,
     ("behavior", "release_change_detection"): bool,
     ("behavior", "release_keep_days"): int,
     ("behavior", "conflict_policy"): str,
@@ -69,6 +72,7 @@ _RATIOS = {
 }
 
 CONFLICT_POLICIES = ("ignore", "warn", "fail")
+QUICKSTART_STRATEGIES = ("block", "direct", "policy")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 _PATH_KEYS = {
@@ -88,11 +92,12 @@ _PATH_DIR_KEYS = (
     ("mihomo", "kernel_cache_path"),
 )
 
-_MERGE_REQUIRED = ("strategy", "type", "owner", "filename", "inputs")
+_MERGE_OUTPUT_FIELDS = ("strategy", "type", "owner", "filename")
+_MERGE_REQUIRED = (*_MERGE_OUTPUT_FIELDS, "inputs")
 
 _MERGE_ALLOWED = frozenset({"strategy", "type", "owner", "filename", "description", "inputs"})
 
-_KNOWN_SECTIONS = ("network", "paths", "merges", "behavior", "mihomo")
+_KNOWN_SECTIONS = ("network", "paths", "merges", "quickstart", "behavior", "mihomo")
 
 
 class ConfigError(Exception):
@@ -153,7 +158,7 @@ def _validate_path_value(label, value):
         raise ConfigError(f"{label} 必须是相对路径，不能是绝对路径（{value!r}）")
     if len(text) > 1 and text[1] == ":":
         raise ConfigError(f"{label} 不能是盘符路径（{value!r}）")
-    normalized = text.replace("\\", "/").strip("/")
+    normalized = text.replace("\\", "/")
     parts = [part for part in normalized.split("/") if part]
     if not parts or any(part in (".", "..") for part in parts):
         raise ConfigError(
@@ -170,7 +175,7 @@ def _validate_path_value(label, value):
         stem = part.rstrip(" .").split(".", 1)[0].upper()
         if stem in WINDOWS_RESERVED_NAMES:
             raise ConfigError(f"{label} 不能使用 Windows 保留设备名: {value!r}")
-    return text
+    return "/".join(parts)
 
 
 def _validate_scalar(section, key, value):
@@ -186,7 +191,7 @@ def _validate_scalar(section, key, value):
             raise ConfigError(f"{section}.{key} 数值超出 float 范围（{value!r}）") from e
     if not isinstance(value, expected):
         raise ConfigError(f"{section}.{key} 期望 {expected.__name__}，实际 {type(value).__name__}（{value!r}）")
-    if expected is not None and expected is str and (section, key) in _PATH_KEYS:
+    if expected is str and ((section, key) in _PATH_KEYS or section == "quickstart"):
         value = _validate_path_value(f"{section}.{key}", value)
     if (section, key) == ("mihomo", "repo_api"):
         try:
@@ -216,8 +221,8 @@ def _validate_scalar(section, key, value):
     return value
 
 
-def _normalized_path_parts(value):
-    return tuple(part.casefold() for part in value.replace("\\", "/").split("/") if part)
+def _casefold_path_parts(path):
+    return tuple(part.casefold() for part in path.parts)
 
 
 def _paths_overlap(parts_a, parts_b):
@@ -226,14 +231,14 @@ def _paths_overlap(parts_a, parts_b):
 
 def _resolved_path_parts(label, value):
     try:
-        target = (utils.REPO_ROOT / value.replace("\\", "/")).resolve()
+        target = (utils.REPO_ROOT / value).resolve()
         with contextlib.suppress(FileNotFoundError):
             target.stat()
     except (OSError, RuntimeError) as exc:
         raise ConfigError(f"{label} 真实路径解析失败: {value!r}（{exc}）") from exc
     if not utils.is_repo_subdir(target):
         raise ConfigError(f"{label} 真实目标必须位于仓库内且不能指向受保护目录: {value!r} -> {target}")
-    return _normalized_path_parts(target.relative_to(utils.REPO_ROOT).as_posix())
+    return _casefold_path_parts(target.relative_to(utils.REPO_ROOT))
 
 
 def _validate_path_relationships(cfg):
@@ -241,7 +246,7 @@ def _validate_path_relationships(cfg):
     for section, key in _PATH_DIR_KEYS:
         value = cfg[section][key]
         label = f"{section}.{key}"
-        entries.append((label, value, _normalized_path_parts(value), _resolved_path_parts(label, value)))
+        entries.append((label, value, _casefold_path_parts(Path(value)), _resolved_path_parts(label, value)))
     for pos, (label_a, value_a, parts_a, real_a) in enumerate(entries):
         for label_b, value_b, parts_b, real_b in entries[pos + 1 :]:
             if _paths_overlap(parts_a, parts_b) or _paths_overlap(real_a, real_b):
@@ -250,7 +255,7 @@ def _validate_path_relationships(cfg):
                     "目录之间不能相等或互相嵌套（含符号链接真实路径、大小写不敏感比较）"
                 )
     sources_value = cfg["paths"]["sources_file"]
-    sources_parts = _normalized_path_parts(sources_value)
+    sources_parts = _casefold_path_parts(Path(sources_value))
     sources_real = _resolved_path_parts("paths.sources_file", sources_value)
     for label, value, parts, real in entries:
         if _paths_overlap(sources_parts, parts) or _paths_overlap(sources_real, real):
@@ -289,7 +294,7 @@ def _validate_merges(merges):
             raise ConfigError(f"merges[{idx}] 缺少必需字段: {', '.join(missing)}")
         if not isinstance(task["inputs"], list) or not task["inputs"]:
             raise ConfigError(f"merges[{idx}].inputs 必须为非空列表")
-        for field in ("strategy", "type", "owner", "filename"):
+        for field in _MERGE_OUTPUT_FIELDS:
             if not is_safe_component(task[field]):
                 raise ConfigError(
                     f"merges[{idx}].{field} 必须是以字母/数字开头的单段名字"
@@ -305,7 +310,7 @@ def _validate_merges(merges):
                 )
         if not task["filename"].endswith(".txt"):
             raise ConfigError(f"merges[{idx}].filename 必须以 .txt 结尾: {task['filename']!r}")
-        output = tuple(task[field].strip().casefold() for field in ("strategy", "type", "owner", "filename"))
+        output = tuple(task[field].casefold() for field in _MERGE_OUTPUT_FIELDS)
         if output in seen_outputs:
             raise ConfigError(f"merges[{idx}] 与其他任务输出同一路径: {'/'.join(output)}")
         seen_outputs.add(output)
@@ -315,12 +320,28 @@ def _validate_merges(merges):
             if not isinstance(rel, str) or not rel.strip():
                 raise ConfigError(f"merges[{idx}].inputs[{pos}] 必须为非空字符串")
             task["inputs"][pos] = _validate_path_value(f"merges[{idx}].inputs[{pos}]", rel)
-            input_parts = task["inputs"][pos].replace("\\", "/").split("/")
+            input_parts = task["inputs"][pos].split("/")
             if len(input_parts) < 2 or input_parts[1] != task["type"]:
                 raise ConfigError(
                     f"merges[{idx}].inputs[{pos}] 输入类型与任务 type={task['type']!r} 不一致"
                     f"（按固定路径第二段核对）: {rel!r}"
                 )
+
+
+def select_quickstart_tasks(merges, references):
+    """合并任务须先校验输出路径唯一性。"""
+    missing = [strategy for strategy in QUICKSTART_STRATEGIES if strategy not in references]
+    if missing:
+        raise ConfigError("quickstart 缺少快速开始所需策略: " + ", ".join(missing))
+    by_output = {"/".join(task[field] for field in _MERGE_OUTPUT_FIELDS): task for task in merges}
+    selected = []
+    for strategy in QUICKSTART_STRATEGIES:
+        reference = references[strategy]
+        task = by_output.get(reference)
+        if task is None or task["strategy"] != strategy:
+            raise ConfigError(f"quickstart.{strategy} 未匹配该策略的合并任务: {reference!r}")
+        selected.append(task)
+    return selected
 
 
 def load_config():
@@ -364,6 +385,8 @@ def load_config():
             values[key] = _validate_scalar(section, key, value)
     _validate_path_relationships(cfg)
     _validate_merges(cfg.get("merges"))
+    if "quickstart" in cfg:
+        select_quickstart_tasks(cfg["merges"], cfg["quickstart"])
 
     _CONFIG = cfg
     return _CONFIG

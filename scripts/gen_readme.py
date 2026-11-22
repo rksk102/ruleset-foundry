@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 
 import manifest
-from config_loader import ConfigError, get
+from config_loader import QUICKSTART_STRATEGIES, ConfigError, get, select_quickstart_tasks
 from logger import error, gh_error, group_end, group_start, info, success
 from utils import (
     anchor_cwd_to_repo_root,
@@ -193,28 +193,28 @@ def make_page_header(badge_time=None):
 """
 
 
-QUICKSTART_MERGE_STRATEGIES = ("block", "direct", "policy")
-
-
 def quickstart_merge_tasks(merges=None):
-    """快速开始展示的三条 merge 任务；缺失或同一策略重复均视为配置缺陷。"""
     if merges is None:
-        merges = get("merges", default=None) or []
+        merges = get("merges") or []
+        references = get("quickstart")
+        if references is not None:
+            return select_quickstart_tasks(merges, references)
+    # 兼容未配置显式引用的本地配置，仍要求每策略能唯一确定一项任务。
     by_strategy = {}
     for idx, task in enumerate(merges):
         if not isinstance(task, dict):
             raise ConfigError(f"merges[{idx}] 期望 dict，实际 {type(task).__name__}")
         strategy = task.get("strategy")
-        if strategy not in QUICKSTART_MERGE_STRATEGIES:
+        if strategy not in QUICKSTART_STRATEGIES:
             continue
         if strategy in by_strategy:
             raise ConfigError(f"merges 中策略 {strategy!r} 出现多次，无法确定快速开始应引用的产物")
         by_strategy[strategy] = task
-    missing = [s for s in QUICKSTART_MERGE_STRATEGIES if s not in by_strategy]
+    missing = [s for s in QUICKSTART_STRATEGIES if s not in by_strategy]
     if missing:
         raise ConfigError("merges 缺少快速开始所需策略: " + ", ".join(missing))
     tasks = []
-    for strategy in QUICKSTART_MERGE_STRATEGIES:
+    for strategy in QUICKSTART_STRATEGIES:
         task = by_strategy[strategy]
         for field in ("type", "owner", "filename"):
             value = task.get(field)
