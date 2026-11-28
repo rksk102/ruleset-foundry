@@ -27,7 +27,6 @@ from utils import (
     anchor_cwd_to_repo_root,
     atomic_write,
     beijing_now,
-    beijing_timestamp,
     file_sha256,
     get_owner_from_url,
     is_repo_subdir,
@@ -399,6 +398,9 @@ def _sync_lock(root):
 
 
 _ROLLBACK_MANIFEST = "transaction.json"
+_ROLLBACK_PREFIX = ".rollback-"
+_COMMITTED_PREFIX = ".committed-"
+
 
 
 def _write_rollback_manifest(rollback_root, staging_root, entries, committed=False):
@@ -429,8 +431,14 @@ def _read_rollback_manifest(root, rollback_root):
                 raise ValueError("事务备份名或目标路径无效")
             if not isinstance(item["existed"], bool):
                 raise ValueError("事务原文件状态无效")
+            old_sha = item.get("sha256")
+            if item["existed"]:
+                if not isinstance(old_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", old_sha):
+                    raise ValueError("事务旧文件 SHA-256 无效")
+            elif old_sha is not None:
+                raise ValueError("事务新文件不应记录旧文件 SHA-256")
             seen.add(final)
-            entries.append((final, rollback_root / backup_name, item["existed"]))
+            entries.append((final, rollback_root / backup_name, item["existed"], old_sha))
         return staging, bool(data["committed"]), entries
     except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取恢复事务 {rollback_root}: {exc}") from exc
@@ -438,12 +446,25 @@ def _read_rollback_manifest(root, rollback_root):
 
 def _restore_entries(entries):
     failed = False
-    for final, backup, existed in reversed(entries):
+    for final, backup, existed, old_sha in reversed(entries):
         try:
-            if backup.is_file() and not backup.is_symlink():
-                os.replace(backup, final)
-            elif not existed:
+            if not existed:
                 final.unlink(missing_ok=True)
+                continue
+            backup_valid = (
+                backup.is_file()
+                and not backup.is_symlink()
+                and file_sha256(str(backup)) == old_sha
+            )
+            if backup_valid:
+                os.replace(backup, final)
+            elif not (
+                final.is_file()
+                and not final.is_symlink()
+                and file_sha256(str(final)) == old_sha
+            ):
+                failed = True
+                gh_error(f"旧产物备份缺失或哈希不符，且目标尚未恢复: {final}")
         except OSError as exc:
             failed = True
             gh_error(f"旧产物恢复失败: {final}（{exc}）")
@@ -451,13 +472,25 @@ def _restore_entries(entries):
 
 
 def _recover_stale_transactions(root):
-    for rollback_root in sorted(root.glob(".rollback-*")):
+    rollback_roots = (
+        *root.glob(f"{_ROLLBACK_PREFIX}*"),
+        *root.glob(f"{_COMMITTED_PREFIX}*"),
+    )
+    for rollback_root in sorted(rollback_roots):
         if not rollback_root.is_dir() or rollback_root.is_symlink():
             raise ValueError(f"恢复事务不是普通目录: {rollback_root}")
-        if not (rollback_root / _ROLLBACK_MANIFEST).exists() and not any(rollback_root.iterdir()):
-            shutil.rmtree(rollback_root)
-            continue
+        manifest_path = rollback_root / _ROLLBACK_MANIFEST
+        if not manifest_path.exists():
+            if rollback_root.name.startswith(_COMMITTED_PREFIX):
+                # 目录名是提交完成后原子改写的持久证据；无 manifest 也可安全续清理。
+                shutil.rmtree(rollback_root)
+                continue
+            if not any(rollback_root.iterdir()):
+                shutil.rmtree(rollback_root)
+                continue
         staging, committed, entries = _read_rollback_manifest(root, rollback_root)
+        if rollback_root.name.startswith(_COMMITTED_PREFIX) and not committed:
+            raise ValueError(f"已提交目录含有未提交事务清单: {rollback_root}")
         if not committed and not _restore_entries(entries):
             raise RuntimeError(f"旧产物恢复未完成，保留事务现场: {rollback_root}")
         shutil.rmtree(rollback_root)
@@ -483,7 +516,7 @@ def commit_staged_products(staging_root, expected_files):
         })
     for _staged, final in moves:
         final.parent.mkdir(parents=True, exist_ok=True)
-    rollback_root = Path(tempfile.mkdtemp(prefix=".rollback-", dir=root))
+    rollback_root = Path(tempfile.mkdtemp(prefix=_ROLLBACK_PREFIX, dir=root))
     try:
         _write_rollback_manifest(rollback_root, staging_root, entries)
     except BaseException:
@@ -500,14 +533,18 @@ def commit_staged_products(staging_root, expected_files):
         _write_rollback_manifest(rollback_root, staging_root, entries, committed=True)
     except BaseException:
         if not _restore_entries([
-            (final, rollback_root / entry["backup"], entry["existed"])
+            (final, rollback_root / entry["backup"], entry["existed"], entry["sha256"])
             for final, entry in zip((final for _staged, final in moves), entries, strict=True)
         ]):
             gh_error(f"恢复未完成，保留旧产物备份与事务清单: {rollback_root}")
             raise
         shutil.rmtree(rollback_root)
         raise
-    shutil.rmtree(rollback_root)
+    committed_root = rollback_root.with_name(
+        rollback_root.name.replace(_ROLLBACK_PREFIX, _COMMITTED_PREFIX, 1)
+    )
+    os.replace(rollback_root, committed_root)
+    shutil.rmtree(committed_root)
 
 
 def _base_rel_path(task):
@@ -1340,15 +1377,12 @@ def _main_locked():
             info("  本次不发布，保留上一版产物：")
             for reason in degraded_reasons:
                 info(f"    - {reason}")
-            summary_file = _resolved_rulesets_dir() / "sync-summary.txt"
-            summary_file.write_text(
-                "# 同步摘要\n"
-                f"# 时间: {beijing_timestamp()}\n"
-                f"# 成功: {stats.success} "
-                f"失败: {len(stats.download_errors) + len(stats.parse_errors)}\n"
-                f"# 原因: {'；'.join(degraded_reasons)}\n",
-                encoding="utf-8",
-            )
+            summary_file = root / "sync-summary.txt"
+            try:
+                # 只删除固定历史诊断目录项；unlink 不会跟随末级符号链接。
+                summary_file.unlink(missing_ok=True)
+            except OSError as exc:
+                gh_error(f"无法移除历史同步摘要，保留现场: {summary_file}（{exc}）")
             info("  已跳过孤儿文件清理（避免在降级状态下清空已有产物）")
             generate_summary(stats, degraded_reasons)
             gh_error(
@@ -1363,7 +1397,7 @@ def _main_locked():
         finalize_products(expected_files)
         generate_summary(stats)
     finally:
-        if staging.exists() and not list(root.glob(".rollback-*")):
+        if staging.exists() and not list(root.glob(f"{_ROLLBACK_PREFIX}*")):
             shutil.rmtree(staging, ignore_errors=True)
 
     info(
