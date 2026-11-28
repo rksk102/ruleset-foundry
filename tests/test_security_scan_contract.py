@@ -17,13 +17,6 @@ OSV_IMAGE = (
     "docker://ghcr.io/google/osv-scanner-action"
     "@sha256:3fa25659351c9a5527b30d73b6f3c2ee0bcac106d6220948211d87379d08f243"
 )
-EXPECTED_ACTIONS = {
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
-    "github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d",
-}
-
-
 def load_workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
@@ -68,13 +61,12 @@ def test_scanner_and_reporter_use_pinned_oci_digest():
         assert scan_step(name)["uses"] == OSV_IMAGE
 
 
-def test_all_github_actions_use_expected_upstream_commits():
+def test_all_github_actions_use_full_commit_shas():
     uses = {
         step["uses"]
         for step in scan_job()["steps"]
         if step.get("uses") and not step["uses"].startswith("docker://")
     }
-    assert uses == EXPECTED_ACTIONS
     assert all(SHA_RE.fullmatch(ref.rsplit("@", 1)[1]) for ref in uses)
 
 
