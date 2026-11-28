@@ -8,8 +8,15 @@ import utils
 from support import write_text as write
 
 
-def fake_manifest(*rels):
-    return manifest.Manifest("test", {rel: "0" * 64 for rel in rels})
+def fake_manifest(*rels, source=None):
+    return manifest.Manifest("test", {
+        rel: manifest.file_sha256(str(source / rel)) if source is not None else "0" * 64
+        for rel in rels
+    })
+
+
+def real_manifest(source, *rels):
+    return fake_manifest(*rels, source=source)
 
 
 class TestDetectMode:
@@ -101,6 +108,7 @@ class TestProcessTaskLogic:
                 "all.txt",
                 ["block/domain/A/one.txt", "block/domain/B/two.txt"],
                 "合并测试",
+                baseline=real_manifest(source, "block/domain/A/one.txt", "block/domain/B/two.txt"),
             ),
         )
 
@@ -126,6 +134,7 @@ class TestProcessTaskLogic:
                 "all.txt",
                 ["block/domain/A/one.txt"],
                 "后缀去重测试",
+                baseline=real_manifest(source, "block/domain/A/one.txt"),
             ),
         )
 
@@ -145,7 +154,8 @@ class TestProcessTaskLogic:
             source,
             output,
             lambda: merger.process_task_logic(
-                "block", "domain", "Owner", "all.txt", ["block/domain/A/one.txt"], "根域覆盖测试"
+                "block", "domain", "Owner", "all.txt", ["block/domain/A/one.txt"], "根域覆盖测试",
+                baseline=real_manifest(source, "block/domain/A/one.txt"),
             ),
         )
 
@@ -172,6 +182,7 @@ class TestProcessTaskLogic:
                 "all.txt",
                 ["block/domain/A/one.txt"],
                 "来源透传测试",
+                baseline=real_manifest(source, "block/domain/A/one.txt"),
             ),
         )
         content = (output / "block" / "domain" / "Owner" / "all.txt").read_text(encoding="utf-8")
@@ -192,6 +203,7 @@ class TestProcessTaskLogic:
                     "all.txt",
                     ["block/domain/A/missing.txt"],
                     "x",
+                    baseline=real_manifest(source),
                 ),
             )
 
@@ -211,6 +223,7 @@ class TestProcessTaskLogic:
                 ["block/domain/A/keep.txt", "block/domain/A/missing.txt"],
                 "x",
                 allow_partial=True,
+                baseline=real_manifest(source, "block/domain/A/keep.txt"),
             ),
         )
         assert result["src_count"] == 1
@@ -231,6 +244,7 @@ class TestProcessTaskLogic:
                 ["block/domain/A/missing.txt"],
                 "x",
                 allow_partial=True,
+                baseline=real_manifest(source),
             ),
         )
         assert result is None
@@ -242,13 +256,19 @@ class TestProcessTaskLogic:
         write(outside, "ads.example.com\n")
 
         def run():
-            merger.process_task_logic("block", "domain", "Owner", "all.txt", [str(outside)], "x")
+            merger.process_task_logic(
+                "block", "domain", "Owner", "all.txt", [str(outside)], "x",
+                baseline=real_manifest(source),
+            )
 
         with pytest.raises(ValueError):
             self.use_dirs(monkeypatch, source, tmp_path / "merged", run)
 
         def run_relative():
-            merger.process_task_logic("block", "domain", "Owner", "all.txt", ["../outside.txt"], "x")
+            merger.process_task_logic(
+                "block", "domain", "Owner", "all.txt", ["../outside.txt"], "x",
+                baseline=real_manifest(source),
+            )
 
         with pytest.raises(ValueError):
             self.use_dirs(monkeypatch, source, tmp_path / "merged", run_relative)
@@ -261,7 +281,10 @@ class TestProcessTaskLogic:
         escaped = (output / ".." / ".." / ".." / "domain" / "PWNED.txt").resolve()
 
         def run():
-            merger.process_task_logic("../../..", "domain", "Owner", "../PWNED.txt", ["block/domain/A/one.txt"], "x")
+            merger.process_task_logic(
+                "../../..", "domain", "Owner", "../PWNED.txt", ["block/domain/A/one.txt"], "x",
+                baseline=real_manifest(source, "block/domain/A/one.txt"),
+            )
 
         with pytest.raises(ValueError):
             self.use_dirs(monkeypatch, source, output, run)
@@ -275,7 +298,10 @@ class TestProcessTaskLogic:
         escaped = (owner_dir / ".." / "escape.txt").resolve()
 
         def run():
-            merger.process_task_logic("block", "domain", "Owner", "../escape.txt", ["block/domain/A/one.txt"], "x")
+            merger.process_task_logic(
+                "block", "domain", "Owner", "../escape.txt", ["block/domain/A/one.txt"], "x",
+                baseline=real_manifest(source, "block/domain/A/one.txt"),
+            )
 
         with pytest.raises(ValueError):
             self.use_dirs(monkeypatch, source, output, run)
@@ -296,6 +322,7 @@ class TestProcessTaskLogic:
                 "all-cn.txt",
                 ["direct/ipcidr/A/cn.txt"],
                 "x",
+                baseline=real_manifest(source, "direct/ipcidr/A/cn.txt"),
             ),
         )
         assert result["opt"] == 1
@@ -318,7 +345,10 @@ class TestProcessTaskLogic:
                 monkeypatch,
                 source,
                 output,
-                lambda: merger.process_task_logic("direct", "ipcidr", "Owner", "all.txt", inputs, "合并测试"),
+                lambda: merger.process_task_logic(
+                    "direct", "ipcidr", "Owner", "all.txt", inputs, "合并测试",
+                    baseline=real_manifest(source, *inputs),
+                ),
             )
 
         assert not (output / "direct/ipcidr/Owner/all.txt").exists()
@@ -342,6 +372,7 @@ class TestProcessTaskLogic:
                 "all-cn.txt",
                 ["direct/ipcidr/A/cn.txt"],
                 "x",
+                baseline=real_manifest(source, "direct/ipcidr/A/cn.txt"),
             ),
         )
 
@@ -567,7 +598,9 @@ class TestConflictPolicyIgnore:
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
         monkeypatch.setattr(
-            merger, "load_and_verify_source_manifest", lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt")
+            merger,
+            "load_and_verify_source_manifest",
+            lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt", source=source),
         )
         monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
         monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
@@ -667,7 +700,9 @@ class TestConflictPolicyReporting:
         monkeypatch.setattr(
             merger,
             "load_and_verify_source_manifest",
-            lambda *a, **k: fake_manifest("block/domain/Owner/ads.txt", "policy/domain/Owner/proxy.txt"),
+            lambda *a, **k: fake_manifest(
+                "block/domain/Owner/ads.txt", "policy/domain/Owner/proxy.txt", source=source
+            ),
         )
         monkeypatch.setattr(merger, "verify_merged_products", lambda tasks, **kwargs: True)
         monkeypatch.setattr(merger, "get", lambda *a, **k: policy)
@@ -805,4 +840,7 @@ class TestMergerGuards:
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(work_dir / "merged"))
 
         with pytest.raises(ValueError, match="合并结果为空"):
-            merger.process_task_logic("block", "domain", "Owner", "out.txt", ["block/domain/Owner/ads.txt"], "测试")
+            merger.process_task_logic(
+                "block", "domain", "Owner", "out.txt", ["block/domain/Owner/ads.txt"], "测试",
+                baseline=real_manifest(source, "block/domain/Owner/ads.txt"),
+            )

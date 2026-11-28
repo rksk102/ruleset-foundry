@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -55,13 +56,17 @@ def missing_merge_inputs(merge_tasks, base_dir=None):
     return manifest.merge_inputs(merge_tasks, base_dir or SOURCE_DIR)
 
 
-def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, allow_partial=False):
+def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, allow_partial=False, *, baseline):
     out_dir = output_dir or OUTPUT_DIR
     manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
-    baseline = manifest.load_manifest(manifest_file)
     if baseline is None:
-        raise manifest.ManifestError(f"清单基线缺失: {manifest_file} 不存在（需先运行 scripts/main.py）")
+        raise manifest.ManifestError(f"清单基线缺失: {manifest_file}（需先运行 scripts/main.py）")
     tasks = merge_tasks
+    current_baseline = manifest.load_manifest(manifest_file)
+    if current_baseline != baseline:
+        raise manifest.ManifestError("输入清单在合并期间发生变化，拒绝跨代次签发")
+    source_root = os.path.dirname(manifest_file) or "."
+    manifest.verify_manifest(current_baseline, source_root, f"{source_root} 合并前后输入复核")
     if allow_partial:
         baseline_set = set(baseline.entries)
         tasks = [
@@ -111,7 +116,7 @@ def _ensure_repo_anchored(label, path):
         sys.exit(1)
 
 
-def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow_partial=False):
+def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow_partial=False, *, baseline):
     relative_dir = os.path.join(strategy, rule_type, owner)
     full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
@@ -129,23 +134,26 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow
         if not os.path.exists(full_src_path):
             missing_files.append(rel_input)
             continue
-
-        with open(full_src_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    if line.startswith("# Source:"):
-                        source_urls.append(redact_url_userinfo(line.split(":", 1)[1].strip()))
-                    continue
-                if line.startswith("//"):
-                    continue
-                if "#" in line:
-                    line = line.split("#")[0].strip()
-                if line:
-                    combined_rules.add(line)
-            files_read_count += 1
+        if rel_input not in baseline.entries:
+            raise manifest.ManifestError(f"合并输入不属于本轮已验证清单: {rel_input}")
+        raw_bytes = Path(full_src_path).read_bytes()
+        if hashlib.sha256(raw_bytes).hexdigest() != baseline.entries[rel_input]:
+            raise manifest.ManifestError(f"合并输入内容在清单验证后发生变化: {rel_input}")
+        for line in raw_bytes.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                if line.startswith("# Source:"):
+                    source_urls.append(redact_url_userinfo(line.split(":", 1)[1].strip()))
+                continue
+            if line.startswith("//"):
+                continue
+            if "#" in line:
+                line = line.split("#")[0].strip()
+            if line:
+                combined_rules.add(line)
+        files_read_count += 1
 
     if missing_files:
         if not allow_partial:
@@ -369,7 +377,7 @@ def main():
         sys.exit(1)
 
     try:
-        load_and_verify_source_manifest()
+        baseline = load_and_verify_source_manifest()
     except manifest.ManifestError as e:
         error(f"  {e}")
         gh_error(f"输入产物校验失败: {e}")
@@ -441,6 +449,7 @@ def main():
                     t["inputs"],
                     t.get("description", "配置合并"),
                     allow_partial=ALLOW_PARTIAL,
+                    baseline=baseline,
                 )
                 if res:
                     stats["success"] += 1
@@ -465,6 +474,7 @@ def main():
                     t["filename"],
                     t["inputs"],
                     t["description"],
+                    baseline=baseline,
                 )
                 if res:
                     stats["success"] += 1
@@ -488,7 +498,7 @@ def main():
             )
             sys.exit(1)
         try:
-            verify_merged_products(config_tasks, allow_partial=ALLOW_PARTIAL)
+            verify_merged_products(config_tasks, allow_partial=ALLOW_PARTIAL, baseline=baseline)
         except manifest.ManifestError as e:
             error(f"  {e}")
             gh_error(f"合并产物与清单基线不一致: {e}")
