@@ -142,6 +142,77 @@ class TestStagedCommit:
         assert (backups[0] / "transaction.json").is_file()
         assert (backups[0] / "0").read_text(encoding="utf-8") == "old-a.txt"
 
+    def test_legacy_transaction_restores_only_a_trusted_backup(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-legacy"
+        rollback.mkdir()
+        write(root / "a.txt", "partial-new-a")
+        write(rollback / "0", "old-a.txt")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+        ])
+
+        main._recover_stale_transactions(root)
+
+        assert files[0].read_text(encoding="utf-8") == "old-a.txt"
+        assert not rollback.exists()
+
+    def test_legacy_transaction_missing_backup_is_preserved(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-legacy"
+        rollback.mkdir()
+        write(root / "a.txt", "partial-new-a")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+        ])
+
+        with pytest.raises(RuntimeError, match="恢复未完成"):
+            main._recover_stale_transactions(root)
+
+        assert files[0].read_text(encoding="utf-8") == "partial-new-a"
+        assert (rollback / "transaction.json").is_file()
+        assert not (rollback / "0").exists()
+
+    def test_legacy_transaction_does_not_follow_a_symlink_backup(self, work_dir, monkeypatch):
+        root, staging, _files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-legacy"
+        rollback.mkdir()
+        external = work_dir / "external"
+        write(external, "outside")
+        (rollback / "0").symlink_to(external)
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+        ])
+
+        with pytest.raises(RuntimeError, match="恢复未完成"):
+            main._recover_stale_transactions(root)
+
+        assert (root / "a.txt").read_text(encoding="utf-8") == "old-a.txt"
+        assert (rollback / "transaction.json").is_file()
+
+    @pytest.mark.parametrize("kind", ["directory", "dangling-symlink"])
+    def test_non_regular_target_fails_before_creating_a_transaction(
+        self, work_dir, monkeypatch, kind
+    ):
+        root, staging, _files = self.prepare(work_dir, monkeypatch)
+        new_file = root / "new.txt"
+        write(staging / "new.txt", "new")
+        if kind == "directory":
+            new_file.mkdir()
+        else:
+            new_file.symlink_to(root / "absent")
+
+        with pytest.raises(OSError, match="旧产物不是普通文件"):
+            main.commit_staged_products(staging, [new_file])
+
+        assert not list(root.glob(".rollback-*"))
+        assert not list(root.glob(".committed-*"))
+        if kind == "directory":
+            assert new_file.is_dir()
+        else:
+            assert new_file.is_symlink()
+
+
 
     def test_startup_recovers_interrupted_generation(self, work_dir, monkeypatch):
         root, staging, files = self.prepare(work_dir, monkeypatch)
@@ -226,6 +297,8 @@ class TestStagedCommit:
         root, staging, files = self.prepare(work_dir, monkeypatch)
         rollback = root / ".rollback-complete"
         rollback.mkdir()
+        write(files[0], "new-a.txt")
+        write(rollback / "0", "old-a.txt")
         main._write_rollback_manifest(rollback, staging, [
             {"path": "a.txt", "backup": "0", "existed": True, "sha256": sha("old-a.txt")},
         ], committed=True)
@@ -233,7 +306,7 @@ class TestStagedCommit:
         main._recover_stale_transactions(root)
 
         assert not rollback.exists()
-        assert files[0].read_text(encoding="utf-8") == "old-a.txt"
+        assert files[0].read_text(encoding="utf-8") == "new-a.txt"
 
 
     def test_success_commits_all_files_without_rollback_artifacts(self, work_dir, monkeypatch):

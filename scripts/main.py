@@ -433,10 +433,11 @@ def _read_rollback_manifest(root, rollback_root):
             if not isinstance(item["existed"], bool):
                 raise ValueError("事务原文件状态无效")
             old_sha = item.get("sha256")
-            if item["existed"]:
-                if not isinstance(old_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", old_sha):
-                    raise ValueError("事务旧文件 SHA-256 无效")
-            elif old_sha is not None:
+            if item["existed"] and "sha256" in item and (
+                not isinstance(old_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", old_sha)
+            ):
+                raise ValueError("事务旧文件 SHA-256 无效")
+            elif not item["existed"] and old_sha is not None:
                 raise ValueError("事务新文件不应记录旧文件 SHA-256")
             seen.add(final)
             entries.append((final, rollback_root / backup_name, item["existed"], old_sha))
@@ -452,20 +453,18 @@ def _restore_entries(entries):
             if not existed:
                 final.unlink(missing_ok=True)
                 continue
-            backup_valid = (
-                backup.is_file()
-                and not backup.is_symlink()
-                and file_sha256(str(backup)) == old_sha
+            backup_valid = backup.is_file() and not backup.is_symlink() and (
+                old_sha is None or file_sha256(str(backup)) == old_sha
             )
             if backup_valid:
                 os.replace(backup, final)
-            elif not (
+            elif old_sha is None or not (
                 final.is_file()
                 and not final.is_symlink()
                 and file_sha256(str(final)) == old_sha
             ):
                 failed = True
-                gh_error(f"旧产物备份缺失或哈希不符，且目标尚未恢复: {final}")
+                gh_error(f"旧产物备份缺失或不可信，且目标尚未恢复: {final}")
         except OSError as exc:
             failed = True
             gh_error(f"旧产物恢复失败: {final}（{exc}）")
@@ -504,10 +503,18 @@ def commit_staged_products(staging_root, expected_files):
     moves = []
     entries = []
     for expected in expected_files:
+        expected = Path(expected)
+        if not expected.is_absolute():
+            expected = REPO_ROOT / expected
+        if expected.is_symlink():
+            raise OSError(f"旧产物不是普通文件，拒绝替换: {expected}")
         final = ensure_within_rulesets(expected)
-        staged = ensure_within_rulesets(Path(staging_root) / final.relative_to(root))
-        if not staged.is_file():
-            raise FileNotFoundError(f"暂存产物缺失: {staged}")
+        if final.exists() and not final.is_file():
+            raise OSError(f"旧产物不是普通文件，拒绝替换: {final}")
+        staged_path = Path(staging_root) / final.relative_to(root)
+        staged = ensure_within_rulesets(staged_path)
+        if staged_path.is_symlink() or not staged.is_file():
+            raise FileNotFoundError(f"暂存产物缺失或不是普通文件: {staged_path}")
         moves.append((staged, final))
         entries.append({
             "path": final.relative_to(root).as_posix(),
