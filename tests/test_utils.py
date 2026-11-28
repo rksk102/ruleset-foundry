@@ -627,6 +627,10 @@ class TestFlattenIpCidr:
         with pytest.raises(utils.MappedAddressFamilyBoundaryError, match="映射地址块边界"):
             utils.flatten_ip_cidr(["::fffe:0:0/96", "::ffff:0:0/96"])
 
+    def test_range_containing_mapped_block_with_both_endpoints_outside_is_rejected(self):
+        with pytest.raises(utils.MappedAddressFamilyBoundaryError, match="映射地址块边界"):
+            utils.flatten_ip_cidr(["::/1"])
+
     def test_fully_mapped_and_regular_ipv6_ranges_are_accepted(self):
         result, errors = utils.flatten_ip_cidr(["::ffff:192.0.2.0/120", "2001:db8::/48"])
         assert set(result) == {"::ffff:192.0.2.0/120", "2001:db8::/48"}
