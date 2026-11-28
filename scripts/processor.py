@@ -461,9 +461,29 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
     stats = new_stats()
     stats["suffix_promoted"] = 0
     stats["unrecognized"] = getattr(lines, "yaml_errors", 0)
+    expanded_lines = list(_expand_hosts_entries(lines))
 
-    for item in _expand_hosts_entries(lines):
+    # 同输出组可跨源且顺序任意；先确定文本完全相同的抵消对，再执行规则转换。
+    badfilter_candidates = set()
+    positive_rules = set()
+    for item in expanded_lines:
+        if isinstance(item, _HostsField):
+            continue
+        text = item.strip()
+        if not text or text.lower().startswith("@@"):
+            continue
+        if "$" in text:
+            base, modifiers = text.split("$", 1)
+            names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
+            if names == {"badfilter"}:
+                badfilter_candidates.add(base)
+                continue
+        positive_rules.add(text)
+    consumed_badfilters = badfilter_candidates & positive_rules
+
+    for item in expanded_lines:
         s = item.strip()
+        raw_rule = s
         if not s:
             continue
 
@@ -476,6 +496,8 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
 
         if lowered.startswith("@@"):
             stats["dropped_exception"] += 1
+            continue
+        if s in consumed_badfilters:
             continue
 
         if lowered.startswith(("keyword:", "domain-keyword:", "regexp:", "include:", "ext:")):
@@ -552,7 +574,9 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             modifiers = s.split("$", 1)[1]
             names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
             if "badfilter" in names:
-                stats["dropped_exception"] += 1
+                base = raw_rule.split("$", 1)[0]
+                if names != {"badfilter"} or base not in consumed_badfilters:
+                    stats["dropped_exception"] += 1
             else:
                 stats["dropped_modifier"] += 1
             continue

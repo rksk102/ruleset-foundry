@@ -762,6 +762,52 @@ class TestCombinedDropGate:
         count, errors = main.process_group(group, {0: raw})
         return count, errors, writes
 
+    @pytest.mark.parametrize("reverse", [False, True], ids=["same-order", "reversed-sources"])
+    def test_badfilter_cancels_positive_rule_across_sources(self, monkeypatch, reverse):
+        group = {
+            **self.DOMAIN_GROUP,
+            "members": [
+                (0, {"url": "https://example.com/positive.txt"}),
+                (1, {"url": "https://example.com/disable.txt"}),
+            ],
+        }
+        raw = {
+            0: b"||blocked.example.com^\n||keep.example.com^\n",
+            1: b"||blocked.example.com^$badfilter\n",
+        }
+        if reverse:
+            raw[0], raw[1] = raw[1], raw[0]
+        writes = []
+        monkeypatch.setattr(main, "atomic_write", lambda *args: writes.append(args))
+
+        count, errors = main.process_group(group, raw)
+
+        assert count == 1
+        assert errors["parse"] == []
+        assert len(writes) == 1
+        assert writes[0][1][-1] == "+.keep.example.com"
+
+    def test_large_badfilter_pairs_do_not_trigger_drop_gate(self, monkeypatch):
+        lines = []
+        for index in range(20):
+            lines.extend((f"||blocked-{index}.example.com^", f"||blocked-{index}.example.com^$badfilter"))
+        lines.append("||keep.example.com^")
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count == 1
+        assert errors["parse"] == []
+        assert len(writes) == 1
+
+    def test_badfilter_does_not_cancel_another_output_group(self, monkeypatch):
+        badfilter_only = self.run_group(self.DOMAIN_GROUP, ["||example.com^$badfilter"], monkeypatch)
+        other_group = {**self.DOMAIN_GROUP, "path": "rulesets/policy/domain/Owner/other.txt"}
+        positive = self.run_group(other_group, ["||example.com^"], monkeypatch)
+
+        assert badfilter_only[0] is None
+        assert positive[0] == 1
+        assert positive[1]["parse"] == []
+
     def test_semantic_hosts_expansion_preserves_all_rules_and_passes_gate(self, monkeypatch):
         hostnames = [f"h{i}.example" for i in range(21)]
         lines = [f"good{i}.example" for i in range(190)]

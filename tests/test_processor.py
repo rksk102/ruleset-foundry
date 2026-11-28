@@ -438,6 +438,20 @@ class TestAdblockModifierSemantics:
         assert stats["dropped_exception"] == 1
         assert stats["dropped_modifier"] == 0
 
+    @pytest.mark.parametrize(
+        "lines",
+        [
+            ["||example.com^", "||example.com^$badfilter", "||keep.example.com^"],
+            ["||example.com^$badfilter", "||keep.example.com^", "||example.com^"],
+        ],
+        ids=["positive-first", "badfilter-first"],
+    )
+    def test_badfilter_disables_only_text_identical_rule(self, lines):
+        out, stats = processor.process_domain_detailed(lines, "exact")
+        assert out == ["+.keep.example.com"]
+        assert stats["dropped_exception"] == 0
+        assert stats["dropped_modifier"] == 0
+
     def test_multiple_modifiers_drop_whole_rule(self):
         out, stats = processor.process_domain_detailed(["ads.example.com$script,image,domain=example.com"], "exact")
         assert out == []
