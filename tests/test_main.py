@@ -799,6 +799,50 @@ class TestCombinedDropGate:
         assert errors["parse"] == []
         assert len(writes) == 1
 
+    def test_invalid_badfilter_pairs_remain_subject_to_the_gate(self, monkeypatch):
+        lines = []
+        for index in range(20):
+            lines.extend((f"bad line {index}", f"bad line {index}$badfilter"))
+        lines.append("keep.example.com")
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count is None
+        assert errors["parse"]
+        assert writes == []
+
+    def test_valid_badfilter_pairs_do_not_mask_unsupported_modifiers(self, monkeypatch):
+        lines = ["keep.example.com"]
+        for index in range(20):
+            base = f"||blocked-{index}.example.com^"
+            lines.extend((base, base + "$BADFILTER", base + "$script"))
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count is None
+        assert "20/21" in errors["parse"][0][1]
+        assert writes == []
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_semantic_duplicate_order_does_not_break_badfilter_pairing(self, monkeypatch, reverse):
+        lines = []
+        for index in range(20):
+            lines.extend((
+                f"DOMAIN-SUFFIX,blocked-{index}.example.com",
+                f"||blocked-{index}.example.com^",
+                f"||blocked-{index}.example.com^$badfilter",
+            ))
+        lines.append("keep.example.com")
+        if reverse:
+            lines.reverse()
+
+        count, errors, writes = self.run_group(self.DOMAIN_GROUP, lines, monkeypatch)
+
+        assert count == 21
+        assert errors["parse"] == []
+        expected = {"keep.example.com", *(f"+.blocked-{index}.example.com" for index in range(20))}
+        assert {line for line in writes[0][1] if not line.startswith("# Source:")} == expected
+
     def test_badfilter_does_not_cancel_another_output_group(self, monkeypatch):
         badfilter_only = self.run_group(self.DOMAIN_GROUP, ["||example.com^$badfilter"], monkeypatch)
         other_group = {**self.DOMAIN_GROUP, "path": "rulesets/policy/domain/Owner/other.txt"}

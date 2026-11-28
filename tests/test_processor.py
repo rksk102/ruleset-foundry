@@ -449,6 +449,7 @@ class TestAdblockModifierSemantics:
     def test_badfilter_disables_only_text_identical_rule(self, lines):
         out, stats = processor.process_domain_detailed(lines, "exact")
         assert out == ["+.keep.example.com"]
+        assert stats["dropped_badfilter_pair"] == 2
         assert stats["dropped_exception"] == 0
         assert stats["dropped_modifier"] == 0
 
@@ -458,8 +459,17 @@ class TestAdblockModifierSemantics:
         )
 
         assert out == ["example.com"]
+        assert stats["dropped_badfilter_pair"] == 2
         assert stats["dropped_exception"] == 0
         assert stats["dropped_modifier"] == 0
+
+    def test_invalid_positive_rule_does_not_hide_badfilter_exception(self):
+        out, stats = processor.process_domain_detailed(["bad line", "bad line$badfilter"], "exact")
+
+        assert out == []
+        assert stats["dropped_badfilter_pair"] == 0
+        assert stats["dropped_exception"] == 1
+        assert stats["unrecognized"] == 1
 
 
     def test_multiple_modifiers_drop_whole_rule(self):

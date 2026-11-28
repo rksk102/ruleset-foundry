@@ -855,7 +855,6 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         elif raw:
             errors["parse"].append((task["url"], "未解析出任何行（疑似空规则集或格式变更）"))
 
-    all_lines = _unique_gate_lines(all_lines, group["type"], group.get("domain_kind", "exact"))
     if not all_lines:
         if not errors["parse"] and not errors["download"]:
             # 所有成员都是空响应：raw 为空时报一次汇总错误，避免静默通过
@@ -869,6 +868,7 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
         return None, errors
 
     if group["type"] == "ipcidr":
+        all_lines = _unique_gate_lines(all_lines, "ipcidr")
         result, _special = _process_ip_group(all_lines)
         gate_total = len(all_lines) - _special.get("dropped_default_route", 0)
         gate_ok = _gate_drops(
@@ -885,6 +885,10 @@ def process_group(group, raw_by_index, err_by_index=None, write_root=None):
                 errors["parse"].append((task["url"], "同一输出混用 exact/suffix 语义来源，拒绝静默降级"))
             warning(f"    同一输出混用精确/后缀语义源，拒绝按单一语义输出: {group['path']}")
             return None, errors
+        all_lines, cancelled = processor.cancel_badfilter_pairs(all_lines)
+        if cancelled:
+            info(f"    badfilter 配对抵消: {cancelled} 行")
+        all_lines = _unique_gate_lines(all_lines, "domain", effective_kind)
         result, special = processor.process_domain_detailed(all_lines, effective_kind)
         if special.get("extracted_url"):
             info(f"    URL hostname 提取: {special['extracted_url']} 条")

@@ -149,6 +149,7 @@ def new_stats():
         "extracted_url": 0,
         "dropped_rule_type": {},
         "unrecognized": 0,
+        "dropped_badfilter_pair": 0,
     }
 
 
@@ -456,10 +457,43 @@ def _extract_url_hostname(value):
         return None
 
 
-def _badfilter_key(rule):
-    if re.fullmatch(r"\|\|[\w.-]+\^", rule):
-        return rule.lower()
-    return rule
+_ADBLOCK_HOST_RULE = re.compile(r"\|\|[\w.-]+\^")
+
+
+def cancel_badfilter_pairs(lines):
+    disables = {}
+    for index, item in enumerate(lines):
+        if isinstance(item, _HostsField):
+            continue
+        text = item.strip()
+        if not text.startswith("||"):
+            continue
+        base, sep, modifier = text.partition("$")
+        if sep and modifier.strip().lower() == "badfilter" and _ADBLOCK_HOST_RULE.fullmatch(base):
+            disables[index] = base.lower()
+    if not disables:
+        return lines, 0
+
+    valid_targets = set()
+    validation_stats = new_stats()
+    for base in set(disables.values()):
+        _record_domain(base[2:-1], "suffix", "exact", validation_stats, valid_targets)
+    positive_indexes = {}
+    for index, item in enumerate(lines):
+        if isinstance(item, _HostsField):
+            continue
+        rule = item.strip()
+        if not rule.startswith("||"):
+            continue
+        rule = rule.lower()
+        if _ADBLOCK_HOST_RULE.fullmatch(rule) and "+." + rule[2:-1] in valid_targets:
+            positive_indexes[index] = rule
+    if not positive_indexes:
+        return lines, 0
+
+    matched = set(positive_indexes.values())
+    removed = positive_indexes.keys() | {index for index, rule in disables.items() if rule in matched}
+    return [line for index, line in enumerate(lines) if index not in removed], len(removed)
 
 
 def _analyze_and_process_domain(lines, domain_kind="exact"):
@@ -469,25 +503,10 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
     stats["unrecognized"] = getattr(lines, "yaml_errors", 0)
     expanded_lines = list(_expand_hosts_entries(lines))
 
-    # 同一语法只忽略主机名大小写，不能把不同规则的输出语义混为抵消关系。
-    badfilter_candidates = set()
-    positive_rules = set()
-    for item in expanded_lines:
-        if isinstance(item, _HostsField):
-            continue
-        text = item.strip()
-        if not text or text.startswith("@@"):
-            continue
-        base, sep, modifiers = text.partition("$")
-        if not sep:
-            positive_rules.add(_badfilter_key(base))
-        elif {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")} == {"badfilter"}:
-            badfilter_candidates.add(_badfilter_key(base))
-    consumed_badfilters = badfilter_candidates & positive_rules
+    expanded_lines, stats["dropped_badfilter_pair"] = cancel_badfilter_pairs(expanded_lines)
 
     for item in expanded_lines:
         s = item.strip()
-        raw_rule = s
         if not s:
             continue
 
@@ -501,9 +520,6 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
         if lowered.startswith("@@"):
             stats["dropped_exception"] += 1
             continue
-        if consumed_badfilters and _badfilter_key(s) in consumed_badfilters:
-            continue
-
         if lowered.startswith(("keyword:", "domain-keyword:", "regexp:", "include:", "ext:")):
             stats["dropped_keyword"] += 1
             continue
@@ -578,9 +594,7 @@ def _analyze_and_process_domain(lines, domain_kind="exact"):
             modifiers = s.split("$", 1)[1]
             names = {mod.split("=", 1)[0].strip().lower() for mod in modifiers.split(",")}
             if "badfilter" in names:
-                base = raw_rule.partition("$")[0]
-                if names != {"badfilter"} or _badfilter_key(base) not in consumed_badfilters:
-                    stats["dropped_exception"] += 1
+                stats["dropped_exception"] += 1
             else:
                 stats["dropped_modifier"] += 1
             continue
