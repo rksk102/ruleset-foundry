@@ -66,6 +66,10 @@ class FullAddressFamilyCoverageError(ValueError):
     pass
 
 
+class MappedAddressFamilyBoundaryError(ValueError):
+    pass
+
+
 def parse_ip_network(entry, strict=False, extract=False):
     candidate = entry.strip()
     if extract:
@@ -109,6 +113,13 @@ def flatten_ip_cidr(entries, strict=False, extract=False, dropped_default_routes
     for networks in (ipv4_nets, ipv6_nets):
         family_rules = []
         for network in ipaddress.collapse_addresses(networks):
+            if network.version == 6:
+                start_mapped = network.network_address.ipv4_mapped is not None
+                end_mapped = network.broadcast_address.ipv4_mapped is not None
+                if start_mapped != end_mapped:
+                    raise MappedAddressFamilyBoundaryError(
+                        f"IPv6 CIDR 跨越 IPv4 映射地址块边界: {network}"
+                    )
             if network.prefixlen == 0:
                 raise FullAddressFamilyCoverageError(f"规则覆盖整个 IPv{network.version} 地址族: {network}")
             family_rules.append(str(network))

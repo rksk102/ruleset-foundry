@@ -353,6 +353,26 @@ class TestProcessTaskLogic:
 
         assert not (output / "direct/ipcidr/Owner/all.txt").exists()
 
+    def test_ip_merge_rejects_mapped_boundary_created_by_collapse(self, work_dir, monkeypatch):
+        source = work_dir / "rulesets"
+        output = work_dir / "merged"
+        inputs = ["direct/ipcidr/A/left.txt", "direct/ipcidr/B/right.txt"]
+        for rel, rule in zip(inputs, ("::fffe:0:0/96", "::ffff:0:0/96"), strict=True):
+            write(source / rel, rule + "\n")
+
+        with pytest.raises(utils.MappedAddressFamilyBoundaryError, match="映射地址块边界"):
+            self.use_dirs(
+                monkeypatch,
+                source,
+                output,
+                lambda: merger.process_task_logic(
+                    "direct", "ipcidr", "Owner", "all.txt", inputs, "合并测试",
+                    baseline=real_manifest(source, *inputs),
+                ),
+            )
+
+        assert not (output / "direct/ipcidr/Owner/all.txt").exists()
+
     def test_ip_task_reports_bounded_invalid_cidr_samples(self, tmp_path, monkeypatch):
         source = tmp_path / "rulesets"
         output = tmp_path / "merged"

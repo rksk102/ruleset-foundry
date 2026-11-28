@@ -167,9 +167,11 @@ class TestMainFlow:
         before_manifest = (rulesets / "products.manifest").read_bytes()
         if defect == "hosts":
             raw = b"0.0.0.0 IP-CIDR,192.0.2.0/24\n"
-        else:
+        elif defect == "empty-payload":
             lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
             raw = ("\n".join(lines) + "\nIP-CIDR,\n").encode()
+        else:
+            raw = b"::fffe:0:0/95\n"
         self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
 
         with pytest.raises(SystemExit) as exc:

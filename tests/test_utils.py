@@ -619,6 +619,19 @@ class TestFlattenIpCidr:
         assert errors.count == 0
         assert result == ["10.0.0.0/8"]
 
+    def test_crossing_ipv4_mapped_boundary_is_rejected(self):
+        with pytest.raises(utils.MappedAddressFamilyBoundaryError, match="映射地址块边界"):
+            utils.flatten_ip_cidr(["::fffe:0:0/95"])
+
+    def test_collapse_into_crossing_ipv4_mapped_boundary_is_rejected(self):
+        with pytest.raises(utils.MappedAddressFamilyBoundaryError, match="映射地址块边界"):
+            utils.flatten_ip_cidr(["::fffe:0:0/96", "::ffff:0:0/96"])
+
+    def test_fully_mapped_and_regular_ipv6_ranges_are_accepted(self):
+        result, errors = utils.flatten_ip_cidr(["::ffff:192.0.2.0/120", "2001:db8::/48"])
+        assert set(result) == {"::ffff:192.0.2.0/120", "2001:db8::/48"}
+        assert errors.count == 0
+
 
 class TestDomainTrie:
     def test_covering_parent_returns_strict_ancestor(self):
