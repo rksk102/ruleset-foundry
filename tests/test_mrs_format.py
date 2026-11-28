@@ -59,7 +59,10 @@ def test_accepted_unicode_boundary_survives_merge_and_release_preflight(work_dir
         source / manifest.MANIFEST_NAME, manifest.hash_entries(source, [rel]), generation="boundary",
     )
 
-    result = merger.process_task_logic("block", "domain", "Owner", "boundary.txt", [rel], "boundary")
+    result = merger.process_task_logic(
+        "block", "domain", "Owner", "boundary.txt", [rel], "boundary",
+        baseline=manifest.load_manifest(source / manifest.MANIFEST_NAME),
+    )
 
     assert result["opt"] == 1
     manifest.save_manifest(

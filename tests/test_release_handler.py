@@ -666,7 +666,13 @@ class ReleaseState:
                 "author": {"login": "github-actions[bot]"},
                 "upload_url": "https://uploads.github.com/repos/rksk102/ruleset-foundry/releases/123/assets{?name,label}",
             }
-            return json.dumps(self.release)
+            if "--jq" in cmd:
+                return json.dumps(self.release)
+            return json.dumps({
+                **self.release,
+                "html_url": f"https://github.com/rksk102/ruleset-foundry/releases/tag/{self.tag}",
+                "assets": [],
+            })
         if endpoint == "repos/{owner}/{repo}/releases/123/assets":
             return "\n".join(json.dumps({k: v for k, v in a.items() if k != "content"}) for a in self.assets.values())
         if endpoint.startswith("https://uploads.github.com/") and "--input" in cmd:
@@ -958,28 +964,75 @@ class TestReleaseObjectContracts:
         assert len(posts) == 1
         assert release_state.release is None and release_state.latest is None
 
-    def test_created_draft_survives_failed_readback(self, release_state, monkeypatch):
+    def test_created_draft_does_not_depend_on_list_readback(self, release_state, monkeypatch):
         api = release_state
-        failed_readbacks = []
+        list_readbacks = []
 
-        def fail_readback(cmd):
+        def hide_from_list(cmd):
             if cmd[:2] == ["api", "repos/{owner}/{repo}/releases"] and "--paginate" in cmd and api.release:
-                failed_readbacks.append(cmd)
-                return None
+                list_readbacks.append(cmd)
+                return ""
             return api(cmd)
 
-        monkeypatch.setattr(release_handler, "run_gh", fail_readback)
-        with pytest.raises(release_handler.ReleaseError, match="无法确认目标 Release 状态"):
-            api.run()
-        assert len(failed_readbacks) == 1
-        assert api.release["draft"] is True and api.latest is None
-        assert not api.assets
-
-        monkeypatch.setattr(release_handler, "run_gh", api)
+        monkeypatch.setattr(release_handler, "run_gh", hide_from_list)
         api.run()
 
         assert api.release["draft"] is False and api.latest == api.tag
+        assert list_readbacks == []
+        monkeypatch.setattr(release_handler, "run_gh", api)
+        api.run()
+        posts = [
+            cmd for cmd in api.calls
+            if cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"]
+        ]
+        assert len(posts) == 1
+
+    @pytest.mark.parametrize(("field", "value"), [("id", 0), ("tag_name", "rules-wrong"), ("draft", False)])
+    def test_invalid_create_response_fails_closed(self, release_state, monkeypatch, field, value):
+        api = release_state
+
+        def invalid_create(cmd):
+            result = api(cmd)
+            if cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"]:
+                record = json.loads(result)
+                record[field] = value
+                return json.dumps(record)
+            return result
+
+        monkeypatch.setattr(release_handler, "run_gh", invalid_create)
+        with pytest.raises(release_handler.ReleaseError):
+            api.run()
+        assert api.latest is None
+        assert not api.assets
+
+    def test_failed_id_readback_does_not_repost_and_new_content_converges(self, release_state, monkeypatch):
+        api = release_state
+
+        def fail_id_readback(cmd):
+            if cmd[:2] == ["api", "repos/{owner}/{repo}/releases/123"] and "--method" not in cmd:
+                return None
+            return api(cmd)
+
+        monkeypatch.setattr(release_handler, "run_gh", fail_id_readback)
+        with pytest.raises(release_handler.ReleaseError):
+            api.run()
         assert sum(cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"] for cmd in api.calls) == 1
+        assert api.latest is None and not api.assets
+
+        monkeypatch.setattr(release_handler, "run_gh", api)
+        product = api.root / "merged-rules/block/domain/A/x.txt"
+        product.write_bytes(product.read_bytes() + b"# new content\n")
+        api.tag = current_expected_tag()
+        api.release = None
+        api.assets = {}
+        api.run()
+
+        assert api.latest == api.tag
+        posts = [
+            cmd for cmd in api.calls
+            if cmd[:4] == ["api", "repos/{owner}/{repo}/releases", "--method", "POST"]
+        ]
+        assert len(posts) == 2
 
     def test_new_release_identity_uses_product_hash(self, release_state):
         first = release_state.tag
@@ -2470,7 +2523,7 @@ class TestAssetConfirmation:
 
         monkeypatch.setattr(release_handler, "release_asset_records", records)
         monkeypatch.setattr(release_handler, "verify_release_reusable", verify)
-        monkeypatch.setattr(release_handler, "find_release", lambda _tag: release)
+        monkeypatch.setattr(release_handler, "_find_release_by_id", lambda _id, _tag: release)
         monkeypatch.setattr(release_handler, "_release_tag_ref", lambda _tag: "a" * 40)
         monkeypatch.setattr(release_handler, "run_gh", publish)
         monkeypatch.setattr(release_handler, "ASSET_CONFIRM_DELAY", 0)

@@ -1021,21 +1021,35 @@ def _json_record(raw, description):
     return result
 
 
-def find_release(tag):
-    # 查询完整集合，只有已成功查询且找不到匹配项才表示不存在。
-    raw = run_gh([
-        "api", "repos/{owner}/{repo}/releases", "--paginate", "--jq",
-        f'.[] | select(.tag_name == "{tag}") | {{id,tag_name,draft,body,author,target_commitish,upload_url}}',
-    ])
-    if raw == "":
-        return None
-    record = _json_record(raw, "目标 Release 状态")
+_RELEASE_RECORD_JQ = "{id,tag_name,draft,body,author,target_commitish,upload_url}"
+
+
+def _release_record(raw, tag, description):
+    record = _json_record(raw, description)
     if (
         type(record.get("id")) is not int or record["id"] <= 0
         or type(record.get("draft")) is not bool or record.get("tag_name") != tag
     ):
-        raise ReleaseError("无法确认目标 Release 状态或 ID")
+        raise ReleaseError(f"无法确认{description}或 ID")
     return record
+
+
+def _find_release_by_id(release_id, tag):
+    raw = run_gh([
+        "api", f"repos/{{owner}}/{{repo}}/releases/{release_id}", "--jq", _RELEASE_RECORD_JQ,
+    ])
+    return _release_record(raw, tag, "目标 Release 状态")
+
+
+def find_release(tag):
+    # 查询完整集合，只有已成功查询且找不到匹配项才表示不存在。
+    raw = run_gh([
+        "api", "repos/{owner}/{repo}/releases", "--paginate", "--jq",
+        f'.[] | select(.tag_name == "{tag}") | {_RELEASE_RECORD_JQ}',
+    ])
+    if raw == "":
+        return None
+    return _release_record(raw, tag, "目标 Release 状态")
 
 
 def _provenance_message(record):
@@ -1200,11 +1214,12 @@ def _create_release_draft(tag, title, notes, record):
         "-f", f"tag_name={tag}", "-f", f"target_commitish={record['sha']}",
         "-f", f"name={title}", "-f", f"body={_provenance_message(record)}\n\n{notes}",
         "-F", "draft=true", "-f", "make_latest=false",
+        "--jq", _RELEASE_RECORD_JQ,
     ])
     if result is None:
         raise ReleaseError("无法创建 Release 草稿，保持 latest 和发布状态")
-    draft = find_release(tag)
-    if draft is None or not draft["draft"]:
+    draft = _release_record(result, tag, "新建 Release 状态")
+    if not draft["draft"]:
         raise ReleaseError("新建 Release 未处于可核验的草稿状态")
     return draft
 
@@ -1274,7 +1289,7 @@ def cleanup_old_releases(current_tag, now_utc=None):
 def _check_release_state(release, tag_object):
     ensure_publish_current()
     tag = release["tag_name"]
-    if find_release(tag) != release:
+    if _find_release_by_id(release["id"], tag) != release:
         raise ReleaseError("目标 Release 已变化")
     if release["draft"]:
         actual = _release_tag_ref(tag)

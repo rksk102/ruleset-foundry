@@ -390,26 +390,6 @@ class TestMergerInputs:
         with MergerRun(work_dir, merges):
             assert merger.missing_merge_inputs(merges) == ["gone1.txt", "gone2.txt"]
 
-    def test_present_inputs_merge_and_verify(self, work_dir):
-        write(work_dir / "rulesets" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
-        write_v2_manifest(work_dir / "rulesets")
-        merges = [
-            {
-                "strategy": "block",
-                "type": "domain",
-                "owner": "rksk",
-                "filename": "all-ads.txt",
-                "inputs": ["block/domain/OwnerA/ads.txt"],
-            },
-        ]
-        with MergerRun(work_dir, merges) as run:
-            assert run.run() is None
-        assert (work_dir / "merged-rules" / "block" / "domain" / "OwnerA" / "ads.txt").is_file()
-        assert (work_dir / "merged-rules" / "block" / "domain" / "rksk" / "all-ads.txt").is_file()
-        merged = manifest.load_manifest(work_dir / "merged-rules" / "products.manifest")
-        assert merged is not None
-        assert "block/domain/rksk/all-ads.txt" in merged.entries
-        assert manifest.verify_manifest(merged, work_dir / "merged-rules", "merged") is True
 
     def test_merger_rejects_tampered_source_file(self, work_dir):
         source = work_dir / "rulesets"
@@ -445,6 +425,11 @@ class TestMergerInputs:
         ]
         with MergerRun(work_dir, merges) as run:
             assert run.run() is None
+        assert (work_dir / "merged-rules" / "block" / "domain" / "OwnerA" / "ads.txt").is_file()
+        merged = manifest.load_manifest(work_dir / "merged-rules" / "products.manifest")
+        assert merged is not None
+        assert "block/domain/rksk/all-ads.txt" in merged.entries
+        assert manifest.verify_manifest(merged, work_dir / "merged-rules", "merged") is True
         target = work_dir / "merged-rules" / "block" / "domain" / "rksk" / "all-ads.txt"
         before = target.read_bytes()
 
@@ -510,5 +495,116 @@ class TestMergerInputs:
         write_v2_manifest(work_dir / "rulesets")
         write(work_dir / "merged-rules" / "block" / "domain" / "OwnerA" / "ads.txt", "a.com\n")
         with MergerRun(work_dir, []):
-            assert merger.verify_merged_products([]) is True
+            baseline = merger.load_and_verify_source_manifest()
+            assert merger.verify_merged_products([], baseline=baseline) is True
             assert (work_dir / "merged-rules" / "products.manifest").is_file()
+
+    @pytest.mark.parametrize(
+        "change_content", [False, True], ids=["manifest-only", "manifest-and-bytes"]
+    )
+    def test_source_generation_change_during_merge_is_rejected(self, work_dir, monkeypatch, change_content):
+        source = work_dir / "rulesets"
+        rel = "block/domain/OwnerA/ads.txt"
+        write(source / rel, "a.example\n")
+        write_v2_manifest(source, generation="g1")
+        merges = [{
+            "strategy": "block",
+            "type": "domain",
+            "owner": "rksk",
+            "filename": "all-ads.txt",
+            "inputs": [rel],
+        }]
+        original = merger.process_task_logic
+
+        def advance_generation(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if change_content:
+                write(source / rel, "b.example\n")
+            write_v2_manifest(source, generation="g2")
+            return result
+
+        monkeypatch.setattr(merger, "process_task_logic", advance_generation)
+        with MergerRun(work_dir, merges) as run:
+            assert run.run() == 1
+        assert manifest.load_manifest(work_dir / "merged-rules" / manifest.MANIFEST_NAME) is None
+
+    @pytest.mark.parametrize("allow_partial", [False, True], ids=["strict", "partial"])
+    def test_present_unlisted_input_is_rejected(self, work_dir, monkeypatch, allow_partial):
+        source = work_dir / "rulesets"
+        current = "block/domain/OwnerA/current.txt"
+        hidden = "block/domain/OwnerA/.history/stale.txt"
+        write(source / current, "current.example\n")
+        write(source / hidden, "stale.example\n")
+        write_v2_manifest(source)
+        merges = [{
+            "strategy": "block",
+            "type": "domain",
+            "owner": "rksk",
+            "filename": "all-ads.txt",
+            "inputs": [current, hidden],
+        }]
+        monkeypatch.setattr(merger, "ALLOW_PARTIAL", allow_partial)
+
+        with MergerRun(work_dir, merges) as run:
+            assert run.run() == 1
+
+        assert not (work_dir / "merged-rules" / "block/domain/rksk/all-ads.txt").exists()
+        assert manifest.load_manifest(work_dir / "merged-rules" / manifest.MANIFEST_NAME) is None
+
+    @pytest.mark.parametrize("failure", ["generation", "conflict", "write"])
+    def test_failed_merge_preserves_previous_verified_generation(
+        self, work_dir, monkeypatch, failure
+    ):
+        source = work_dir / "rulesets"
+        output = work_dir / "merged-rules"
+        write(source / "block/domain/Owner/ads.txt", "same.example\n")
+        write(source / "direct/domain/Owner/direct.txt", "same.example\n")
+        write_v2_manifest(source)
+        previous = {"block/domain/Previous/keep.txt": "previous.example\n"}
+        for rel, content in previous.items():
+            write(output / rel, content)
+        write_v2_manifest(output, generation="old-generation")
+
+        if failure == "generation":
+            original = merger.process_task_logic
+
+            def advance_generation(*args, **kwargs):
+                result = original(*args, **kwargs)
+                write_v2_manifest(source, generation="g2")
+                return result
+
+            monkeypatch.setattr(merger, "process_task_logic", advance_generation)
+        elif failure == "conflict":
+            original_get = merger.get
+            monkeypatch.setattr(merger, "get", lambda *keys, **kwargs: (
+                "fail" if keys == ("behavior", "conflict_policy") else original_get(*keys, **kwargs)
+            ))
+        else:
+            def fail_manifest(*args, **kwargs):
+                raise OSError("disk full")
+
+            monkeypatch.setattr(manifest, "save_manifest", fail_manifest)
+
+        with MergerRun(work_dir, []) as run:
+            assert run.run() == 1
+
+        for rel, content in previous.items():
+            assert (output / rel).read_text(encoding="utf-8") == content
+        assert manifest.load_manifest(output / manifest.MANIFEST_NAME).generation == "old-generation"
+        assert not list(output.glob(".*"))
+        assert not (work_dir / ".merge-merged-rules.staging.tmp").exists()
+        assert not (work_dir / ".merge-merged-rules.previous.tmp").exists()
+
+    def test_input_failure_restores_previous_directory_before_exiting(self, work_dir, monkeypatch):
+        output = work_dir / "merged-rules"
+        previous = work_dir / ".merge-merged-rules.previous.tmp"
+        write(previous / "keep.txt", "previous\n")
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(output))
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(work_dir / "missing-rulesets"))
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+        assert (output / "keep.txt").read_text(encoding="utf-8") == "previous\n"
+        assert not previous.exists()

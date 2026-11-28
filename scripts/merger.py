@@ -1,5 +1,8 @@
+import hashlib
 import os
+import shutil
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import manifest
@@ -10,7 +13,6 @@ from utils import (
     DomainTrie,
     anchor_cwd_to_repo_root,
     atomic_write_with_header,
-    clean_directory,
     dedup_domain_suffix,
     flatten_ip_cidr,
     get_rule_type,
@@ -55,13 +57,17 @@ def missing_merge_inputs(merge_tasks, base_dir=None):
     return manifest.merge_inputs(merge_tasks, base_dir or SOURCE_DIR)
 
 
-def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, allow_partial=False):
+def verify_merged_products(merge_tasks, output_dir=None, manifest_file=None, allow_partial=False, *, baseline):
     out_dir = output_dir or OUTPUT_DIR
     manifest_file = manifest_file or os.path.join(SOURCE_DIR, manifest.MANIFEST_NAME)
-    baseline = manifest.load_manifest(manifest_file)
     if baseline is None:
-        raise manifest.ManifestError(f"清单基线缺失: {manifest_file} 不存在（需先运行 scripts/main.py）")
+        raise manifest.ManifestError(f"清单基线缺失: {manifest_file}（需先运行 scripts/main.py）")
     tasks = merge_tasks
+    current_baseline = manifest.load_manifest(manifest_file)
+    if current_baseline != baseline:
+        raise manifest.ManifestError("输入清单在合并期间发生变化，拒绝跨代次签发")
+    source_root = os.path.dirname(manifest_file) or "."
+    manifest.verify_manifest(current_baseline, source_root, f"{source_root} 合并前后输入复核")
     if allow_partial:
         baseline_set = set(baseline.entries)
         tasks = [
@@ -111,11 +117,14 @@ def _ensure_repo_anchored(label, path):
         sys.exit(1)
 
 
-def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow_partial=False):
+def process_task_logic(
+    strategy, rule_type, owner, filename, inputs, desc, allow_partial=False, *, baseline, output_dir=None
+):
+    output_dir = output_dir or OUTPUT_DIR
     relative_dir = os.path.join(strategy, rule_type, owner)
-    full_output_dir = os.path.join(OUTPUT_DIR, relative_dir)
+    full_output_dir = os.path.join(output_dir, relative_dir)
     full_output_file = os.path.join(full_output_dir, filename)
-    _ensure_within(OUTPUT_DIR, full_output_dir, "合并输出")
+    _ensure_within(output_dir, full_output_dir, "合并输出")
     _ensure_within(full_output_dir, full_output_file, "合并输出")
     combined_rules = set()
     files_read_count = 0
@@ -129,23 +138,26 @@ def process_task_logic(strategy, rule_type, owner, filename, inputs, desc, allow
         if not os.path.exists(full_src_path):
             missing_files.append(rel_input)
             continue
-
-        with open(full_src_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    if line.startswith("# Source:"):
-                        source_urls.append(redact_url_userinfo(line.split(":", 1)[1].strip()))
-                    continue
-                if line.startswith("//"):
-                    continue
-                if "#" in line:
-                    line = line.split("#")[0].strip()
-                if line:
-                    combined_rules.add(line)
-            files_read_count += 1
+        if rel_input not in baseline.entries:
+            raise manifest.ManifestError(f"合并输入不属于本轮已验证清单: {rel_input}")
+        raw_bytes = Path(full_src_path).read_bytes()
+        if hashlib.sha256(raw_bytes).hexdigest() != baseline.entries[rel_input]:
+            raise manifest.ManifestError(f"合并输入内容在清单验证后发生变化: {rel_input}")
+        for line in raw_bytes.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                if line.startswith("# Source:"):
+                    source_urls.append(redact_url_userinfo(line.split(":", 1)[1].strip()))
+                continue
+            if line.startswith("//"):
+                continue
+            if "#" in line:
+                line = line.split("#")[0].strip()
+            if line:
+                combined_rules.add(line)
+        files_read_count += 1
 
     if missing_files:
         if not allow_partial:
@@ -345,11 +357,114 @@ def detect_cross_policy_conflicts(merged_dir):
     return explicit_conflicts, implicit_conflicts
 
 
+def _merge_sidecar(output_root, purpose):
+    return output_root.with_name(f".merge-{output_root.name}.{purpose}.tmp")
+
+
+def _check_directory(path):
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        raise OSError(f"合并路径不是普通目录: {path}")
+
+
+def _recover_stale_merge_transactions(output_root):
+    previous = _merge_sidecar(output_root, "previous")
+    _check_directory(output_root)
+    _check_directory(previous)
+    if not previous.exists():
+        return
+    if not output_root.exists():
+        os.replace(previous, output_root)
+        return
+    # 两次重命名之间进程可退出。只有正式目录可验证时，才清除旧目录。
+    try:
+        current = manifest.load_manifest(output_root / manifest.MANIFEST_NAME)
+        manifest.verify_manifest(current, output_root, "合并正式目录恢复检查")
+    except (manifest.ManifestError, OSError) as e:
+        raise OSError(f"正式目录无法验证，保留旧产物备份: {previous}（{e}）") from e
+    shutil.rmtree(previous)
+
+
+@contextmanager
+def _merge_lock(output_root):
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    with _merge_sidecar(output_root, "lock").open("ab") as lock:
+        try:
+            _lock_writer(lock)
+        except OSError as e:
+            raise OSError(f"无法取得合并输出写锁: {output_root}") from e
+        yield
+
+
+
+def _lock_writer(lock):
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@contextmanager
+def _merge_workspace(output_root):
+    staging = _merge_sidecar(output_root, "staging")
+    _check_directory(staging)
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        yield staging
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _cleanup_merge_backups(output_root):
+    previous = _merge_sidecar(output_root, "previous")
+    if previous.exists():
+        try:
+            shutil.rmtree(previous)
+        except OSError as e:
+            warning(f"合并产物已切换，旧备份清理失败，将在下轮恢复时重试: {previous}（{e}）")
+
+
+def _publish_staged_products(staging_root, output_root):
+    previous = _merge_sidecar(output_root, "previous")
+    _check_directory(output_root)
+    if previous.exists() or previous.is_symlink():
+        raise OSError(f"存在待处理的旧产物备份: {previous}")
+    if output_root.exists():
+        os.replace(output_root, previous)
+    try:
+        os.replace(staging_root, output_root)
+    except BaseException:
+        if previous.exists() and not output_root.exists():
+            try:
+                os.replace(previous, output_root)
+            except OSError as restore_error:
+                raise OSError(f"旧目录恢复失败，备份保留在 {previous}: {restore_error}") from restore_error
+        raise
+    _cleanup_merge_backups(output_root)
+
+
 def main():
     section("规则合并器")
-    _ensure_repo_anchored("源目录", SOURCE_DIR)
     _ensure_repo_anchored("输出目录", OUTPUT_DIR)
+    output_path = Path(OUTPUT_DIR)
+    output_root = output_path.parent.resolve() / output_path.name
+    try:
+        with _merge_lock(output_root):
+            _recover_stale_merge_transactions(output_root)
+            _merge_locked(output_root)
+    except OSError as e:
+        gh_error(f"合并失败: {e}")
+        sys.exit(1)
 
+
+def _merge_locked(output_root):
+    _ensure_repo_anchored("源目录", SOURCE_DIR)
     stats = {"success": 0, "skipped": 0, "failed": 0}
     error_logs = []
     summary_rows = []
@@ -369,7 +484,7 @@ def main():
         sys.exit(1)
 
     try:
-        load_and_verify_source_manifest()
+        baseline = load_and_verify_source_manifest()
     except manifest.ManifestError as e:
         error(f"  {e}")
         gh_error(f"输入产物校验失败: {e}")
@@ -415,174 +530,177 @@ def main():
         gh_error("合并任务与自动透传输出路径重复或大小写碰撞")
         sys.exit(1)
 
-    if os.path.exists(OUTPUT_DIR):
-        info("  清理输出目录...")
-        cleanup_errors = clean_directory(OUTPUT_DIR)
-        if cleanup_errors:
-            for path, why in cleanup_errors:
-                error(f"  清理失败: {path} -> {why}")
-            gh_error("合并输出清理失败，中止本轮合并")
+    with _merge_workspace(output_root) as staging_root:
+        if config_tasks:
+            group_start(f"配置合并任务 ({len(config_tasks)})")
+            for t in config_tasks:
+                fname = t.get("filename", "Unknown")
+                try:
+                    if "inputs" not in t:
+                        raise ValueError("缺少 inputs")
+                    res = process_task_logic(
+                        t.get("strategy", "Default"),
+                        t.get("type", "General"),
+                        t.get("owner", "Unknown"),
+                        fname,
+                        t["inputs"],
+                        t.get("description", "配置合并"),
+                        allow_partial=ALLOW_PARTIAL,
+                        baseline=baseline,
+                        output_dir=staging_root,
+                    )
+                    if res:
+                        stats["success"] += 1
+                        summary_rows.append(res)
+                        success(f"  {fname} -> {res['opt']} 条规则")
+                    else:
+                        stats["skipped"] += 1
+                except Exception as e:
+                    stats["failed"] += 1
+                    error_logs.append(f"配置任务 '{fname}': {e!s}")
+                    warning(f"  [失败] {fname}: {e}")
+            group_end()
+
+        if auto_tasks:
+            group_start(f"自动发现透传 ({len(auto_tasks)})")
+            for t in auto_tasks:
+                try:
+                    res = process_task_logic(
+                        t["strategy"],
+                        t["type"],
+                        t["owner"],
+                        t["filename"],
+                        t["inputs"],
+                        t["description"],
+                        baseline=baseline,
+                        output_dir=staging_root,
+                    )
+                    if res:
+                        stats["success"] += 1
+                        res["file"] = f"(Auto) {res['file']}"
+                        summary_rows.append(res)
+                        success(f"  {t['filename']} -> {res['opt']} 条规则")
+                    else:
+                        stats["skipped"] += 1
+                except Exception as e:
+                    stats["failed"] += 1
+                    error_logs.append(f"自动任务 '{t['filename']}': {e!s}")
+                    warning(f"  [失败] {t['filename']}: {e}")
+            group_end()
+
+        if stats["failed"] == 0:
+            expected_tasks = len(config_tasks) + len(auto_tasks)
+            if stats["success"] + stats["skipped"] != expected_tasks:
+                error(
+                    f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}"
+                )
+                gh_error(
+                    f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}"
+                )
+                sys.exit(1)
+            try:
+                verify_merged_products(
+                    config_tasks, output_dir=staging_root, allow_partial=ALLOW_PARTIAL, baseline=baseline
+                )
+            except (manifest.ManifestError, OSError) as e:
+                error(f"  {e}")
+                gh_error(f"合并产物与清单基线不一致: {e}")
+                sys.exit(1)
+            info("  合并产物与清单基线一致")
+
+        section(f"合并报告 | 成功:{stats['success']} 跳过:{stats['skipped']} 失败:{stats['failed']}")
+
+        if summary_rows:
+            for r in summary_rows:
+                info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
+
+        conflict_policy = get("behavior", "conflict_policy", default="warn")
+        if str(conflict_policy or "warn").lower() == "ignore":
+            explicit_conflicts, implicit_conflicts = {}, {}
+        else:
+            explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(staging_root)
+        has_conflicts = bool(explicit_conflicts or implicit_conflicts)
+        try:
+            action = resolve_conflict_action(conflict_policy, has_conflicts)
+        except ValueError as e:
+            error(str(e))
+            gh_error(f"behavior.conflict_policy 配置非法: {e}")
             sys.exit(1)
-    else:
-        os.makedirs(OUTPUT_DIR)
 
-    if config_tasks:
-        group_start(f"配置合并任务 ({len(config_tasks)})")
-        for t in config_tasks:
-            fname = t.get("filename", "Unknown")
-            try:
-                if "inputs" not in t:
-                    raise ValueError("缺少 inputs")
-                res = process_task_logic(
-                    t.get("strategy", "Default"),
-                    t.get("type", "General"),
-                    t.get("owner", "Unknown"),
-                    fname,
-                    t["inputs"],
-                    t.get("description", "配置合并"),
-                    allow_partial=ALLOW_PARTIAL,
-                )
-                if res:
-                    stats["success"] += 1
-                    summary_rows.append(res)
-                    success(f"  {fname} -> {res['opt']} 条规则")
-                else:
-                    stats["skipped"] += 1
-            except Exception as e:
-                stats["failed"] += 1
-                error_logs.append(f"配置任务 '{fname}': {e!s}")
-                warning(f"  [失败] {fname}: {e}")
-        group_end()
+        show_conflicts = action != "ignore"
 
-    if auto_tasks:
-        group_start(f"自动发现透传 ({len(auto_tasks)})")
-        for t in auto_tasks:
-            try:
-                res = process_task_logic(
-                    t["strategy"],
-                    t["type"],
-                    t["owner"],
-                    t["filename"],
-                    t["inputs"],
-                    t["description"],
-                )
-                if res:
-                    stats["success"] += 1
-                    res["file"] = f"(Auto) {res['file']}"
-                    summary_rows.append(res)
-                    success(f"  {t['filename']} -> {res['opt']} 条规则")
-                else:
-                    stats["skipped"] += 1
-            except Exception as e:
-                stats["failed"] += 1
-                error_logs.append(f"自动任务 '{t['filename']}': {e!s}")
-                warning(f"  [失败] {t['filename']}: {e}")
-        group_end()
+        if show_conflicts and explicit_conflicts:
+            group_start("显式冲突（同一域名出现在多个策略中）")
+            total_explicit = sum(len(v) for v in explicit_conflicts.values())
+            warning(f"  发现 {total_explicit} 个显式冲突域名")
+            for pair, domains in explicit_conflicts.items():
+                warning(f"  {pair}: {len(domains)} 个冲突")
+                for d in domains[:10]:
+                    warning(f"    - {d}")
+                if len(domains) > 10:
+                    warning(f"    ... 及其他 {len(domains) - 10} 个")
+            group_end()
 
-    if stats["failed"] == 0:
-        expected_tasks = len(config_tasks) + len(auto_tasks)
-        if stats["success"] + stats["skipped"] != expected_tasks:
-            error(f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}")
-            gh_error(
-                f"合并产出数量不一致: 期望 {expected_tasks}，实得 成功 {stats['success']} + 跳过 {stats['skipped']}"
-            )
+        if show_conflicts and implicit_conflicts:
+            group_start("隐式冲突（父域名覆盖其他策略的子域名）")
+            total_implicit = sum(len(v) for v in implicit_conflicts.values())
+            warning(f"  共 {total_implicit} 个子域受父域规则影响（完整列表见 step summary）")
+            for pair, items in implicit_conflicts.items():
+                warning(f"  {pair}: {len(items)} 个子域被覆盖")
+                for child, parent in items[:IMPLICIT_SAMPLE_LIMIT]:
+                    warning(f"    - {child} 被 {parent} 覆盖")
+                if len(items) > IMPLICIT_SAMPLE_LIMIT:
+                    warning(f"    ... 及其他 {len(items) - IMPLICIT_SAMPLE_LIMIT} 个")
+            group_end()
+
+        if os.getenv("GITHUB_STEP_SUMMARY"):
+            with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
+                f.write(f"\n### 合并报告: {stats['success']} OK, {stats['failed']} Failed\n\n")
+                if error_logs:
+                    f.write("```diff\n" + "\n".join([f"- {e}" for e in error_logs]) + "\n```\n")
+                f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
+                for r in summary_rows:
+                    f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
+
+                if show_conflicts and explicit_conflicts:
+                    f.write("\n### 显式冲突检测\n\n")
+                    f.write("> 以下域名同时出现在不同策略中，请确保 rules 顺序为 block > direct > policy\n\n")
+                    for pair, domains in explicit_conflicts.items():
+                        f.write(f"**{pair}** ({len(domains)} 个冲突)\n\n")
+                        sample = domains[:20]
+                        for d in sample:
+                            f.write(f"- `{d}`\n")
+                        if len(domains) > 20:
+                            f.write(f"- ... 及其他 {len(domains) - 20} 个\n")
+                        f.write("\n")
+
+                if show_conflicts and implicit_conflicts:
+                    f.write("\n### 隐式冲突检测\n\n")
+                    f.write("> 以下子域名虽在低优先级策略中，但其父域名在高优先级策略中，")
+                    f.write("suffix 匹配下父域名会覆盖子域名。请确保 rules 顺序为 block > direct > policy\n\n")
+                    for pair, items in implicit_conflicts.items():
+                        f.write(f"**{pair}** ({len(items)} 个子域被覆盖)\n\n")
+                        sample = items[:20]
+                        for child, parent in sample:
+                            f.write(f"- `{child}` 被 `{parent}` 覆盖\n")
+                        if len(items) > 20:
+                            f.write(f"- ... 及其他 {len(items) - 20} 个\n")
+                        f.write("\n")
+
+        if action == "fail":
+            error("检测到跨策略冲突，按配置终止合并")
+            gh_error("检测到跨策略冲突，按 behavior.conflict_policy=fail 终止合并")
+            sys.exit(1)
+
+        if stats["failed"] > 0:
+            error("存在失败任务，退出")
+            gh_error(f"存在 {stats['failed']} 个合并任务失败，合并中止")
             sys.exit(1)
         try:
-            verify_merged_products(config_tasks, allow_partial=ALLOW_PARTIAL)
-        except manifest.ManifestError as e:
-            error(f"  {e}")
-            gh_error(f"合并产物与清单基线不一致: {e}")
+            _publish_staged_products(staging_root, output_root)
+        except OSError as e:
+            gh_error(f"合并产物发布失败: {e}")
             sys.exit(1)
-        info("  合并产物与清单基线一致")
-
-    section(f"合并报告 | 成功:{stats['success']} 跳过:{stats['skipped']} 失败:{stats['failed']}")
-
-    if summary_rows:
-        for r in summary_rows:
-            info(f"  {r['file']:<30} {r['path']:<40} {r['mode']:<10} {r['opt']:>6} 条")
-
-    conflict_policy = get("behavior", "conflict_policy", default="warn")
-    if str(conflict_policy or "warn").lower() == "ignore":
-        explicit_conflicts, implicit_conflicts = {}, {}
-    else:
-        explicit_conflicts, implicit_conflicts = detect_cross_policy_conflicts(OUTPUT_DIR)
-    has_conflicts = bool(explicit_conflicts or implicit_conflicts)
-    try:
-        action = resolve_conflict_action(conflict_policy, has_conflicts)
-    except ValueError as e:
-        error(str(e))
-        gh_error(f"behavior.conflict_policy 配置非法: {e}")
-        sys.exit(1)
-
-    show_conflicts = action != "ignore"
-
-    if show_conflicts and explicit_conflicts:
-        group_start("显式冲突（同一域名出现在多个策略中）")
-        total_explicit = sum(len(v) for v in explicit_conflicts.values())
-        warning(f"  发现 {total_explicit} 个显式冲突域名")
-        for pair, domains in explicit_conflicts.items():
-            warning(f"  {pair}: {len(domains)} 个冲突")
-            for d in domains[:10]:
-                warning(f"    - {d}")
-            if len(domains) > 10:
-                warning(f"    ... 及其他 {len(domains) - 10} 个")
-        group_end()
-
-    if show_conflicts and implicit_conflicts:
-        group_start("隐式冲突（父域名覆盖其他策略的子域名）")
-        total_implicit = sum(len(v) for v in implicit_conflicts.values())
-        warning(f"  共 {total_implicit} 个子域受父域规则影响（完整列表见 step summary）")
-        for pair, items in implicit_conflicts.items():
-            warning(f"  {pair}: {len(items)} 个子域被覆盖")
-            for child, parent in items[:IMPLICIT_SAMPLE_LIMIT]:
-                warning(f"    - {child} 被 {parent} 覆盖")
-            if len(items) > IMPLICIT_SAMPLE_LIMIT:
-                warning(f"    ... 及其他 {len(items) - IMPLICIT_SAMPLE_LIMIT} 个")
-        group_end()
-
-    if os.getenv("GITHUB_STEP_SUMMARY"):
-        with open(os.getenv("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as f:
-            f.write(f"\n### 合并报告: {stats['success']} OK, {stats['failed']} Failed\n\n")
-            if error_logs:
-                f.write("```diff\n" + "\n".join([f"- {e}" for e in error_logs]) + "\n```\n")
-            f.write("| 文件 | 输出路径 | 规则数 |\n|---|---|---|\n")
-            for r in summary_rows:
-                f.write(f"| `{r['file']}` | `{r['path']}` | **{r['opt']}** |\n")
-
-            if show_conflicts and explicit_conflicts:
-                f.write("\n### 显式冲突检测\n\n")
-                f.write("> 以下域名同时出现在不同策略中，请确保 rules 顺序为 block > direct > policy\n\n")
-                for pair, domains in explicit_conflicts.items():
-                    f.write(f"**{pair}** ({len(domains)} 个冲突)\n\n")
-                    sample = domains[:20]
-                    for d in sample:
-                        f.write(f"- `{d}`\n")
-                    if len(domains) > 20:
-                        f.write(f"- ... 及其他 {len(domains) - 20} 个\n")
-                    f.write("\n")
-
-            if show_conflicts and implicit_conflicts:
-                f.write("\n### 隐式冲突检测\n\n")
-                f.write("> 以下子域名虽在低优先级策略中，但其父域名在高优先级策略中，")
-                f.write("suffix 匹配下父域名会覆盖子域名。请确保 rules 顺序为 block > direct > policy\n\n")
-                for pair, items in implicit_conflicts.items():
-                    f.write(f"**{pair}** ({len(items)} 个子域被覆盖)\n\n")
-                    sample = items[:20]
-                    for child, parent in sample:
-                        f.write(f"- `{child}` 被 `{parent}` 覆盖\n")
-                    if len(items) > 20:
-                        f.write(f"- ... 及其他 {len(items) - 20} 个\n")
-                    f.write("\n")
-
-    if action == "fail":
-        error("检测到跨策略冲突，按配置终止合并")
-        gh_error("检测到跨策略冲突，按 behavior.conflict_policy=fail 终止合并")
-        sys.exit(1)
-
-    if stats["failed"] > 0:
-        error("存在失败任务，退出")
-        gh_error(f"存在 {stats['failed']} 个合并任务失败，合并中止")
-        sys.exit(1)
 
 
 if __name__ == "__main__":

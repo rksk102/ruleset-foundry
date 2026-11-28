@@ -10,6 +10,7 @@ from pathlib import Path
 import convert_mrs
 import main
 import manifest
+import merger
 import pytest
 
 SCRIPTS = str(Path(__file__).resolve().parent.parent / "scripts")
@@ -108,10 +109,11 @@ class TestMainFlow:
         assert self.disk_entries(rulesets) == ["block/domain/o/keep.txt"]
         assert self.manifest_entries(rulesets) == ["block/domain/o/keep.txt"], "被清理掉的孤儿不得留在产物清单里"
 
-    def test_degraded_run_keeps_previous_products_and_writes_no_manifest(self, monkeypatch, work_dir):
+    def test_degraded_run_preserves_verifiable_previous_products(self, monkeypatch, work_dir):
         rulesets = self.setup_run(monkeypatch, work_dir)
         main.main()
-        before = self.manifest_entries(rulesets)
+        before = {rel: (rulesets / rel).read_bytes() for rel in self.disk_entries(rulesets)}
+        before_manifest = (rulesets / "products.manifest").read_bytes()
 
         payloads = dict(PAYLOADS, **{"drop.txt": None})
         self.setup_run(monkeypatch, work_dir, payloads=payloads)
@@ -119,13 +121,41 @@ class TestMainFlow:
             main.main()
 
         assert exc.value.code == 1
-        assert [p for p in self.disk_entries(rulesets) if not p.endswith("sync-summary.txt")] == [
-            "block/domain/o/drop.txt",
-            "block/domain/o/keep.txt",
-        ]
-        assert self.manifest_entries(rulesets) == before
+        assert self.disk_entries(rulesets) == ["block/domain/o/drop.txt", "block/domain/o/keep.txt"]
+        assert {rel: (rulesets / rel).read_bytes() for rel in before} == before
+        assert (rulesets / "products.manifest").read_bytes() == before_manifest
+        assert not (rulesets / "sync-summary.txt").exists()
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(rulesets))
+        assert merger.load_and_verify_source_manifest() is not None
 
-    @pytest.mark.parametrize("defect", ["hosts", "empty-payload"])
+    def test_degraded_summary_symlink_cannot_overwrite_config_and_retry_recovers(
+        self, monkeypatch, work_dir
+    ):
+        rulesets = self.setup_run(monkeypatch, work_dir)
+        main.main()
+        settings = work_dir / "settings.yml"
+        original = b"behavior:\n  allow_partial: false\n"
+        settings.write_bytes(original)
+        summary = rulesets / "sync-summary.txt"
+        summary.symlink_to("../settings.yml")
+
+        payloads = dict(PAYLOADS, **{"drop.txt": None})
+        self.setup_run(monkeypatch, work_dir, payloads=payloads)
+        with pytest.raises(SystemExit) as exc:
+            main.main()
+
+        assert exc.value.code == 1
+        assert settings.read_bytes() == original
+        assert not summary.exists()
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(rulesets))
+        assert merger.load_and_verify_source_manifest() is not None
+
+        self.setup_run(monkeypatch, work_dir)
+        main.main()
+        assert settings.read_bytes() == original
+        assert not summary.exists()
+
+    @pytest.mark.parametrize("defect", ["hosts", "empty-payload", "mapped-boundary"])
     def test_rejected_ip_inputs_preserve_previous_generation(self, monkeypatch, work_dir, defect):
         sources = "[policy:direct]\n[type:ipcidr]\nhttps://raw.githubusercontent.com/o/keep/keep.txt\n"
         rulesets = self.setup_run(
@@ -137,9 +167,11 @@ class TestMainFlow:
         before_manifest = (rulesets / "products.manifest").read_bytes()
         if defect == "hosts":
             raw = b"0.0.0.0 IP-CIDR,192.0.2.0/24\n"
-        else:
+        elif defect == "empty-payload":
             lines = [f"10.0.0.{i}/32" for i in range(1, 181)] + [f"bad-{i}" for i in range(20)]
             raw = ("\n".join(lines) + "\nIP-CIDR,\n").encode()
+        else:
+            raw = b"::fffe:0:0/95\n"
         self.setup_run(monkeypatch, work_dir, sources=sources, payloads={"keep.txt": raw})
 
         with pytest.raises(SystemExit) as exc:
