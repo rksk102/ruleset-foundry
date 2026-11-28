@@ -526,7 +526,7 @@ class TestMergerInputs:
         monkeypatch.setattr(merger, "process_task_logic", advance_generation)
         with MergerRun(work_dir, merges) as run:
             assert run.run() == 1
-        assert not (work_dir / "merged-rules" / manifest.MANIFEST_NAME).exists()
+        assert manifest.load_manifest(work_dir / "merged-rules" / manifest.MANIFEST_NAME) is None
 
     @pytest.mark.parametrize("allow_partial", [False, True], ids=["strict", "partial"])
     def test_present_unlisted_input_is_rejected(self, work_dir, monkeypatch, allow_partial):
@@ -549,4 +549,46 @@ class TestMergerInputs:
             assert run.run() == 1
 
         assert not (work_dir / "merged-rules" / "block/domain/rksk/all-ads.txt").exists()
-        assert not (work_dir / "merged-rules" / manifest.MANIFEST_NAME).exists()
+        assert manifest.load_manifest(work_dir / "merged-rules" / manifest.MANIFEST_NAME) is None
+
+    @pytest.mark.parametrize("failure", ["generation", "conflict", "write"])
+    def test_failed_merge_preserves_previous_verified_generation(
+        self, work_dir, monkeypatch, failure
+    ):
+        source = work_dir / "rulesets"
+        output = work_dir / "merged-rules"
+        write(source / "block/domain/Owner/ads.txt", "same.example\n")
+        write(source / "direct/domain/Owner/direct.txt", "same.example\n")
+        write_v2_manifest(source)
+        previous = {"block/domain/Previous/keep.txt": "previous.example\n"}
+        for rel, content in previous.items():
+            write(output / rel, content)
+        write_v2_manifest(output, generation="old-generation")
+
+        if failure == "generation":
+            original = merger.process_task_logic
+
+            def advance_generation(*args, **kwargs):
+                result = original(*args, **kwargs)
+                write_v2_manifest(source, generation="g2")
+                return result
+
+            monkeypatch.setattr(merger, "process_task_logic", advance_generation)
+        elif failure == "conflict":
+            original_get = merger.get
+            monkeypatch.setattr(merger, "get", lambda *keys, **kwargs: (
+                "fail" if keys == ("behavior", "conflict_policy") else original_get(*keys, **kwargs)
+            ))
+        else:
+            def fail_manifest(*args, **kwargs):
+                raise OSError("disk full")
+
+            monkeypatch.setattr(manifest, "save_manifest", fail_manifest)
+
+        with MergerRun(work_dir, []) as run:
+            assert run.run() == 1
+
+        for rel, content in previous.items():
+            assert (output / rel).read_text(encoding="utf-8") == content
+        assert manifest.load_manifest(output / manifest.MANIFEST_NAME).generation == "old-generation"
+        assert not list(output.glob(".*"))

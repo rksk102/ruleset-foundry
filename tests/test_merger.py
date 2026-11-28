@@ -699,6 +699,9 @@ class TestWildcardPatternConflictPolicy:
         assert ("### 隐式冲突检测" in text) == (overlap and policy != "ignore")
         if overlap and policy != "ignore":
             assert left in text and right in text
+        if overlap and policy == "fail":
+            assert manifest.load_manifest(output / manifest.MANIFEST_NAME) is None
+            return
         assert manifest.verify_manifest(manifest.load_manifest(output / manifest.MANIFEST_NAME), output, "merge")
         for rel, pattern in entries.items():
             rules = [
@@ -749,7 +752,7 @@ class TestConflictPolicyReporting:
 
 
 class TestMergerGuards:
-    def test_cleanup_failure_aborts_before_writing_new_generation(self, work_dir, monkeypatch, capsys):
+    def test_publish_failure_preserves_previous_generation(self, work_dir, monkeypatch):
         source, output = work_dir / "rulesets", work_dir / "merged"
         rel = "block/domain/Owner/rules.txt"
         write(source / rel, "a.example\n")
@@ -760,14 +763,14 @@ class TestMergerGuards:
         )
         stale = output / "stale.md"
         write(stale, "stale file\n")
-        unlink = Path.unlink
+        replace = merger.os.replace
 
-        def locked_unlink(path, *args, **kwargs):
-            if path == stale:
-                raise OSError("locked")
-            return unlink(path, *args, **kwargs)
+        def fail_publish(src, dst):
+            if Path(src) == work_dir / ".merge-merged.staging.tmp" and Path(dst) == output:
+                raise OSError("replace failed")
+            return replace(src, dst)
 
-        monkeypatch.setattr(Path, "unlink", locked_unlink)
+        monkeypatch.setattr(merger.os, "replace", fail_publish)
         monkeypatch.setattr(merger, "SOURCE_DIR", str(source))
         monkeypatch.setattr(merger, "OUTPUT_DIR", str(output))
         monkeypatch.setattr(merger, "load_config", lambda: {"merges": []})
@@ -776,10 +779,70 @@ class TestMergerGuards:
             merger.main()
 
         assert exc.value.code == 1
-        assert "清理失败" in capsys.readouterr().out
+
         assert stale.read_text(encoding="utf-8") == "stale file\n"
         assert not (output / rel).exists()
         assert not (output / manifest.MANIFEST_NAME).exists()
+
+    def test_replace_failure_restores_previous_directory(self, work_dir, monkeypatch):
+        output = work_dir / "merged"
+        staging = work_dir / ".merge-staging-test"
+        write(output / "old.txt", "old")
+        write(staging / "new.txt", "new")
+        replace = merger.os.replace
+
+        def fail_new(src, dst):
+            if Path(src) == staging:
+                raise OSError("replace failed")
+            return replace(src, dst)
+
+        monkeypatch.setattr(merger.os, "replace", fail_new)
+
+        with pytest.raises(OSError, match="replace failed"):
+            merger._publish_staged_products(staging, output)
+
+        assert (output / "old.txt").read_text(encoding="utf-8") == "old"
+        assert not (work_dir / ".merge-merged.previous.tmp").exists()
+
+    def test_restore_failure_preserves_previous_directory(self, work_dir, monkeypatch):
+        output = work_dir / "merged"
+        staging = work_dir / ".merge-staging-test"
+        write(output / "old.txt", "old")
+        write(staging / "new.txt", "new")
+
+        replace = merger.os.replace
+
+        def fail_restores(src, dst):
+            if Path(src) in {work_dir / ".merge-merged.previous.tmp", staging}:
+                raise OSError("restore failed")
+            return replace(src, dst)
+
+        monkeypatch.setattr(merger.os, "replace", fail_restores)
+
+        with pytest.raises(OSError, match="备份保留在"):
+            merger._publish_staged_products(staging, output)
+
+        previous = work_dir / ".merge-merged.previous.tmp"
+        assert (previous / "old.txt").read_text(encoding="utf-8") == "old"
+
+    def test_interrupted_publish_recovers_only_the_requested_output(self, work_dir):
+        output = work_dir / "merged"
+        staging = work_dir / ".merge-merged.staging.tmp"
+        previous = work_dir / ".merge-merged.previous.tmp"
+        other = work_dir / ".merge-other.staging.tmp"
+        write(previous / "old.txt", "old")
+        write(staging / "discard.txt", "incomplete")
+        write(other / "keep.txt", "other")
+
+        with merger._merge_workspace(output):
+            assert (output / "old.txt").read_text(encoding="utf-8") == "old"
+            assert not (staging / "discard.txt").exists()
+            with pytest.raises(OSError, match="无法取得合并输出写锁"), merger._merge_workspace(output):
+                pass
+
+        assert not previous.exists()
+        assert not staging.exists()
+        assert (other / "keep.txt").read_text(encoding="utf-8") == "other"
 
     def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch, capsys):
         source = work_dir / "rulesets"
