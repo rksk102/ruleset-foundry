@@ -592,3 +592,19 @@ class TestMergerInputs:
             assert (output / rel).read_text(encoding="utf-8") == content
         assert manifest.load_manifest(output / manifest.MANIFEST_NAME).generation == "old-generation"
         assert not list(output.glob(".*"))
+        assert not (work_dir / ".merge-merged-rules.staging.tmp").exists()
+        assert not (work_dir / ".merge-merged-rules.previous.tmp").exists()
+
+    def test_input_failure_restores_previous_directory_before_exiting(self, work_dir, monkeypatch):
+        output = work_dir / "merged-rules"
+        previous = work_dir / ".merge-merged-rules.previous.tmp"
+        write(previous / "keep.txt", "previous\n")
+        monkeypatch.setattr(merger, "OUTPUT_DIR", str(output))
+        monkeypatch.setattr(merger, "SOURCE_DIR", str(work_dir / "missing-rulesets"))
+
+        with pytest.raises(SystemExit) as exc:
+            merger.main()
+
+        assert exc.value.code == 1
+        assert (output / "keep.txt").read_text(encoding="utf-8") == "previous\n"
+        assert not previous.exists()

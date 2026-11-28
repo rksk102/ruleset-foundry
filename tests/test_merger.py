@@ -784,6 +784,33 @@ class TestMergerGuards:
         assert not (output / rel).exists()
         assert not (output / manifest.MANIFEST_NAME).exists()
 
+    def test_cleanup_after_switch_does_not_fail_published_generation(self, work_dir, monkeypatch):
+        output = work_dir / "merged"
+        staging = work_dir / ".merge-merged.staging.tmp"
+        previous = work_dir / ".merge-merged.previous.tmp"
+        write(output / "old.txt", "old")
+        write(staging / "new.txt", "new")
+        manifest.save_manifest(staging / manifest.MANIFEST_NAME, manifest.hash_entries(staging, ["new.txt"]))
+        remove = merger.shutil.rmtree
+
+        def fail_backup_cleanup(path, *args, **kwargs):
+            if Path(path) == previous:
+                raise OSError("locked")
+            return remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(merger.shutil, "rmtree", fail_backup_cleanup)
+
+        merger._publish_staged_products(staging, output)
+
+        assert (output / "new.txt").read_text(encoding="utf-8") == "new"
+        assert (previous / "old.txt").read_text(encoding="utf-8") == "old"
+
+        monkeypatch.setattr(merger.shutil, "rmtree", remove)
+        merger._recover_stale_merge_transactions(output)
+
+        assert not previous.exists()
+        assert manifest.verify_manifest(manifest.load_manifest(output / manifest.MANIFEST_NAME), output, "merge")
+
     def test_replace_failure_restores_previous_directory(self, work_dir, monkeypatch):
         output = work_dir / "merged"
         staging = work_dir / ".merge-staging-test"
@@ -834,15 +861,28 @@ class TestMergerGuards:
         write(staging / "discard.txt", "incomplete")
         write(other / "keep.txt", "other")
 
-        with merger._merge_workspace(output):
-            assert (output / "old.txt").read_text(encoding="utf-8") == "old"
-            assert not (staging / "discard.txt").exists()
-            with pytest.raises(OSError, match="无法取得合并输出写锁"), merger._merge_workspace(output):
-                pass
+        with merger._merge_lock(output):
+            merger._recover_stale_merge_transactions(output)
+            with merger._merge_workspace(output):
+                assert (output / "old.txt").read_text(encoding="utf-8") == "old"
+                assert not (staging / "discard.txt").exists()
+                with pytest.raises(OSError, match="无法取得合并输出写锁"), merger._merge_lock(output):
+                    pass
 
         assert not previous.exists()
         assert not staging.exists()
         assert (other / "keep.txt").read_text(encoding="utf-8") == "other"
+
+    def test_unresolved_previous_backup_is_not_deleted(self, work_dir):
+        output = work_dir / "merged"
+        previous = work_dir / ".merge-merged.previous.tmp"
+        write(output / "published.txt", "published")
+        write(previous / "old.txt", "old")
+
+        with pytest.raises(OSError, match="旧产物备份"):
+            merger._recover_stale_merge_transactions(output)
+
+        assert (previous / "old.txt").read_text(encoding="utf-8") == "old"
 
     def test_merge_task_and_passthrough_may_not_share_a_path(self, work_dir, monkeypatch, capsys):
         source = work_dir / "rulesets"

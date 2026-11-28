@@ -370,11 +370,30 @@ def _recover_stale_merge_transactions(output_root):
     previous = _merge_sidecar(output_root, "previous")
     _check_directory(output_root)
     _check_directory(previous)
-    if previous.exists():
-        if output_root.exists():
-            shutil.rmtree(previous)
-        else:
-            os.replace(previous, output_root)
+    if not previous.exists():
+        return
+    if not output_root.exists():
+        os.replace(previous, output_root)
+        return
+    # 两次重命名之间进程可退出。只有正式目录可验证时，才清除旧目录。
+    try:
+        current = manifest.load_manifest(output_root / manifest.MANIFEST_NAME)
+        manifest.verify_manifest(current, output_root, "合并正式目录恢复检查")
+    except (manifest.ManifestError, OSError) as e:
+        raise OSError(f"正式目录无法验证，保留旧产物备份: {previous}（{e}）") from e
+    shutil.rmtree(previous)
+
+
+@contextmanager
+def _merge_lock(output_root):
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    with _merge_sidecar(output_root, "lock").open("ab") as lock:
+        try:
+            _lock_writer(lock)
+        except OSError as e:
+            raise OSError(f"无法取得合并输出写锁: {output_root}") from e
+        yield
+
 
 
 def _lock_writer(lock):
@@ -390,28 +409,32 @@ def _lock_writer(lock):
 
 @contextmanager
 def _merge_workspace(output_root):
-    output_root.parent.mkdir(parents=True, exist_ok=True)
-    with _merge_sidecar(output_root, "lock").open("ab") as lock:
-        try:
-            _lock_writer(lock)
-        except OSError as e:
-            raise OSError(f"无法取得合并输出写锁: {output_root}") from e
-        _recover_stale_merge_transactions(output_root)
-        staging = _merge_sidecar(output_root, "staging")
-        _check_directory(staging)
+    staging = _merge_sidecar(output_root, "staging")
+    _check_directory(staging)
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        yield staging
+    finally:
         if staging.exists():
             shutil.rmtree(staging)
-        staging.mkdir()
+
+
+def _cleanup_merge_backups(output_root):
+    previous = _merge_sidecar(output_root, "previous")
+    if previous.exists():
         try:
-            yield staging
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
+            shutil.rmtree(previous)
+        except OSError as e:
+            warning(f"合并产物已切换，旧备份清理失败，将在下轮恢复时重试: {previous}（{e}）")
 
 
 def _publish_staged_products(staging_root, output_root):
     previous = _merge_sidecar(output_root, "previous")
     _check_directory(output_root)
+    if previous.exists() or previous.is_symlink():
+        raise OSError(f"存在待处理的旧产物备份: {previous}")
     if output_root.exists():
         os.replace(output_root, previous)
     try:
@@ -423,15 +446,25 @@ def _publish_staged_products(staging_root, output_root):
             except OSError as restore_error:
                 raise OSError(f"旧目录恢复失败，备份保留在 {previous}: {restore_error}") from restore_error
         raise
-    if previous.exists():
-        shutil.rmtree(previous)
+    _cleanup_merge_backups(output_root)
 
 
 def main():
     section("规则合并器")
-    _ensure_repo_anchored("源目录", SOURCE_DIR)
     _ensure_repo_anchored("输出目录", OUTPUT_DIR)
+    output_path = Path(OUTPUT_DIR)
+    output_root = output_path.parent.resolve() / output_path.name
+    try:
+        with _merge_lock(output_root):
+            _recover_stale_merge_transactions(output_root)
+            _merge_locked(output_root)
+    except OSError as e:
+        gh_error(f"合并失败: {e}")
+        sys.exit(1)
 
+
+def _merge_locked(output_root):
+    _ensure_repo_anchored("源目录", SOURCE_DIR)
     stats = {"success": 0, "skipped": 0, "failed": 0}
     error_logs = []
     summary_rows = []
@@ -497,8 +530,6 @@ def main():
         gh_error("合并任务与自动透传输出路径重复或大小写碰撞")
         sys.exit(1)
 
-    output_path = Path(OUTPUT_DIR)
-    output_root = output_path.parent.resolve() / output_path.name
     with _merge_workspace(output_root) as staging_root:
         if config_tasks:
             group_start(f"配置合并任务 ({len(config_tasks)})")
