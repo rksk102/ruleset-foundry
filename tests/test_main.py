@@ -785,7 +785,7 @@ class TestCombinedDropGate:
         assert count == 1
         assert errors["parse"] == []
         assert len(writes) == 1
-        assert writes[0][1][-1] == "+.keep.example.com"
+        assert [line for line in writes[0][1] if not line.startswith("# Source:")] == ["+.keep.example.com"]
 
     def test_large_badfilter_pairs_do_not_trigger_drop_gate(self, monkeypatch):
         lines = []

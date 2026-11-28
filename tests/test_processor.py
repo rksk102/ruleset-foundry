@@ -452,6 +452,16 @@ class TestAdblockModifierSemantics:
         assert stats["dropped_exception"] == 0
         assert stats["dropped_modifier"] == 0
 
+    def test_badfilter_hostname_case_does_not_change_cancellation(self):
+        out, stats = processor.process_domain_detailed(
+            ["||Example.COM^", "||example.com^$badfilter", "example.com"], "exact"
+        )
+
+        assert out == ["example.com"]
+        assert stats["dropped_exception"] == 0
+        assert stats["dropped_modifier"] == 0
+
+
     def test_multiple_modifiers_drop_whole_rule(self):
         out, stats = processor.process_domain_detailed(["ads.example.com$script,image,domain=example.com"], "exact")
         assert out == []
