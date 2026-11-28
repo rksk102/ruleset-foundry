@@ -446,6 +446,25 @@ def _read_rollback_manifest(root, rollback_root):
         raise ValueError(f"无法读取恢复事务 {rollback_root}: {exc}") from exc
 
 
+def _committed_transaction_path(rollback_root):
+    return rollback_root.with_name(
+        rollback_root.name.replace(_ROLLBACK_PREFIX, _COMMITTED_PREFIX, 1)
+    )
+
+
+# 旧清单没有哈希可证明目标已恢复，必须保留原备份直到整组恢复完成。
+def _restore_backup(final, backup, old_sha):
+    fd, temporary = tempfile.mkstemp(prefix=".restore-", dir=backup.parent)
+    try:
+        with os.fdopen(fd, "wb") as target, backup.open("rb") as source:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+        if file_sha256(temporary) != old_sha:
+            raise OSError(f"恢复副本哈希不符: {final}")
+        os.replace(temporary, final)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _restore_entries(entries):
     failed = False
     for final, backup, existed, old_sha in reversed(entries):
@@ -453,21 +472,21 @@ def _restore_entries(entries):
             if not existed:
                 final.unlink(missing_ok=True)
                 continue
-            backup_valid = backup.is_file() and not backup.is_symlink() and (
-                old_sha is None or file_sha256(str(backup)) == old_sha
-            )
-            if backup_valid:
-                os.replace(backup, final)
-            elif old_sha is None or not (
-                final.is_file()
-                and not final.is_symlink()
-                and file_sha256(str(final)) == old_sha
+            if backup.is_file() and not backup.is_symlink():
+                if old_sha is None:
+                    _restore_backup(final, backup, file_sha256(str(backup)))
+                    continue
+                if file_sha256(str(backup)) == old_sha:
+                    os.replace(backup, final)
+                    continue
+            if old_sha is not None and (
+                final.is_file() and not final.is_symlink() and file_sha256(str(final)) == old_sha
             ):
-                failed = True
-                gh_error(f"旧产物备份缺失或不可信，且目标尚未恢复: {final}")
+                continue
+            raise OSError("备份缺失或不可信，且目标尚未恢复")
         except OSError as exc:
-            failed = True
             gh_error(f"旧产物恢复失败: {final}（{exc}）")
+            failed = True
     return not failed
 
 
@@ -493,6 +512,10 @@ def _recover_stale_transactions(root):
             raise ValueError(f"已提交目录含有未提交事务清单: {rollback_root}")
         if not committed and not _restore_entries(entries):
             raise RuntimeError(f"旧产物恢复未完成，保留事务现场: {rollback_root}")
+        if committed and rollback_root.name.startswith(_ROLLBACK_PREFIX):
+            committed_root = _committed_transaction_path(rollback_root)
+            os.replace(rollback_root, committed_root)
+            rollback_root = committed_root
         shutil.rmtree(rollback_root)
         if staging.exists():
             shutil.rmtree(staging)
@@ -548,9 +571,7 @@ def commit_staged_products(staging_root, expected_files):
             raise
         shutil.rmtree(rollback_root)
         raise
-    committed_root = rollback_root.with_name(
-        rollback_root.name.replace(_ROLLBACK_PREFIX, _COMMITTED_PREFIX, 1)
-    )
+    committed_root = _committed_transaction_path(rollback_root)
     os.replace(rollback_root, committed_root)
     shutil.rmtree(committed_root)
 

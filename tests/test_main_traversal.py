@@ -157,6 +157,36 @@ class TestStagedCommit:
         assert files[0].read_text(encoding="utf-8") == "old-a.txt"
         assert not rollback.exists()
 
+    def test_legacy_restore_keeps_backup_for_retry_after_a_later_failure(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-legacy"
+        rollback.mkdir()
+        write(root / "a.txt", "partial-new-a")
+        write(rollback / "0", "old-a.txt")
+        write(rollback / "1", "old-b.txt")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True},
+            {"path": "b.txt", "backup": "1", "existed": True},
+        ])
+        replace = main.os.replace
+        fail = True
+
+        def fail_second(src, dst):
+            nonlocal fail
+            if fail and Path(src).name.startswith(".restore-") and Path(dst).name == "a.txt":
+                raise OSError("restore failed")
+            return replace(src, dst)
+
+        monkeypatch.setattr(main.os, "replace", fail_second)
+        with pytest.raises(RuntimeError, match="恢复未完成"):
+            main._recover_stale_transactions(root)
+        assert (rollback / "1").read_text(encoding="utf-8") == "old-b.txt"
+
+        fail = False
+        main._recover_stale_transactions(root)
+        assert [path.read_text(encoding="utf-8") for path in files] == ["old-a.txt", "old-b.txt"]
+        assert not rollback.exists()
+
     def test_legacy_transaction_missing_backup_is_preserved(self, work_dir, monkeypatch):
         root, staging, files = self.prepare(work_dir, monkeypatch)
         rollback = root / ".rollback-legacy"
@@ -306,6 +336,35 @@ class TestStagedCommit:
         main._recover_stale_transactions(root)
 
         assert not rollback.exists()
+        assert files[0].read_text(encoding="utf-8") == "new-a.txt"
+
+    def test_startup_committed_transaction_is_marked_before_cleanup(self, work_dir, monkeypatch):
+        root, staging, files = self.prepare(work_dir, monkeypatch)
+        rollback = root / ".rollback-complete"
+        rollback.mkdir()
+        write(rollback / "0", "old-a.txt")
+        write(files[0], "new-a.txt")
+        main._write_rollback_manifest(rollback, staging, [
+            {"path": "a.txt", "backup": "0", "existed": True, "sha256": sha("old-a.txt")},
+        ], committed=True)
+
+        remove = main.shutil.rmtree
+
+        def interrupt_cleanup(path, *args, **kwargs):
+            if Path(path).name in {".rollback-complete", ".committed-complete"}:
+                (Path(path) / "transaction.json").unlink()
+                raise OSError("interrupted cleanup")
+            return remove(path, *args, **kwargs)
+
+        with patch.object(main.shutil, "rmtree", side_effect=interrupt_cleanup), pytest.raises(
+            OSError, match="interrupted cleanup"
+        ):
+            main._recover_stale_transactions(root)
+
+        main._cleanup_stale_staging(root)
+        assert not rollback.exists()
+        assert not (root / ".committed-complete").exists()
+        assert not staging.exists()
         assert files[0].read_text(encoding="utf-8") == "new-a.txt"
 
 
